@@ -64,10 +64,16 @@ impl PacketProcessor {
         let session_id = sub.header.source_id;
         tracing::info!(session = session_id, "session begin");
 
-        // Phase 4 stub: load the character row so future phases can spawn
-        // them in the right zone.
-        if let Ok(Some(row)) = self.db.load_character(session_id).await {
-            tracing::info!(name = %row.name, zone = row.current_zone_id, "loaded character");
+        // Phase 5: pull the full aggregated LoadedPlayer (appearance +
+        // inventory + quests + hotbar + …) so the next spawn-stage patch
+        // has everything in hand.
+        if let Ok(Some(row)) = self.db.load_player_character(session_id).await {
+            tracing::info!(
+                name = %row.name,
+                zone = row.current_zone_id,
+                inventory = row.inventory_normal.len(),
+                "loaded character",
+            );
         }
 
         let reply = tx::build_session_begin(session_id, 1); // 1 == success per C#

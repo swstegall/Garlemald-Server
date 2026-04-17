@@ -12,6 +12,7 @@ mod command_processor;
 mod config;
 mod data;
 mod database;
+mod gamedata;
 mod lua;
 mod packets;
 mod processor;
