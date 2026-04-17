@@ -9,6 +9,14 @@
 
 #![allow(dead_code)]
 
+pub mod chara;
+pub mod modifier;
+pub mod player;
+pub mod quest;
+
+#[allow(unused_imports)]
+pub use modifier::{Modifier, ModifierMap};
+
 use common::Vector3;
 
 pub const INVALID_ACTORID: u32 = 0xC0000000;
@@ -97,7 +105,7 @@ impl BaseActor {
 // Character — base for both Player and Npc. Adds combat/stat state.
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct CharaState {
     pub is_static: bool,
     pub is_moving_to_spawn: bool,
@@ -126,6 +134,46 @@ pub struct CharaState {
     pub extra_int: i32,
     pub extra_uint: u32,
     pub extra_float: f32,
+
+    /// Modifier map (stat bonuses, statuses, trait-derived buffs). Matches
+    /// the C# `Dictionary<uint, double>` on Character.
+    pub mods: ModifierMap,
+    /// Indexed by the `STAT_*` constants from scripts/global.lua.
+    pub stats: [i16; chara::STAT_COUNT],
+}
+
+// `[i16; 36]` is past the stdlib auto-derived `Default` window.
+#[allow(clippy::derivable_impls)]
+impl Default for CharaState {
+    fn default() -> Self {
+        Self {
+            is_static: false,
+            is_moving_to_spawn: false,
+            is_auto_attack_enabled: false,
+            model_id: 0,
+            animation_id: 0,
+            current_target: 0,
+            current_locked_target: 0,
+            current_actor_icon: 0,
+            current_job: 0,
+            new_main_state: 0,
+            spawn_x: 0.0,
+            spawn_y: 0.0,
+            spawn_z: 0.0,
+            hp: 0,
+            max_hp: 0,
+            mp: 0,
+            max_mp: 0,
+            tp: 0,
+            class: 0,
+            level: 0,
+            extra_int: 0,
+            extra_uint: 0,
+            extra_float: 0.0,
+            mods: ModifierMap::default(),
+            stats: [0; chara::STAT_COUNT],
+        }
+    }
 }
 
 impl CharaState {
@@ -204,12 +252,17 @@ pub struct PlayerState {
     pub current_ls_plate: u32,
     pub repair_type: u8,
     pub sent_retainer_spawn: bool,
+    pub rest_bonus_exp_rate: i32,
+    /// Max class level across all jobs; refreshed when the DB save loads or
+    /// a level changes. Mirrors the C# `GetHighestLevel()` scan result.
+    pub highest_level_cache: i32,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct Player {
     pub character: Character,
     pub player: PlayerState,
+    pub helpers: player::PlayerHelperState,
 }
 
 impl Player {
@@ -217,11 +270,8 @@ impl Player {
         Self {
             character: Character::new(actor_id),
             player: PlayerState { is_zone_changing: true, ..Default::default() },
+            helpers: player::PlayerHelperState::default(),
         }
-    }
-
-    pub fn is_my_player(&self, other_actor_id: u32) -> bool {
-        self.character.base.actor_id == other_actor_id
     }
 }
 

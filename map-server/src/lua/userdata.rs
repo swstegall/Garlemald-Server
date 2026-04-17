@@ -187,6 +187,75 @@ pub struct PlayerSnapshot {
     pub inventory: Vec<(u32, i32)>,
 }
 
+impl From<&crate::actor::Player> for PlayerSnapshot {
+    fn from(p: &crate::actor::Player) -> Self {
+        let active_quests: Vec<u32> = p
+            .helpers
+            .quest_journal
+            .slots
+            .iter()
+            .flatten()
+            .map(|q| q.quest_id())
+            .collect();
+        let completed_quests: Vec<u32> =
+            p.helpers.quest_journal.completed.iter().copied().collect();
+        let unlocked_aetherytes: Vec<u32> =
+            p.helpers.unlocked_aetherytes.iter().copied().collect();
+        let traits: Vec<u16> = p.helpers.traits.iter().map(|t| t.id).collect();
+        let inventory: Vec<(u32, i32)> = p
+            .helpers
+            .inventory_summary
+            .iter()
+            .map(|(id, qty)| (*id, *qty))
+            .collect();
+
+        Self {
+            actor_id: p.character.base.actor_id,
+            name: p.character.base.actor_name.clone(),
+            zone_id: p.character.base.zone_id,
+            pos: (
+                p.character.base.position_x,
+                p.character.base.position_y,
+                p.character.base.position_z,
+            ),
+            rotation: p.character.base.rotation,
+            state: p.character.base.current_main_state,
+            hp: p.character.chara.hp,
+            max_hp: p.character.chara.max_hp,
+            mp: p.character.chara.mp,
+            max_mp: p.character.chara.max_mp,
+            tp: p.character.chara.tp,
+            play_time: p.player.play_time,
+            current_class: p.character.chara.class as u8,
+            current_level: p.character.chara.level,
+            current_job: p.character.chara.current_job as u8,
+            current_gil: p.get_current_gil().max(0) as u32,
+            initial_town: p.get_initial_town(),
+            tribe: 0,
+            guardian: 0,
+            birth_month: 0,
+            birth_day: 0,
+            homepoint: p.player.homepoint,
+            homepoint_inn: p.player.homepoint_inn,
+            mount_state: p.player.mount_state,
+            has_chocobo: p.player.has_chocobo,
+            is_gm: p.player.is_gm,
+            is_engaged: p.character.is_engaged(),
+            is_trading: p.is_trading(),
+            is_trade_accepted: p.is_trade_accepted(),
+            is_party_leader: p.is_party_leader(),
+            current_event_owner: p.player.current_event_owner,
+            current_event_name: p.player.current_event_name.clone(),
+            current_event_type: p.player.current_event_type,
+            completed_quests,
+            active_quests,
+            unlocked_aetherytes,
+            traits,
+            inventory,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct LuaPlayer {
     pub snapshot: PlayerSnapshot,
