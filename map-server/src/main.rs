@@ -16,6 +16,7 @@ mod database;
 mod director;
 mod event;
 mod gamedata;
+mod group;
 mod inventory;
 mod lua;
 mod npc;

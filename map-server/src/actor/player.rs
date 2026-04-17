@@ -67,6 +67,20 @@ pub struct PlayerHelperState {
     /// Fast-path cache: which of `owned_directors` is the active
     /// guildleve (at most one at a time).
     pub current_guildleve_director: Option<u32>,
+
+    /// Group id of the party this player is in, if any. Matches the C#
+    /// `currentParty` nullable reference.
+    pub current_party_id: Option<u64>,
+    /// Cached roster of the current party (actor ids). Kept in sync by
+    /// the world server on party state changes.
+    pub current_party_members: Vec<u32>,
+    /// Is this player the party leader?
+    pub current_party_is_leader: bool,
+    /// Group id of the content group this player is in (guildleve /
+    /// duty instance), if any.
+    pub current_content_group_id: Option<u64>,
+    /// Linkshell group ids this player has joined (retail cap = 8).
+    pub current_linkshell_ids: Vec<u64>,
 }
 
 impl PlayerHelperState {
@@ -117,6 +131,47 @@ impl PlayerHelperState {
     /// Port of `Player::GetGuildleveDirector()`.
     pub fn guildleve_director(&self) -> Option<u32> {
         self.current_guildleve_director
+    }
+
+    // ----- Group bookkeeping -----------------------------------------------
+
+    /// World server pushed down the authoritative party roster. Updates
+    /// local caches so the next UI refresh / group-sync packet bundle
+    /// reflects reality.
+    pub fn set_party(&mut self, party_id: u64, members: Vec<u32>, is_leader: bool) {
+        self.current_party_id = Some(party_id);
+        self.current_party_members = members;
+        self.current_party_is_leader = is_leader;
+        self.in_party = true;
+        self.party_leader = is_leader;
+    }
+
+    /// Clear party state — player left or the party disbanded.
+    pub fn clear_party(&mut self) {
+        self.current_party_id = None;
+        self.current_party_members.clear();
+        self.current_party_is_leader = false;
+        self.in_party = false;
+        self.party_leader = false;
+    }
+
+    /// Player entered / left a guildleve or duty instance.
+    pub fn set_content_group(&mut self, content_group_id: Option<u64>) {
+        self.current_content_group_id = content_group_id;
+    }
+
+    pub fn add_linkshell(&mut self, ls_id: u64) {
+        if !self.current_linkshell_ids.contains(&ls_id) {
+            self.current_linkshell_ids.push(ls_id);
+        }
+    }
+
+    pub fn remove_linkshell(&mut self, ls_id: u64) {
+        self.current_linkshell_ids.retain(|id| *id != ls_id);
+    }
+
+    pub fn is_in_linkshell(&self, ls_id: u64) -> bool {
+        self.current_linkshell_ids.contains(&ls_id)
     }
 }
 
