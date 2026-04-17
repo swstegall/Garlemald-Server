@@ -108,17 +108,57 @@ pub struct ItemData {
     pub is_soldable: bool,
 }
 
-/// Seamless zone boundary (used by `DataObjects/SeamlessBoundry.cs` for the
-/// WorldManager's neighboring-zone logic).
-#[derive(Debug, Clone)]
+/// Seamless zone boundary. Port of `DataObjects/SeamlessBoundry.cs`. Each
+/// row represents a pair of zones that share a border:
+///
+/// * `zone1_*` — bounding box inside which the player is in `zone_id_1`.
+/// * `zone2_*` — bounding box inside which the player is in `zone_id_2`.
+/// * `merge_*` — the narrow "both zones are visible" strip where the
+///   WorldManager calls `MergeZones` to pull in the adjacent zone's actors.
+#[derive(Debug, Clone, Copy)]
 pub struct SeamlessBoundary {
+    pub id: u32,
+    pub region_id: u32,
+    pub zone_id_1: u32,
+    pub zone_id_2: u32,
+
+    pub zone1_x1: f32,
+    pub zone1_y1: f32,
+    pub zone1_x2: f32,
+    pub zone1_y2: f32,
+
+    pub zone2_x1: f32,
+    pub zone2_y1: f32,
+    pub zone2_x2: f32,
+    pub zone2_y2: f32,
+
+    pub merge_x1: f32,
+    pub merge_y1: f32,
+    pub merge_x2: f32,
+    pub merge_y2: f32,
+}
+
+/// `CheckPosInBounds(x, y, x1, y1, x2, y2)` — matches the C# axis-order-
+/// agnostic bounding-box check (either `x1 < x < x2` or `x1 > x > x2`).
+pub fn check_pos_in_bounds(x: f32, y: f32, x1: f32, y1: f32, x2: f32, y2: f32) -> bool {
+    let x_ok = (x1 < x && x < x2) || (x1 > x && x > x2);
+    let y_ok = (y1 < y && y < y2) || (y1 > y && y > y2);
+    x_ok && y_ok
+}
+
+/// One row in `server_zones_spawnlocations` — a named entry point that
+/// `DoZoneChange(player, zoneEntrance)` warps to.
+#[derive(Debug, Clone)]
+pub struct ZoneEntrance {
+    pub id: u32,
     pub zone_id: u32,
-    pub destination_zone_id: u32,
-    pub destination_spawn_type: u8,
-    pub destination_x: f32,
-    pub destination_y: f32,
-    pub destination_z: f32,
-    pub destination_rot: f32,
+    pub private_area_name: Option<String>,
+    pub private_area_level: i32,
+    pub spawn_type: u8,
+    pub spawn_x: f32,
+    pub spawn_y: f32,
+    pub spawn_z: f32,
+    pub spawn_rotation: f32,
 }
 
 /// Zone-to-zone teleport row (aetheryte destinations, cutscene-driven

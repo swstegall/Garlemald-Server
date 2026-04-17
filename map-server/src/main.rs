@@ -98,5 +98,5 @@ async fn main() -> Result<()> {
         }
     });
 
-    server::run(config, db, world).await
+    server::run(config, db, world, registry).await
 }

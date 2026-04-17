@@ -11,13 +11,44 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use mysql_async::{Pool, Row, prelude::*};
 
-use crate::data::{InventoryItem, ItemData, ItemTag};
+use crate::data::{InventoryItem, ItemData, ItemTag, SeamlessBoundary, ZoneEntrance};
 use crate::gamedata::{
     AppearanceFull, BattleCommand, BattleTrait, CharaBattleSave, CharaParameterSave, ChocoboData,
     EquipmentSlot, GuildleveGamedata, GuildleveLocalEntry, GuildleveRegionalEntry, HotbarEntry,
     ItemDealingInfo, ItemModifiers, LoadedPlayer, NpcLinkshellEntry, QuestScenarioEntry,
     StatusEffectDef, StatusEffectEntry, TIMER_COLUMNS, class_column,
 };
+
+/// One row of `server_zones` — the on-disk record for a zone template.
+#[derive(Debug, Clone, Default)]
+pub struct ZoneRow {
+    pub id: u32,
+    pub zone_name: String,
+    pub region_id: u16,
+    pub class_path: String,
+    pub bgm_day: u16,
+    pub bgm_night: u16,
+    pub bgm_battle: u16,
+    pub is_isolated: bool,
+    pub is_inn: bool,
+    pub can_ride_chocobo: bool,
+    pub can_stealth: bool,
+    pub is_instance_raid: bool,
+    pub load_nav_mesh: bool,
+}
+
+/// One row of `server_zones_privateareas`.
+#[derive(Debug, Clone, Default)]
+pub struct PrivateAreaRow {
+    pub id: u32,
+    pub parent_zone_id: u32,
+    pub private_area_name: String,
+    pub private_area_type: u32,
+    pub class_name: String,
+    pub bgm_day: u16,
+    pub bgm_night: u16,
+    pub bgm_battle: u16,
+}
 
 pub struct Database {
     pool: Pool,
@@ -33,6 +64,127 @@ impl Database {
         let mut conn = self.pool.get_conn().await?;
         "SELECT 1".ignore(&mut conn).await?;
         Ok(())
+    }
+
+    // =======================================================================
+    // Zone / area loaders (called at boot by WorldManager)
+    // =======================================================================
+
+    /// Port of `LoadZoneList`. One row per entry in `server_zones` scoped to
+    /// this map server by `(serverIp, serverPort)`.
+    pub async fn load_zones(&self, server_ip: &str, server_port: u16) -> Result<Vec<ZoneRow>> {
+        let mut conn = self.pool.get_conn().await?;
+        let rows: Vec<Row> = r"SELECT
+            id, zoneName, regionId, classPath,
+            dayMusic, nightMusic, battleMusic,
+            isIsolated, isInn, canRideChocobo, canStealth, isInstanceRaid, loadNavMesh
+          FROM server_zones
+          WHERE zoneName IS NOT NULL AND serverIp = :ip AND serverPort = :port"
+            .with(params! { "ip" => server_ip, "port" => server_port })
+            .fetch(&mut conn)
+            .await?;
+        Ok(rows.into_iter().map(|mut r| ZoneRow {
+            id: r.take("id").unwrap_or_default(),
+            zone_name: r.take("zoneName").unwrap_or_default(),
+            region_id: r.take("regionId").unwrap_or_default(),
+            class_path: r.take("classPath").unwrap_or_default(),
+            bgm_day: r.take("dayMusic").unwrap_or_default(),
+            bgm_night: r.take("nightMusic").unwrap_or_default(),
+            bgm_battle: r.take("battleMusic").unwrap_or_default(),
+            is_isolated: r.take("isIsolated").unwrap_or_default(),
+            is_inn: r.take("isInn").unwrap_or_default(),
+            can_ride_chocobo: r.take("canRideChocobo").unwrap_or_default(),
+            can_stealth: r.take("canStealth").unwrap_or_default(),
+            is_instance_raid: r.take("isInstanceRaid").unwrap_or_default(),
+            load_nav_mesh: r.take("loadNavMesh").unwrap_or_default(),
+        }).collect())
+    }
+
+    /// Port of the `server_zones_privateareas` half of `LoadZoneList`.
+    pub async fn load_private_areas(&self) -> Result<Vec<PrivateAreaRow>> {
+        let mut conn = self.pool.get_conn().await?;
+        let rows: Vec<Row> = r"SELECT
+            id, parentZoneId, privateAreaName, privateAreaType,
+            className, dayMusic, nightMusic, battleMusic
+          FROM server_zones_privateareas
+          WHERE privateAreaName IS NOT NULL"
+            .with(())
+            .fetch(&mut conn)
+            .await?;
+        Ok(rows.into_iter().map(|mut r| PrivateAreaRow {
+            id: r.take("id").unwrap_or_default(),
+            parent_zone_id: r.take("parentZoneId").unwrap_or_default(),
+            private_area_name: r.take("privateAreaName").unwrap_or_default(),
+            private_area_type: r.take("privateAreaType").unwrap_or_default(),
+            class_name: r.take("className").unwrap_or_default(),
+            bgm_day: r.take("dayMusic").unwrap_or_default(),
+            bgm_night: r.take("nightMusic").unwrap_or_default(),
+            bgm_battle: r.take("battleMusic").unwrap_or_default(),
+        }).collect())
+    }
+
+    /// Port of `LoadZoneEntranceList`. Reads `server_zones_spawnlocations`
+    /// which doubles as the zone-entrance registry in retail.
+    pub async fn load_zone_entrances(&self) -> Result<HashMap<u32, ZoneEntrance>> {
+        let mut conn = self.pool.get_conn().await?;
+        let rows: Vec<Row> = r"SELECT
+            id, zoneId, spawnType, spawnX, spawnY, spawnZ, spawnRotation,
+            privateAreaName
+          FROM server_zones_spawnlocations"
+            .with(())
+            .fetch(&mut conn)
+            .await?;
+        let mut out = HashMap::with_capacity(rows.len());
+        for mut r in rows {
+            let id: u32 = r.take("id").unwrap_or_default();
+            let entrance = ZoneEntrance {
+                id,
+                zone_id: r.take("zoneId").unwrap_or_default(),
+                spawn_type: r.take("spawnType").unwrap_or_default(),
+                spawn_x: r.take("spawnX").unwrap_or_default(),
+                spawn_y: r.take("spawnY").unwrap_or_default(),
+                spawn_z: r.take("spawnZ").unwrap_or_default(),
+                spawn_rotation: r.take("spawnRotation").unwrap_or_default(),
+                private_area_name: r.take("privateAreaName"),
+                private_area_level: 1,
+            };
+            out.insert(id, entrance);
+        }
+        Ok(out)
+    }
+
+    /// Port of `LoadSeamlessBoundryList`. Keyed by region id so
+    /// `SeamlessCheck` only iterates the boundaries in the player's region.
+    pub async fn load_seamless_boundaries(&self) -> Result<HashMap<u32, Vec<SeamlessBoundary>>> {
+        let mut conn = self.pool.get_conn().await?;
+        let rows: Vec<Row> = r"SELECT * FROM server_seamless_zonechange_bounds"
+            .with(())
+            .fetch(&mut conn)
+            .await?;
+        let mut out: HashMap<u32, Vec<SeamlessBoundary>> = HashMap::new();
+        for mut r in rows {
+            let region_id: u32 = r.take("regionId").unwrap_or_default();
+            let b = SeamlessBoundary {
+                id: r.take("id").unwrap_or_default(),
+                region_id,
+                zone_id_1: r.take("zoneId1").unwrap_or_default(),
+                zone_id_2: r.take("zoneId2").unwrap_or_default(),
+                zone1_x1: r.take("zone1_boundingbox_x1").unwrap_or_default(),
+                zone1_y1: r.take("zone1_boundingbox_y1").unwrap_or_default(),
+                zone1_x2: r.take("zone1_boundingbox_x2").unwrap_or_default(),
+                zone1_y2: r.take("zone1_boundingbox_y2").unwrap_or_default(),
+                zone2_x1: r.take("zone2_boundingbox_x1").unwrap_or_default(),
+                zone2_y1: r.take("zone2_boundingbox_y1").unwrap_or_default(),
+                zone2_x2: r.take("zone2_boundingbox_x2").unwrap_or_default(),
+                zone2_y2: r.take("zone2_boundingbox_y2").unwrap_or_default(),
+                merge_x1: r.take("merge_boundingbox_x1").unwrap_or_default(),
+                merge_y1: r.take("merge_boundingbox_y1").unwrap_or_default(),
+                merge_x2: r.take("merge_boundingbox_x2").unwrap_or_default(),
+                merge_y2: r.take("merge_boundingbox_y2").unwrap_or_default(),
+            };
+            out.entry(region_id).or_default().push(b);
+        }
+        Ok(out)
     }
 
     // =======================================================================

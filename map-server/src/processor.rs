@@ -5,20 +5,25 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use common::BasePacket;
+use common::{BasePacket, Vector3};
 use common::subpacket::{SUBPACKET_TYPE_GAMEMESSAGE, SubPacket};
 
-use crate::data::ClientHandle;
+use crate::actor::Character;
+use crate::data::{ClientHandle, Session};
 use crate::database::Database;
 use crate::packets::opcodes::{
-    OP_HANDSHAKE_RESPONSE, OP_PONG, OP_PONG_RESPONSE, OP_SESSION_BEGIN, OP_SESSION_END,
+    OP_HANDSHAKE_RESPONSE, OP_PONG, OP_PONG_RESPONSE, OP_RX_UPDATE_PLAYER_POSITION,
+    OP_SESSION_BEGIN, OP_SESSION_END,
 };
+use crate::packets::receive::UpdatePlayerPositionPacket;
 use crate::packets::send as tx;
+use crate::runtime::actor_registry::{ActorHandle, ActorKindTag, ActorRegistry};
 use crate::world_manager::WorldManager;
 
 pub struct PacketProcessor {
     pub db: Arc<Database>,
     pub world: Arc<WorldManager>,
+    pub registry: Arc<ActorRegistry>,
 }
 
 impl PacketProcessor {
@@ -66,19 +71,89 @@ impl PacketProcessor {
         let session_id = sub.header.source_id;
         tracing::info!(session = session_id, "session begin");
 
-        // Phase 5: pull the full aggregated LoadedPlayer (appearance +
-        // inventory + quests + hotbar + …) so the next spawn-stage patch
-        // has everything in hand.
-        if let Ok(Some(row)) = self.db.load_player_character(session_id).await {
-            tracing::info!(
-                name = %row.name,
-                zone = row.current_zone_id,
-                inventory = row.inventory_normal.len(),
-                "loaded character",
-            );
+        // 1. Pull the persisted character from the DB.
+        let loaded = match self.db.load_player_character(session_id).await {
+            Ok(Some(row)) => row,
+            Ok(None) => {
+                tracing::warn!(session = session_id, "no character row for session");
+                let reply = tx::build_session_begin(session_id, 0);
+                client.send_bytes(reply.to_bytes()).await;
+                return Ok(());
+            }
+            Err(e) => {
+                tracing::error!(error = %e, session = session_id, "DB load failed");
+                let reply = tx::build_session_begin(session_id, 0);
+                client.send_bytes(reply.to_bytes()).await;
+                return Ok(());
+            }
+        };
+
+        // `chara_id` == session id in this server's lobby flow.
+        let actor_id = session_id;
+        let zone_id = loaded.current_zone_id;
+        let spawn = Vector3::new(loaded.position_x, loaded.position_y, loaded.position_z);
+        let rotation = loaded.rotation;
+        let class_slot = loaded.parameter_save.state_main_skill[0] as usize;
+        let class_slot_safe = class_slot.min(3);
+        let hp = loaded.parameter_save.hp[class_slot_safe];
+        let hp_max = loaded.parameter_save.hp_max[class_slot_safe];
+        let mp = loaded.parameter_save.mp;
+        let mp_max = loaded.parameter_save.mp_max;
+
+        tracing::info!(
+            name = %loaded.name,
+            zone = zone_id,
+            inventory = loaded.inventory_normal.len(),
+            "loaded character",
+        );
+
+        // 2. Register the ClientHandle + a Session entry so the game
+        //    ticker and packet dispatchers can find the socket.
+        self.world
+            .register_client(session_id, client.clone())
+            .await;
+        let mut session = Session::new(session_id);
+        session.current_zone_id = zone_id;
+        session.destination_x = spawn.x;
+        session.destination_y = spawn.y;
+        session.destination_z = spawn.z;
+        session.destination_rot = rotation;
+        self.world.upsert_session(session).await;
+
+        // 3. Build a Character from the loaded row and register it.
+        let mut character = Character::new(actor_id);
+        character.base.actor_name = loaded.name.clone();
+        character.base.position_x = spawn.x;
+        character.base.position_y = spawn.y;
+        character.base.position_z = spawn.z;
+        character.base.rotation = rotation;
+        character.chara.class = class_slot as i16;
+        character.chara.hp = hp;
+        character.chara.max_hp = hp_max;
+        character.chara.mp = mp;
+        character.chara.max_mp = mp_max;
+
+        self.registry
+            .insert(ActorHandle::new(
+                actor_id,
+                ActorKindTag::Player,
+                zone_id,
+                session_id,
+                character,
+            ))
+            .await;
+
+        // 4. Fire the zone-change that places the player in their zone.
+        if let Err(e) = self
+            .world
+            .do_zone_change(actor_id, session_id, zone_id, spawn, rotation)
+            .await
+        {
+            tracing::error!(error = %e, actor = actor_id, "zone change failed");
         }
 
-        let reply = tx::build_session_begin(session_id, 1); // 1 == success per C#
+        // 5. Ack the session begin.
+        let reply = tx::build_session_begin(session_id, 1);
         client.send_bytes(reply.to_bytes()).await;
         Ok(())
     }
@@ -86,6 +161,7 @@ impl PacketProcessor {
     async fn handle_session_end(&self, client: &ClientHandle, sub: &SubPacket) -> Result<()> {
         let session_id = sub.header.source_id;
         tracing::info!(session = session_id, "session end");
+        self.registry.remove_session(session_id).await;
         self.world.remove_session(session_id).await;
         let reply = tx::build_session_end(session_id, 1, 0);
         client.send_bytes(reply.to_bytes()).await;
@@ -93,14 +169,54 @@ impl PacketProcessor {
     }
 
     async fn handle_game_message(&self, _client: &ClientHandle, sub: &SubPacket) -> Result<()> {
-        // Opcode lives in sub.game_message.opcode; concrete dispatch is
-        // wired per-opcode. Phase 4 logs and no-ops so the zone keeps
-        // flowing — Phase 5+ will add movement / inventory / combat handlers.
-        tracing::debug!(
-            opcode = format!("0x{:X}", sub.game_message.opcode),
-            source = sub.header.source_id,
-            "game message",
-        );
+        let opcode = sub.game_message.opcode;
+        let source = sub.header.source_id;
+
+        match opcode {
+            OP_RX_UPDATE_PLAYER_POSITION => self.handle_update_position(source, &sub.data).await?,
+            _ => {
+                tracing::debug!(
+                    opcode = format!("0x{:X}", opcode),
+                    source = source,
+                    "unhandled game message",
+                );
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_update_position(&self, session_id: u32, data: &[u8]) -> Result<()> {
+        let pkt = match UpdatePlayerPositionPacket::parse(data) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(error = %e, session = session_id, "bad UpdatePlayerPosition");
+                return Ok(());
+            }
+        };
+        // Resolve the actor for this session.
+        let Some(handle) = self.registry.by_session(session_id).await else {
+            return Ok(());
+        };
+        let actor_id = handle.actor_id;
+
+        // 1. Update Character position.
+        {
+            let mut c = handle.character.write().await;
+            c.base.set_position(Vector3::new(pkt.x, pkt.y, pkt.z), pkt.rot);
+            c.base.move_state = pkt.move_state;
+        }
+
+        // 2. Update the zone's spatial grid.
+        self.world
+            .update_actor_position(actor_id, session_id, Vector3::new(pkt.x, pkt.y, pkt.z))
+            .await;
+
+        // 3. Seamless-boundary check — may trigger a zone change or
+        //    a zone merge behind the scenes.
+        let _ = self
+            .world
+            .seamless_check(actor_id, session_id, Vector3::new(pkt.x, pkt.y, pkt.z))
+            .await;
         Ok(())
     }
 }

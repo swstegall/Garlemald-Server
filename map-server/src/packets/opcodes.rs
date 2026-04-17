@@ -31,7 +31,13 @@ pub const OP_WORLD_ZONE_CHANGE_REQUEST: u16 = 0x1002;
 // ---------------------------------------------------------------------------
 // Actor lifecycle (game-message opcode in the gamemessage header).
 // ---------------------------------------------------------------------------
+/// Inbound opcode for `UpdatePlayerPositionPacket` — shares its wire id
+/// with the outbound `OP_ADD_ACTOR` (direction disambiguates).
+pub const OP_RX_UPDATE_PLAYER_POSITION: u16 = 0x00CA;
 pub const OP_ADD_ACTOR: u16 = 0x00CA;
+pub const OP_RX_SET_TARGET: u16 = 0x00CD;
+pub const OP_RX_LOCK_TARGET: u16 = 0x00CC;
+pub const OP_RX_ZONE_IN_COMPLETE: u16 = 0x0007;
 pub const OP_REMOVE_ACTOR: u16 = 0x00CB;
 pub const OP_ACTOR_INSTANTIATE: u16 = 0x00CC;
 pub const OP_SET_ACTOR_POSITION: u16 = 0x00CE;

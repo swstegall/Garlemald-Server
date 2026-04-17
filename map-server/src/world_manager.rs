@@ -1,32 +1,68 @@
-//! Zone + session registry. Phase 1 trims the placeholder down and swaps it
-//! onto the real `zone::Zone` so the game loop can drive it each tick.
+//! Zone + session registry and transition orchestrator. Port of the
+//! `WorldManager.cs` surface that deals with zones + boundaries +
+//! session handoff. Heavy sub-systems (Director, Group, Party) live in
+//! their own modules.
 //!
-//! Character state (Players, Npcs, BattleNpcs) no longer lives on
-//! `WorldManager` — it moves to `ActorRegistry` (`crate::runtime::actor_registry`).
-//! The WorldManager now owns only:
+//! Character state (Players, Npcs, BattleNpcs) lives in
+//! `runtime::actor_registry::ActorRegistry`. WorldManager only owns:
 //!
-//! * The zone table — canonical `zone::Zone` instances keyed by zone id.
-//! * The session table — `ClientHandle`s keyed by session id.
+//! * `zones` — canonical `zone::Zone` instances keyed by zone id.
+//! * `zone_entrances` — named warp points keyed by entrance id.
+//! * `seamless_boundaries` — per-region boundary boxes for seamless
+//!   zone transitions.
+//! * `sessions` / `clients` — per-socket state.
 //!
-//! Both are `RwLock<HashMap<_,_>>` so independent zones / sessions don't
-//! contend during PvE ticks.
+//! All `RwLock<HashMap>` so independent zones / sessions don't contend.
 #![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use anyhow::Result;
 use tokio::sync::RwLock;
 
-use crate::data::{ClientHandle, Session};
-use crate::zone::Zone;
+use common::Vector3;
+
+use crate::data::{check_pos_in_bounds, ClientHandle, SeamlessBoundary, Session, ZoneEntrance};
+use crate::database::{Database, PrivateAreaRow, ZoneRow};
+use crate::zone::navmesh::StubNavmeshLoader;
+use crate::zone::private_area::PrivateArea;
+use crate::zone::zone::Zone;
+
+/// Outcome of a single `seamless_check` call. Describes what, if anything,
+/// the player's position change triggered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeamlessResult {
+    /// Inside the main zone-1 box, not near a boundary — nothing to do.
+    InsideZoneOne,
+    /// Inside the main zone-2 box, not near a boundary — nothing to do.
+    InsideZoneTwo,
+    /// The player crossed into a zone they weren't tracked in — we fired
+    /// a seamless zone change. The `u32` is the new primary zone id.
+    ZoneChanged(u32),
+    /// Player entered the merge strip; a secondary zone was merged in.
+    /// The `u32` is the merged (secondary) zone id.
+    ZoneMerged(u32),
+    /// Position isn't inside any boundary — fully inside a single zone.
+    None,
+}
 
 /// Top-level zone + session registry.
 pub struct WorldManager {
     zones: RwLock<HashMap<u32, Arc<RwLock<Zone>>>>,
-    /// Sessions keyed by session id (from the packet source id).
+
+    /// Named entrance points (`server_zones_spawnlocations`) keyed by id.
+    zone_entrances: RwLock<HashMap<u32, ZoneEntrance>>,
+
+    /// Seamless boundary boxes keyed by region id.
+    seamless_boundaries: RwLock<HashMap<u32, Vec<SeamlessBoundary>>>,
+
+    /// Player state indexed by session id — zone membership, player
+    /// position snapshot, etc. Updated by movement handlers.
     sessions: RwLock<HashMap<u32, Session>>,
-    /// Live socket handles keyed by session id. Used by packet dispatchers
-    /// to fan outbound SubPackets to the right clients.
+
+    /// Live socket handles. Used by packet dispatchers to fan outbound
+    /// SubPackets to the right clients.
     clients: RwLock<HashMap<u32, ClientHandle>>,
 }
 
@@ -34,13 +70,110 @@ impl WorldManager {
     pub fn new() -> Self {
         Self {
             zones: RwLock::new(HashMap::new()),
+            zone_entrances: RwLock::new(HashMap::new()),
+            seamless_boundaries: RwLock::new(HashMap::new()),
             sessions: RwLock::new(HashMap::new()),
             clients: RwLock::new(HashMap::new()),
         }
     }
 
     // -----------------------------------------------------------------
-    // Zones
+    // Boot-time loaders — pull from DB, populate in-memory registries.
+    // -----------------------------------------------------------------
+
+    /// Full boot-time zone load — port of
+    /// `WorldManager.LoadZoneList + LoadZoneEntranceList + LoadSeamlessBoundryList`.
+    pub async fn load_from_database(
+        &self,
+        db: &Database,
+        server_ip: &str,
+        server_port: u16,
+    ) -> Result<()> {
+        // 1. Zones
+        let zone_rows = db.load_zones(server_ip, server_port).await?;
+        for row in zone_rows {
+            self.install_zone(row).await;
+        }
+        // 2. Private areas — attach to already-loaded zones.
+        let private_area_rows = db.load_private_areas().await?;
+        for row in private_area_rows {
+            self.install_private_area(row).await;
+        }
+        // 3. Zone entrances.
+        let entrances = db.load_zone_entrances().await?;
+        *self.zone_entrances.write().await = entrances;
+        // 4. Seamless boundaries.
+        let seamless = db.load_seamless_boundaries().await?;
+        *self.seamless_boundaries.write().await = seamless;
+        Ok(())
+    }
+
+    async fn install_zone(&self, row: ZoneRow) {
+        let navmesh_loader = if row.load_nav_mesh {
+            Some(&StubNavmeshLoader as &dyn crate::zone::navmesh::NavmeshLoader)
+        } else {
+            None
+        };
+        let zone = Zone::new(
+            row.id,
+            row.zone_name,
+            row.region_id,
+            row.class_path,
+            row.bgm_day,
+            row.bgm_night,
+            row.bgm_battle,
+            row.is_isolated,
+            row.is_inn,
+            row.can_ride_chocobo,
+            row.can_stealth,
+            row.is_instance_raid,
+            navmesh_loader,
+        );
+        self.register_zone(zone).await;
+    }
+
+    async fn install_private_area(&self, row: PrivateAreaRow) {
+        let Some(parent_arc) = self.zone(row.parent_zone_id).await else {
+            tracing::warn!(
+                parent = row.parent_zone_id,
+                name = %row.private_area_name,
+                "private area references missing parent zone"
+            );
+            return;
+        };
+        let (zone_name, region_id, is_isolated, is_inn, can_ride_chocobo, can_stealth) = {
+            let parent = parent_arc.read().await;
+            (
+                parent.core.zone_name.clone(),
+                parent.core.region_id,
+                parent.core.is_isolated,
+                parent.core.is_inn,
+                parent.core.can_ride_chocobo,
+                parent.core.can_stealth,
+            )
+        };
+        let pa = PrivateArea::new(
+            row.parent_zone_id,
+            zone_name,
+            region_id,
+            row.id,
+            row.class_name,
+            row.private_area_name,
+            row.private_area_type,
+            row.bgm_day,
+            row.bgm_night,
+            row.bgm_battle,
+            is_isolated,
+            is_inn,
+            can_ride_chocobo,
+            can_stealth,
+        );
+        let mut parent = parent_arc.write().await;
+        parent.add_private_area(pa);
+    }
+
+    // -----------------------------------------------------------------
+    // Zone registry
     // -----------------------------------------------------------------
 
     /// Register (or replace) a zone. Called once per zone during startup.
@@ -53,8 +186,7 @@ impl WorldManager {
         self.zones.read().await.get(&zone_id).cloned()
     }
 
-    /// Snapshot of all zone ids — used by the game ticker to drive each
-    /// zone's `update()` without holding a global lock.
+    /// Snapshot of all zone ids — used by the game ticker.
     pub async fn zone_ids(&self) -> Vec<u32> {
         self.zones.read().await.keys().copied().collect()
     }
@@ -64,7 +196,26 @@ impl WorldManager {
     }
 
     // -----------------------------------------------------------------
-    // Sessions
+    // Zone entrances + seamless boundaries
+    // -----------------------------------------------------------------
+
+    pub async fn zone_entrance(&self, id: u32) -> Option<ZoneEntrance> {
+        self.zone_entrances.read().await.get(&id).cloned()
+    }
+
+    /// Returns every boundary for `region_id`. Empty if the region has
+    /// none.
+    pub async fn seamless_boundaries_for(&self, region_id: u32) -> Vec<SeamlessBoundary> {
+        self.seamless_boundaries
+            .read()
+            .await
+            .get(&region_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    // -----------------------------------------------------------------
+    // Session + client registries
     // -----------------------------------------------------------------
 
     pub async fn upsert_session(&self, session: Session) {
@@ -80,10 +231,6 @@ impl WorldManager {
         self.sessions.write().await.remove(&id)
     }
 
-    // -----------------------------------------------------------------
-    // Client handles (outbound-packet channels)
-    // -----------------------------------------------------------------
-
     pub async fn register_client(&self, id: u32, handle: ClientHandle) {
         self.clients.write().await.insert(id, handle);
     }
@@ -95,10 +242,392 @@ impl WorldManager {
     pub async fn all_clients(&self) -> Vec<ClientHandle> {
         self.clients.read().await.values().cloned().collect()
     }
+
+    // -----------------------------------------------------------------
+    // Zone-change orchestration — port of WorldManager.DoZoneChange /
+    // DoSeamlessZoneChange / MergeZones / SeamlessCheck.
+    // -----------------------------------------------------------------
+
+    /// Whole-cloth zone transition — removes the player from their old
+    /// zone (if any), places them in the new one, updates their session
+    /// state. The packet emission (`DeleteAllActors`, zone-in bundle)
+    /// is handled by the session dispatcher that subscribes to this;
+    /// we return `Ok` once registries have settled.
+    pub async fn do_zone_change(
+        &self,
+        actor_id: u32,
+        session_id: u32,
+        destination_zone_id: u32,
+        spawn: Vector3,
+        rotation: f32,
+    ) -> Result<()> {
+        // 1. Look up the destination zone.
+        let Some(dest_zone) = self.zone(destination_zone_id).await else {
+            tracing::warn!(
+                zone = destination_zone_id,
+                "do_zone_change: destination not on this map server"
+            );
+            return Ok(());
+        };
+
+        // 2. Lock the session for updates + update its zone/dest fields.
+        {
+            let mut sessions = self.sessions.write().await;
+            let session = sessions.entry(session_id).or_insert_with(|| Session::new(session_id));
+            session.is_updates_locked = true;
+            let old_zone_id = session.current_zone_id;
+            session.current_zone_id = destination_zone_id;
+            session.destination_zone_id = destination_zone_id;
+            session.destination_x = spawn.x;
+            session.destination_y = spawn.y;
+            session.destination_z = spawn.z;
+            session.destination_rot = rotation;
+
+            // 3. Detach from old zone's spatial grid if different.
+            if old_zone_id != 0 && old_zone_id != destination_zone_id
+                && let Some(old_zone) = self.zones.read().await.get(&old_zone_id).cloned()
+            {
+                let mut old = old_zone.write().await;
+                let mut ob = crate::zone::outbox::AreaOutbox::new();
+                old.core.remove_actor(actor_id, &mut ob);
+            }
+
+            // 4. Attach to new zone.
+            let mut dest = dest_zone.write().await;
+            let mut ob = crate::zone::outbox::AreaOutbox::new();
+            dest.core.add_actor(
+                crate::zone::area::StoredActor {
+                    actor_id,
+                    kind: crate::zone::area::ActorKind::Player,
+                    position: spawn,
+                    grid: (0, 0),
+                    is_alive: true,
+                },
+                &mut ob,
+            );
+
+            // Unlock updates.
+            session.is_updates_locked = false;
+        }
+        Ok(())
+    }
+
+    /// Lightweight port of `DoSeamlessZoneChange`. Used when the player
+    /// crosses a seamless boundary into an adjacent zone — the client
+    /// doesn't see a full zone-in cutscene; we just move their projection.
+    pub async fn do_seamless_zone_change(
+        &self,
+        actor_id: u32,
+        session_id: u32,
+        destination_zone_id: u32,
+        position: Vector3,
+    ) -> Result<()> {
+        let Some(_dest_zone) = self.zone(destination_zone_id).await else {
+            return Ok(());
+        };
+
+        // Pop the actor projection out of whatever zone held it, add it
+        // to the new one, clear any merged-secondary-zone reference.
+        let old_zone_id = {
+            let sessions = self.sessions.read().await;
+            sessions.get(&session_id).map(|s| s.current_zone_id).unwrap_or(0)
+        };
+        if let Some(old) = self.zone(old_zone_id).await {
+            let mut ob = crate::zone::outbox::AreaOutbox::new();
+            old.write().await.core.remove_actor(actor_id, &mut ob);
+        }
+        if let Some(dest) = self.zone(destination_zone_id).await {
+            let mut ob = crate::zone::outbox::AreaOutbox::new();
+            dest.write().await.core.add_actor(
+                crate::zone::area::StoredActor {
+                    actor_id,
+                    kind: crate::zone::area::ActorKind::Player,
+                    position,
+                    grid: (0, 0),
+                    is_alive: true,
+                },
+                &mut ob,
+            );
+        }
+
+        // Update session bookkeeping.
+        let mut sessions = self.sessions.write().await;
+        if let Some(session) = sessions.get_mut(&session_id) {
+            session.current_zone_id = destination_zone_id;
+        }
+        Ok(())
+    }
+
+    /// Lightweight port of `MergeZones`. Pulls actors from `mergedZoneId`
+    /// into the player's view (logically — the session carries `zoneId2`
+    /// so range queries expand to include the secondary zone). No
+    /// primary-zone change happens.
+    pub async fn merge_zones(
+        &self,
+        actor_id: u32,
+        _session_id: u32,
+        merged_zone_id: u32,
+        position: Vector3,
+    ) -> Result<()> {
+        let Some(merged) = self.zone(merged_zone_id).await else {
+            return Ok(());
+        };
+        // Add a projection of the player into the merged zone too. The
+        // game loop then broadcasts to the merged zone's grid as well.
+        let mut ob = crate::zone::outbox::AreaOutbox::new();
+        merged.write().await.core.add_actor(
+            crate::zone::area::StoredActor {
+                actor_id,
+                kind: crate::zone::area::ActorKind::Player,
+                position,
+                grid: (0, 0),
+                is_alive: true,
+            },
+            &mut ob,
+        );
+        Ok(())
+    }
+
+    /// `SeamlessCheck(player)` port. Drives all three possible outcomes:
+    ///
+    /// * Inside zone-1 box but primary zone isn't zone 1 → fire
+    ///   `do_seamless_zone_change` to zone 1.
+    /// * Inside zone-2 box but primary zone isn't zone 2 → fire to zone 2.
+    /// * Inside the merge strip → fire `merge_zones` with whichever zone
+    ///   isn't already primary.
+    pub async fn seamless_check(
+        &self,
+        actor_id: u32,
+        session_id: u32,
+        position: Vector3,
+    ) -> SeamlessResult {
+        // Which region is this player in?
+        let (region_id, current_zone_id) = match self.session(session_id).await {
+            Some(s) => {
+                let zone = self.zone(s.current_zone_id).await;
+                let region = match zone {
+                    Some(z) => z.read().await.core.region_id as u32,
+                    None => return SeamlessResult::None,
+                };
+                (region, s.current_zone_id)
+            }
+            None => return SeamlessResult::None,
+        };
+
+        let bounds = self.seamless_boundaries_for(region_id).await;
+        for b in &bounds {
+            if check_pos_in_bounds(position.x, position.z, b.zone1_x1, b.zone1_y1, b.zone1_x2, b.zone1_y2) {
+                if current_zone_id == b.zone_id_1 {
+                    return SeamlessResult::InsideZoneOne;
+                }
+                let _ = self
+                    .do_seamless_zone_change(actor_id, session_id, b.zone_id_1, position)
+                    .await;
+                return SeamlessResult::ZoneChanged(b.zone_id_1);
+            }
+            if check_pos_in_bounds(position.x, position.z, b.zone2_x1, b.zone2_y1, b.zone2_x2, b.zone2_y2) {
+                if current_zone_id == b.zone_id_2 {
+                    return SeamlessResult::InsideZoneTwo;
+                }
+                let _ = self
+                    .do_seamless_zone_change(actor_id, session_id, b.zone_id_2, position)
+                    .await;
+                return SeamlessResult::ZoneChanged(b.zone_id_2);
+            }
+            if check_pos_in_bounds(position.x, position.z, b.merge_x1, b.merge_y1, b.merge_x2, b.merge_y2) {
+                let merged = if current_zone_id == b.zone_id_1 {
+                    b.zone_id_2
+                } else {
+                    b.zone_id_1
+                };
+                let _ = self
+                    .merge_zones(actor_id, session_id, merged, position)
+                    .await;
+                return SeamlessResult::ZoneMerged(merged);
+            }
+        }
+        SeamlessResult::None
+    }
+
+    /// Move an actor *within* its current zone — updates the spatial
+    /// grid so broadcast fan-out stays accurate. Called from the
+    /// packet-processor's `UpdatePlayerPosition` handler.
+    pub async fn update_actor_position(
+        &self,
+        actor_id: u32,
+        session_id: u32,
+        new_position: Vector3,
+    ) {
+        let zone_id = match self.session(session_id).await {
+            Some(s) => s.current_zone_id,
+            None => return,
+        };
+        let Some(zone_arc) = self.zone(zone_id).await else {
+            return;
+        };
+        let mut zone = zone_arc.write().await;
+        let mut ob = crate::zone::outbox::AreaOutbox::new();
+        zone.core.update_actor_position(actor_id, new_position, &mut ob);
+    }
 }
 
 impl Default for WorldManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::zone::navmesh::StubNavmeshLoader;
+
+    fn mk_zone(id: u32, name: &str, region: u16) -> Zone {
+        Zone::new(
+            id, name, region, "/Area/Zone/Test", 0, 0, 0, false, false, false, false, false,
+            Some(&StubNavmeshLoader),
+        )
+    }
+
+    #[tokio::test]
+    async fn seamless_check_zone_1_no_change_when_already_primary() {
+        let wm = WorldManager::new();
+        wm.register_zone(mk_zone(1, "east_thanalan", 103)).await;
+        wm.register_zone(mk_zone(2, "central_thanalan", 103)).await;
+
+        // Install a session that's already primary to zone 1.
+        let mut s = Session::new(42);
+        s.current_zone_id = 1;
+        wm.upsert_session(s).await;
+
+        // Install a boundary that wraps (−10..10, −10..10) around origin for
+        // zone 1; zone 2 box is elsewhere; merge box is a tiny strip.
+        let boundary = SeamlessBoundary {
+            id: 1,
+            region_id: 103,
+            zone_id_1: 1,
+            zone_id_2: 2,
+            zone1_x1: -10.0, zone1_y1: -10.0, zone1_x2: 10.0, zone1_y2: 10.0,
+            zone2_x1: 100.0, zone2_y1: 100.0, zone2_x2: 110.0, zone2_y2: 110.0,
+            merge_x1: 20.0, merge_y1: 20.0, merge_x2: 30.0, merge_y2: 30.0,
+        };
+        wm.seamless_boundaries
+            .write()
+            .await
+            .entry(103)
+            .or_default()
+            .push(boundary);
+
+        let result = wm
+            .seamless_check(100, 42, Vector3::new(0.0, 0.0, 0.0))
+            .await;
+        assert_eq!(result, SeamlessResult::InsideZoneOne);
+    }
+
+    #[tokio::test]
+    async fn seamless_check_fires_zone_change_when_entering_zone_2_box() {
+        let wm = WorldManager::new();
+        wm.register_zone(mk_zone(1, "east", 103)).await;
+        wm.register_zone(mk_zone(2, "central", 103)).await;
+
+        let mut s = Session::new(42);
+        s.current_zone_id = 1;
+        wm.upsert_session(s).await;
+
+        let boundary = SeamlessBoundary {
+            id: 1,
+            region_id: 103,
+            zone_id_1: 1,
+            zone_id_2: 2,
+            zone1_x1: -10.0, zone1_y1: -10.0, zone1_x2: 10.0, zone1_y2: 10.0,
+            zone2_x1: 100.0, zone2_y1: 100.0, zone2_x2: 110.0, zone2_y2: 110.0,
+            merge_x1: 20.0, merge_y1: 20.0, merge_x2: 30.0, merge_y2: 30.0,
+        };
+        wm.seamless_boundaries
+            .write()
+            .await
+            .entry(103)
+            .or_default()
+            .push(boundary);
+
+        let result = wm
+            .seamless_check(100, 42, Vector3::new(105.0, 0.0, 105.0))
+            .await;
+        assert_eq!(result, SeamlessResult::ZoneChanged(2));
+        // And the session now reflects the new primary zone.
+        let updated = wm.session(42).await.unwrap();
+        assert_eq!(updated.current_zone_id, 2);
+    }
+
+    #[tokio::test]
+    async fn seamless_check_merges_in_merge_strip() {
+        let wm = WorldManager::new();
+        wm.register_zone(mk_zone(1, "east", 103)).await;
+        wm.register_zone(mk_zone(2, "central", 103)).await;
+
+        let mut s = Session::new(42);
+        s.current_zone_id = 1;
+        wm.upsert_session(s).await;
+
+        let boundary = SeamlessBoundary {
+            id: 1,
+            region_id: 103,
+            zone_id_1: 1,
+            zone_id_2: 2,
+            zone1_x1: -10.0, zone1_y1: -10.0, zone1_x2: 10.0, zone1_y2: 10.0,
+            zone2_x1: 100.0, zone2_y1: 100.0, zone2_x2: 110.0, zone2_y2: 110.0,
+            merge_x1: 20.0, merge_y1: 20.0, merge_x2: 30.0, merge_y2: 30.0,
+        };
+        wm.seamless_boundaries
+            .write()
+            .await
+            .entry(103)
+            .or_default()
+            .push(boundary);
+
+        let result = wm
+            .seamless_check(100, 42, Vector3::new(25.0, 0.0, 25.0))
+            .await;
+        assert_eq!(result, SeamlessResult::ZoneMerged(2));
+        // Session's primary zone is unchanged; the secondary is merged.
+        assert_eq!(wm.session(42).await.unwrap().current_zone_id, 1);
+    }
+
+    #[tokio::test]
+    async fn do_zone_change_moves_actor_between_zones() {
+        let wm = WorldManager::new();
+        wm.register_zone(mk_zone(1, "east", 103)).await;
+        wm.register_zone(mk_zone(2, "central", 103)).await;
+        let mut s = Session::new(42);
+        s.current_zone_id = 1;
+        wm.upsert_session(s).await;
+
+        // Pre-populate zone 1 with the player projection.
+        {
+            let z = wm.zone(1).await.unwrap();
+            let mut z = z.write().await;
+            let mut ob = crate::zone::outbox::AreaOutbox::new();
+            z.core.add_actor(
+                crate::zone::area::StoredActor {
+                    actor_id: 100,
+                    kind: crate::zone::area::ActorKind::Player,
+                    position: Vector3::ZERO,
+                    grid: (0, 0),
+                    is_alive: true,
+                },
+                &mut ob,
+            );
+        }
+
+        wm.do_zone_change(100, 42, 2, Vector3::new(50.0, 0.0, 50.0), 0.0)
+            .await
+            .unwrap();
+
+        assert!(!wm.zone(1).await.unwrap().read().await.core.contains(100));
+        assert!(wm.zone(2).await.unwrap().read().await.core.contains(100));
     }
 }

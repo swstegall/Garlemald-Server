@@ -13,6 +13,7 @@ use crate::config::Config;
 use crate::data::ClientHandle;
 use crate::database::Database;
 use crate::processor::PacketProcessor;
+use crate::runtime::ActorRegistry;
 use crate::world_manager::WorldManager;
 
 const BUFFER_SIZE: usize = 0xFFFF;
@@ -22,12 +23,13 @@ pub async fn run(
     config: Config,
     db: Arc<Database>,
     world: Arc<WorldManager>,
+    registry: Arc<ActorRegistry>,
 ) -> Result<()> {
     let addr = format!("{}:{}", config.bind_ip, config.port);
     let listener = TcpListener::bind(&addr).await.with_context(|| format!("bind {addr}"))?;
     tracing::info!(%addr, "map server listening");
 
-    let processor = Arc::new(PacketProcessor { db, world });
+    let processor = Arc::new(PacketProcessor { db, world, registry });
 
     loop {
         let (socket, peer) = match listener.accept().await {
