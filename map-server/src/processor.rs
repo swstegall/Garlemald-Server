@@ -11,11 +11,13 @@ use common::subpacket::{SUBPACKET_TYPE_GAMEMESSAGE, SubPacket};
 use crate::actor::Character;
 use crate::data::{ClientHandle, Session};
 use crate::database::Database;
+use crate::event::EventOutbox;
+use crate::event::dispatcher::dispatch_event_event;
 use crate::packets::opcodes::{
-    OP_HANDSHAKE_RESPONSE, OP_PONG, OP_PONG_RESPONSE, OP_RX_UPDATE_PLAYER_POSITION,
-    OP_SESSION_BEGIN, OP_SESSION_END,
+    OP_HANDSHAKE_RESPONSE, OP_PONG, OP_PONG_RESPONSE, OP_RX_EVENT_START, OP_RX_EVENT_UPDATE,
+    OP_RX_UPDATE_PLAYER_POSITION, OP_SESSION_BEGIN, OP_SESSION_END,
 };
-use crate::packets::receive::UpdatePlayerPositionPacket;
+use crate::packets::receive::{EventStartPacket, EventUpdatePacket, UpdatePlayerPositionPacket};
 use crate::packets::send as tx;
 use crate::runtime::actor_registry::{ActorHandle, ActorKindTag, ActorRegistry};
 use crate::world_manager::WorldManager;
@@ -174,6 +176,8 @@ impl PacketProcessor {
 
         match opcode {
             OP_RX_UPDATE_PLAYER_POSITION => self.handle_update_position(source, &sub.data).await?,
+            OP_RX_EVENT_START => self.handle_event_start(source, &sub.data).await?,
+            OP_RX_EVENT_UPDATE => self.handle_event_update(source, &sub.data).await?,
             _ => {
                 tracing::debug!(
                     opcode = format!("0x{:X}", opcode),
@@ -181,6 +185,73 @@ impl PacketProcessor {
                     "unhandled game message",
                 );
             }
+        }
+        Ok(())
+    }
+
+    async fn handle_event_start(&self, session_id: u32, data: &[u8]) -> Result<()> {
+        let pkt = match EventStartPacket::parse(data) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(error = %e, session = session_id, "bad EventStartPacket");
+                return Ok(());
+            }
+        };
+        let Some(handle) = self.registry.by_session(session_id).await else {
+            return Ok(());
+        };
+        let actor_id = handle.actor_id;
+
+        let mut outbox = EventOutbox::new();
+        {
+            let mut chara = handle.character.write().await;
+            chara.event_session.start_event(
+                actor_id,
+                pkt.owner_actor_id,
+                pkt.event_name,
+                pkt.event_type,
+                pkt.lua_params,
+                &mut outbox,
+            );
+        }
+        for e in outbox.drain() {
+            dispatch_event_event(&e, &self.registry, &self.world, &self.db).await;
+        }
+        tracing::debug!(
+            player = actor_id,
+            owner = pkt.owner_actor_id,
+            "event start dispatched",
+        );
+        // `pkt.owner_actor_id` borrowed earlier — the parser returned it by value.
+        Ok(())
+    }
+
+    async fn handle_event_update(&self, session_id: u32, data: &[u8]) -> Result<()> {
+        let pkt = match EventUpdatePacket::parse(data) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(error = %e, session = session_id, "bad EventUpdatePacket");
+                return Ok(());
+            }
+        };
+        let Some(handle) = self.registry.by_session(session_id).await else {
+            return Ok(());
+        };
+        let actor_id = handle.actor_id;
+
+        let mut outbox = EventOutbox::new();
+        {
+            let chara = handle.character.read().await;
+            chara.event_session.update_event(
+                actor_id,
+                pkt.trigger_actor_id,
+                pkt.event_type,
+                pkt.lua_params,
+                &mut outbox,
+            );
+        }
+        for e in outbox.drain() {
+            dispatch_event_event(&e, &self.registry, &self.world, &self.db).await;
         }
         Ok(())
     }

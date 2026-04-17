@@ -284,17 +284,37 @@ pub struct EventStartPacket {
     pub server_codes: u32,
     pub unknown: u32,
     pub event_type: u8,
+    /// Null-terminated event name (e.g. `"quest_man0l0"`). Read from
+    /// offset 0x11; bounded by the packet body length.
+    pub event_name: String,
+    pub lua_params: Vec<LuaParam>,
 }
 
 impl EventStartPacket {
     pub fn parse(data: &[u8]) -> Result<Self> {
         let mut c = Cursor::new(data);
+        let trigger_actor_id = c.read_u32::<LittleEndian>()?;
+        let owner_actor_id = c.read_u32::<LittleEndian>()?;
+        let server_codes = c.read_u32::<LittleEndian>()?;
+        let unknown = c.read_u32::<LittleEndian>()?;
+        let event_type = c.read_u8()?;
+        // Matches the C# parser: read null-term ASCII for the event name,
+        // then — if the next byte isn't 0x01 — decode the LuaParam tail.
+        let event_name = read_null_term_ascii(&mut c, 256);
+        let pos = c.position() as usize;
+        let lua_params = if pos < data.len() && data[pos] == 0x01 {
+            Vec::new()
+        } else {
+            luaparam::read_lua_params(&data[pos..]).unwrap_or_default()
+        };
         Ok(Self {
-            trigger_actor_id: c.read_u32::<LittleEndian>()?,
-            owner_actor_id: c.read_u32::<LittleEndian>()?,
-            server_codes: c.read_u32::<LittleEndian>()?,
-            unknown: c.read_u32::<LittleEndian>()?,
-            event_type: c.read_u8()?,
+            trigger_actor_id,
+            owner_actor_id,
+            server_codes,
+            unknown,
+            event_type,
+            event_name,
+            lua_params,
         })
     }
 }

@@ -262,6 +262,84 @@ async fn spawner_populates_zone_and_ticker_drives_them() {
 }
 
 #[tokio::test]
+async fn event_start_then_run_event_function_reaches_client() {
+    use crate::actor::Character;
+    use crate::data::ClientHandle;
+    use crate::event::{
+        dispatch_event_event, translate_lua_commands_into_outbox, EventOutbox, EventSession,
+    };
+    use crate::lua::command::{LuaCommand, LuaCommandArg};
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag, ActorRegistry};
+    use tokio::sync::mpsc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(crate::database::Database::new("mysql://invalid/dummy").expect("db stub"));
+
+    // One Player actor with a client handle attached.
+    registry
+        .insert(ActorHandle::new(
+            1, ActorKindTag::Player, 0, 42, Character::new(1),
+        ))
+        .await;
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(16);
+    world.register_client(42, ClientHandle::new(42, tx)).await;
+
+    // 1. Player triggers the event — seed the session in place.
+    {
+        let handle = registry.get(1).await.unwrap();
+        let mut chara = handle.character.write().await;
+        let mut ob = EventOutbox::new();
+        chara.event_session.start_event(
+            1, 99, "quest_man0l0", 2, vec![], &mut ob,
+        );
+    }
+
+    // 2. Lua script dispatches RunEventFunction + EndEvent.
+    let lua_cmds = vec![
+        LuaCommand::RunEventFunction {
+            player_id: 1,
+            event_name: String::new(),
+            function_name: "nextDialog".to_string(),
+            args: vec![LuaCommandArg::Int(7)],
+        },
+        LuaCommand::EndEvent {
+            player_id: 1,
+            event_owner: 0,
+            event_name: String::new(),
+        },
+    ];
+
+    // 3. Bridge Lua commands into the event outbox.
+    let session_snapshot = {
+        let handle = registry.get(1).await.unwrap();
+        let chara = handle.character.read().await;
+        chara.event_session.clone()
+    };
+    let mut outbox = EventOutbox::new();
+    translate_lua_commands_into_outbox(&lua_cmds, &session_snapshot, &mut outbox);
+    assert_eq!(outbox.events.len(), 2);
+
+    // 4. Dispatch → packets on socket queue.
+    for e in outbox.drain() {
+        dispatch_event_event(&e, &registry, &world, &db).await;
+    }
+
+    let first = rx.recv().await.expect("run_event_function should queue bytes");
+    assert!(!first.is_empty());
+    let second = rx.recv().await.expect("end_event should queue bytes");
+    assert!(!second.is_empty());
+
+    // Side-channel assertion: the two packets have different opcodes.
+    // Offset 2 holds the subpacket type u16; opcode lives inside the
+    // game-message header at offset 0x12. Rather than decoding, just
+    // assert they differ in content.
+    assert_ne!(first, second);
+    // Silence unused imports from the EventSession path.
+    let _ = EventSession::default();
+}
+
+#[tokio::test]
 async fn hate_add_event_updates_attacker_hate_container() {
     let world = Arc::new(WorldManager::new());
     let registry = Arc::new(ActorRegistry::new());

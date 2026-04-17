@@ -214,6 +214,11 @@ pub struct Character {
     pub battle_temp: crate::battle::BattleTemp,
     /// Persistent battle state — skill levels + physical level.
     pub battle_save: crate::battle::BattleSave,
+    /// Currently-running scripted event (matches the C#
+    /// `currentEventOwner` / `currentEventName` / `currentEventType`
+    /// fields on `PlayerWork`). Kept on Character so NPCs can also
+    /// drive kicks, though in practice only Player rows populate it.
+    pub event_session: crate::event::EventSession,
 }
 
 impl Character {
@@ -226,6 +231,7 @@ impl Character {
             hate: crate::battle::HateContainer::new(actor_id),
             battle_temp: crate::battle::BattleTemp::default(),
             battle_save: crate::battle::BattleSave::default(),
+            event_session: crate::event::EventSession::default(),
         }
     }
 }
