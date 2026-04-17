@@ -1,27 +1,79 @@
-//! Map server entry point. Phase 1 scaffold only — zone/actor/Lua ports land
-//! in later phases.
+//! Map server entry point. Phase-4 port of project-meteor-mirror's
+//! `Map Server/Program.cs`.
+
+use std::sync::Arc;
 
 use anyhow::Result;
+use clap::Parser;
+use tokio::io::{AsyncBufReadExt, BufReader};
+
+mod actor;
+mod command_processor;
+mod config;
+mod data;
+mod database;
+mod lua;
+mod packets;
+mod processor;
+mod server;
+mod world_manager;
+
+use crate::command_processor::CommandProcessor;
+use crate::config::{Config, LaunchArgs};
+use crate::database::Database;
+use crate::world_manager::WorldManager;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
         .init();
 
+    tracing::info!("==================================");
+    tracing::info!("Garlemald: Map Server");
+    tracing::info!(version = env!("CARGO_PKG_VERSION"), "starting");
+    tracing::info!("==================================");
+
+    let args = LaunchArgs::parse();
+    let mut config = Config::load(&args.config)?;
+    config.apply_launch_args(args);
+
     tracing::info!(
-        version = env!("CARGO_PKG_VERSION"),
-        "map-server starting (scaffold only)"
+        host = %config.db_host, port = config.db_port, database = %config.db_name,
+        "testing DB connection"
     );
+    let db = Arc::new(Database::new(&config.mysql_url())?);
+    match db.ping().await {
+        Ok(()) => tracing::info!("DB connection ok"),
+        Err(e) => {
+            tracing::error!(error = %e, "DB connection failed; aborting");
+            return Err(e);
+        }
+    }
 
-    // Spin up Lua to verify mlua links. `mlua::Error` isn't Send+Sync on 0.11,
-    // so bridge through to_string() rather than using `?` straight.
-    let lua = mlua::Lua::new();
-    let v: i64 = lua
-        .load("return 1 + 1")
-        .eval()
-        .map_err(|e| anyhow::anyhow!("lua eval: {e}"))?;
-    tracing::debug!(lua_result = v, "lua runtime healthy");
+    let world = Arc::new(WorldManager::new());
+    let cmd = Arc::new(CommandProcessor::new(world.clone()));
 
-    Ok(())
+    // Interactive console reader, mirroring the blocking `Console.ReadLine`
+    // loop in the C# Program.Main.
+    tokio::spawn({
+        let cmd = cmd.clone();
+        async move {
+            let stdin = BufReader::new(tokio::io::stdin());
+            let mut lines = stdin.lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                tracing::info!(%line, "[Console Input]");
+                if let Ok(response) = cmd.run(&line).await
+                    && !response.is_empty()
+                {
+                    tracing::info!(%response, "command result");
+                }
+            }
+        }
+    });
+
+    server::run(config, db, world).await
 }

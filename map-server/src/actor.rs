@@ -1,0 +1,305 @@
+//! Actor hierarchy.
+//!
+//! The C# source uses `Actor ← Chara ← Player | Npc | BattleNpc` inheritance.
+//! Rust doesn't inherit, so we model the shared fields as a `BaseActor`
+//! struct that specialized kinds compose. Specialized behavior (inventory
+//! math, AI, battle helpers) lives in separate modules (`inventory`, `ai`,
+//! `battle`) that Phase 4 stubs out as they bottom out in the deep C# logic
+//! we haven't ported yet.
+
+#![allow(dead_code)]
+
+use common::Vector3;
+
+pub const INVALID_ACTORID: u32 = 0xC0000000;
+
+pub const MAIN_STATE_PASSIVE: u16 = 0x00;
+pub const MAIN_STATE_ACTIVE: u16 = 0x01;
+pub const MAIN_STATE_DEAD: u16 = 0x02;
+
+#[derive(Debug, Clone, Default)]
+pub struct BaseActor {
+    pub actor_id: u32,
+    pub actor_name: String,
+    pub display_name_id: u32,
+    pub custom_display_name: String,
+    pub current_main_state: u16,
+
+    pub position_x: f32,
+    pub position_y: f32,
+    pub position_z: f32,
+    pub rotation: f32,
+
+    pub old_position_x: f32,
+    pub old_position_y: f32,
+    pub old_position_z: f32,
+    pub old_rotation: f32,
+
+    pub move_state: u16,
+    pub old_move_state: u16,
+
+    pub zone_id: u32,
+    pub zone_id2: u32,
+    pub private_area: String,
+    pub private_area_type: u32,
+
+    pub is_zoning: bool,
+    pub spawned_first_time: bool,
+    pub class_path: String,
+    pub class_name: String,
+    pub is_at_spawn: bool,
+}
+
+impl BaseActor {
+    pub fn new(actor_id: u32) -> Self {
+        Self {
+            actor_id,
+            display_name_id: 0xFFFFFFFF,
+            current_main_state: MAIN_STATE_PASSIVE,
+            is_at_spawn: true,
+            ..Default::default()
+        }
+    }
+
+    pub fn position(&self) -> Vector3 {
+        Vector3::new(self.position_x, self.position_y, self.position_z)
+    }
+
+    pub fn set_position(&mut self, pos: Vector3, rotation: f32) {
+        self.old_position_x = self.position_x;
+        self.old_position_y = self.position_y;
+        self.old_position_z = self.position_z;
+        self.old_rotation = self.rotation;
+        self.position_x = pos.x;
+        self.position_y = pos.y;
+        self.position_z = pos.z;
+        self.rotation = rotation;
+    }
+
+    pub fn display_name(&self) -> &str {
+        if !self.custom_display_name.is_empty() {
+            &self.custom_display_name
+        } else {
+            &self.actor_name
+        }
+    }
+
+    pub fn is_facing(&self, target: &BaseActor, half_angle_deg: f32) -> bool {
+        let half_angle_rad = half_angle_deg.to_radians();
+        let angle_to =
+            common::Vector3::angle_xz(self.position_x, self.position_z, target.position_x, target.position_z);
+        let diff = (angle_to - self.rotation).rem_euclid(std::f32::consts::TAU);
+        diff.min(std::f32::consts::TAU - diff) <= half_angle_rad
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Character — base for both Player and Npc. Adds combat/stat state.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Default)]
+pub struct CharaState {
+    pub is_static: bool,
+    pub is_moving_to_spawn: bool,
+    pub is_auto_attack_enabled: bool,
+
+    pub model_id: u32,
+    pub animation_id: u32,
+    pub current_target: u32,
+    pub current_locked_target: u32,
+    pub current_actor_icon: u32,
+    pub current_job: u16,
+    pub new_main_state: u16,
+
+    pub spawn_x: f32,
+    pub spawn_y: f32,
+    pub spawn_z: f32,
+
+    pub hp: i16,
+    pub max_hp: i16,
+    pub mp: i16,
+    pub max_mp: i16,
+    pub tp: u16,
+
+    pub class: i16,
+    pub level: i16,
+    pub extra_int: i32,
+    pub extra_uint: u32,
+    pub extra_float: f32,
+}
+
+impl CharaState {
+    pub fn is_dead(&self) -> bool {
+        self.hp <= 0
+    }
+
+    pub fn is_alive(&self) -> bool {
+        self.hp > 0
+    }
+
+    pub fn hpp(&self) -> u8 {
+        if self.max_hp == 0 { 0 } else { ((self.hp as i32 * 100) / self.max_hp as i32).clamp(0, 100) as u8 }
+    }
+
+    pub fn mpp(&self) -> u8 {
+        if self.max_mp == 0 { 0 } else { ((self.mp as i32 * 100) / self.max_mp as i32).clamp(0, 100) as u8 }
+    }
+
+    pub fn tpp(&self) -> u8 {
+        ((self.tp as u32).min(3000) * 100 / 3000) as u8
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Character {
+    pub base: BaseActor,
+    pub chara: CharaState,
+}
+
+impl Character {
+    pub fn new(actor_id: u32) -> Self {
+        Self {
+            base: BaseActor::new(actor_id),
+            chara: CharaState { is_auto_attack_enabled: true, ..Default::default() },
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Player — owned by a logged-in human session.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Default)]
+pub struct PlayerState {
+    pub current_event_owner: u32,
+    pub current_event_name: String,
+    pub current_event_type: u8,
+
+    pub destination_zone: u32,
+    pub destination_spawn_type: u16,
+
+    pub current_title: u32,
+    pub play_time: u32,
+    pub last_play_time_update: u32,
+
+    pub is_gm: bool,
+    pub is_zone_changing: bool,
+
+    pub gc_current: u8,
+    pub gc_rank_limsa: u8,
+    pub gc_rank_gridania: u8,
+    pub gc_rank_uldah: u8,
+
+    pub has_chocobo: bool,
+    pub has_goobbue: bool,
+    pub chocobo_name: String,
+    pub mount_state: u8,
+    pub chocobo_appearance: u8,
+    pub rental_expire_time: u32,
+    pub rental_min_left: u8,
+
+    pub achievement_points: u32,
+    pub homepoint: u32,
+    pub homepoint_inn: u8,
+    pub current_ls_plate: u32,
+    pub repair_type: u8,
+    pub sent_retainer_spawn: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Player {
+    pub character: Character,
+    pub player: PlayerState,
+}
+
+impl Player {
+    pub fn new(actor_id: u32) -> Self {
+        Self {
+            character: Character::new(actor_id),
+            player: PlayerState { is_zone_changing: true, ..Default::default() },
+        }
+    }
+
+    pub fn is_my_player(&self, other_actor_id: u32) -> bool {
+        self.character.base.actor_id == other_actor_id
+    }
+}
+
+// ---------------------------------------------------------------------------
+// NPC variants. `Npc` is a decorative/talking NPC; `BattleNpc` has AI.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Default)]
+pub struct Npc {
+    pub character: Character,
+    pub actor_class_id: u32,
+}
+
+impl Npc {
+    pub fn new(actor_id: u32, actor_class_id: u32) -> Self {
+        Self { character: Character::new(actor_id), actor_class_id }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct BattleNpc {
+    pub character: Character,
+    pub actor_class_id: u32,
+    pub spawn_type: u8,
+    pub level: u8,
+    pub respawn_time: u32,
+    pub despawn_time: u32,
+    /// Behaviour controller id; wired up to the AI controller in the full
+    /// port. Phase 4 leaves this as an opaque identifier.
+    pub controller_id: u32,
+}
+
+impl BattleNpc {
+    pub fn new(actor_id: u32, actor_class_id: u32) -> Self {
+        Self {
+            character: Character::new(actor_id),
+            actor_class_id,
+            ..Default::default()
+        }
+    }
+}
+
+/// Canonical list of static world/command/debug/event actors, corresponding
+/// to StaticActors.cs. These are spawned once per zone server and assigned
+/// fixed actor ids.
+pub mod r#static {
+    pub const WORLD_MANAGER_ACTOR_ID: u32 = 0x4000_0001;
+    pub const DEBUG_ACTOR_ID: u32 = 0x4000_0002;
+    pub const LOG_MANAGER_ACTOR_ID: u32 = 0x4000_0003;
+    pub const CHAT_MANAGER_ACTOR_ID: u32 = 0x4000_0004;
+    pub const ITEM_PACKAGE_ACTOR_ID: u32 = 0x4000_0005;
+    pub const SCHEDULER_ACTOR_ID: u32 = 0x4000_0006;
+    pub const DIRECTOR_ACTOR_ID: u32 = 0x4000_0007;
+    pub const PARTY_ACTOR_ID: u32 = 0x4000_0008;
+    pub const LAYOUT_ACTOR_ID: u32 = 0x4000_0009;
+    pub const EVENT_ACTOR_ID: u32 = 0x4000_000A;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hpp_math_is_clamped() {
+        let mut state = CharaState { hp: 50, max_hp: 100, ..Default::default() };
+        assert_eq!(state.hpp(), 50);
+        state.hp = 200;
+        assert_eq!(state.hpp(), 100);
+        state.hp = -10;
+        assert_eq!(state.hpp(), 0);
+    }
+
+    #[test]
+    fn set_position_preserves_old_values() {
+        let mut actor = BaseActor::new(1);
+        actor.position_x = 10.0;
+        actor.set_position(Vector3::new(20.0, 0.0, 0.0), 0.5);
+        assert_eq!(actor.old_position_x, 10.0);
+        assert_eq!(actor.position_x, 20.0);
+    }
+}

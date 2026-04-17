@@ -17,3 +17,7 @@ tracing-subscriber.workspace = true
 anyhow.workspace = true
 mysql_async.workspace = true
 mlua.workspace = true
+byteorder.workspace = true
+clap.workspace = true
+bytes.workspace = true
+rand.workspace = true
