@@ -13,6 +13,7 @@ mod config;
 mod data;
 mod database;
 mod gamedata;
+mod inventory;
 mod lua;
 mod packets;
 mod processor;

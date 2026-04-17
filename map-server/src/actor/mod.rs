@@ -263,15 +263,62 @@ pub struct Player {
     pub character: Character,
     pub player: PlayerState,
     pub helpers: player::PlayerHelperState,
+    /// Every item bag the player owns. Keyed by the `PKG_*` code so lookups
+    /// match `Player.GetItemPackage(code)` from C#. Populated on login by
+    /// `Database::load_player_character` + the game loop.
+    pub item_packages: std::collections::HashMap<u16, crate::inventory::ItemPackage>,
+    /// Equipment view (ReferencedItemPackage wrapping the NORMAL bag).
+    pub equipment: Option<crate::inventory::ReferencedItemPackage>,
 }
 
 impl Player {
     pub fn new(actor_id: u32) -> Self {
-        Self {
+        let mut me = Self {
             character: Character::new(actor_id),
             player: PlayerState { is_zone_changing: true, ..Default::default() },
             helpers: player::PlayerHelperState::default(),
+            item_packages: std::collections::HashMap::new(),
+            equipment: None,
+        };
+        me.install_default_packages();
+        me
+    }
+
+    fn install_default_packages(&mut self) {
+        use crate::inventory::{
+            default_capacity, ItemPackage, ReferencedItemPackage, PKG_BAZAAR, PKG_CURRENCY_CRYSTALS,
+            PKG_EQUIPMENT, PKG_KEYITEMS, PKG_LOOT, PKG_MELDREQUEST, PKG_NORMAL, PKG_TRADE,
+        };
+        let aid = self.character.base.actor_id;
+        for code in [
+            PKG_NORMAL,
+            PKG_LOOT,
+            PKG_MELDREQUEST,
+            PKG_BAZAAR,
+            PKG_CURRENCY_CRYSTALS,
+            PKG_KEYITEMS,
+            PKG_TRADE,
+        ] {
+            self.item_packages
+                .insert(code, ItemPackage::new(aid, default_capacity(code), code));
         }
+        self.equipment = Some(ReferencedItemPackage::new(
+            aid,
+            default_capacity(PKG_EQUIPMENT),
+            PKG_EQUIPMENT,
+        ));
+    }
+
+    /// Convenience: short-hand for `player.item_packages.get(&code)`.
+    pub fn get_item_package(&self, code: u16) -> Option<&crate::inventory::ItemPackage> {
+        self.item_packages.get(&code)
+    }
+
+    pub fn get_item_package_mut(
+        &mut self,
+        code: u16,
+    ) -> Option<&mut crate::inventory::ItemPackage> {
+        self.item_packages.get_mut(&code)
     }
 }
 
