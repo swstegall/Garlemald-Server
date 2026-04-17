@@ -107,6 +107,16 @@ pub struct AreaCore {
 
     pub actors: HashMap<u32, StoredActor>,
     grid: Vec<Vec<u32>>,
+
+    /// Generic directors keyed by composite actor id
+    /// (`6 << 28 | zone << 19 | local`).
+    directors: HashMap<u32, crate::director::Director>,
+    /// GuildleveDirectors keyed the same way. Kept in a separate map so
+    /// lookups don't need a branch on the variant tag.
+    guildleve_directors: HashMap<u32, crate::director::GuildleveDirector>,
+    /// Running counter for director local ids — matches the C#
+    /// `directorIdCount`. Atomic per-area.
+    next_director_id: u32,
 }
 
 impl AreaCore {
@@ -153,7 +163,116 @@ impl AreaCore {
             bgm_battle,
             actors: HashMap::new(),
             grid: vec![Vec::new(); grid_cells],
+            directors: HashMap::new(),
+            guildleve_directors: HashMap::new(),
+            next_director_id: 1,
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Director registry
+    // -----------------------------------------------------------------
+
+    /// Port of `Area::CreateDirector(path, hasContentGroup, args)`.
+    /// Returns the composite actor id of the new director. The caller
+    /// then looks up the Director via `director_mut` to drive `start`.
+    pub fn create_director(
+        &mut self,
+        script_path: impl Into<String>,
+        has_content_group: bool,
+    ) -> u32 {
+        let local_id = self.alloc_director_id();
+        let director = crate::director::Director::new(
+            local_id,
+            self.actor_id,
+            script_path,
+            has_content_group,
+        );
+        let id = director.actor_id;
+        self.directors.insert(id, director);
+        id
+    }
+
+    /// Port of `Area::CreateGuildleveDirector(glid, difficulty, owner, args)`.
+    /// `plate_id` / `location` / `time_limit` / `aim_num_template` come
+    /// from `GuildleveGamedata`; the caller resolves them (Phase 5c stays
+    /// gamedata-free).
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_guildleve_director(
+        &mut self,
+        guildleve_id: u32,
+        difficulty: u8,
+        owner_actor_id: u32,
+        plate_id: u32,
+        location: u32,
+        time_limit_seconds: u32,
+        aim_num_template: [i8; 4],
+    ) -> u32 {
+        let local_id = self.alloc_director_id();
+        let director = crate::director::GuildleveDirector::new(
+            local_id,
+            self.actor_id,
+            guildleve_id,
+            difficulty,
+            owner_actor_id,
+            plate_id,
+            location,
+            time_limit_seconds,
+            aim_num_template,
+        );
+        let id = director.director_id();
+        self.guildleve_directors.insert(id, director);
+        id
+    }
+
+    fn alloc_director_id(&mut self) -> u32 {
+        let id = self.next_director_id;
+        self.next_director_id = self.next_director_id.saturating_add(1);
+        id
+    }
+
+    pub fn director(&self, actor_id: u32) -> Option<&crate::director::Director> {
+        self.directors.get(&actor_id)
+    }
+
+    pub fn director_mut(&mut self, actor_id: u32) -> Option<&mut crate::director::Director> {
+        self.directors.get_mut(&actor_id)
+    }
+
+    pub fn guildleve_director(
+        &self,
+        actor_id: u32,
+    ) -> Option<&crate::director::GuildleveDirector> {
+        self.guildleve_directors.get(&actor_id)
+    }
+
+    pub fn guildleve_director_mut(
+        &mut self,
+        actor_id: u32,
+    ) -> Option<&mut crate::director::GuildleveDirector> {
+        self.guildleve_directors.get_mut(&actor_id)
+    }
+
+    /// Mirrors `Area::DeleteDirector(id)` — the caller is expected to
+    /// have already called `Director::end(outbox)` to fire the bookkeeping
+    /// events. This just drops the entry from whichever registry holds it.
+    pub fn delete_director(&mut self, actor_id: u32) -> bool {
+        if self.directors.remove(&actor_id).is_some() {
+            return true;
+        }
+        self.guildleve_directors.remove(&actor_id).is_some()
+    }
+
+    pub fn director_count(&self) -> usize {
+        self.directors.len() + self.guildleve_directors.len()
+    }
+
+    pub fn director_ids(&self) -> Vec<u32> {
+        self.directors
+            .keys()
+            .chain(self.guildleve_directors.keys())
+            .copied()
+            .collect()
     }
 
     pub fn actor_count(&self) -> usize {

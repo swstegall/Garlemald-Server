@@ -13,6 +13,7 @@ mod command_processor;
 mod config;
 mod data;
 mod database;
+mod director;
 mod event;
 mod gamedata;
 mod inventory;

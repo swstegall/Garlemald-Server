@@ -57,6 +57,67 @@ pub struct PlayerHelperState {
     pub party_leader: bool,
     /// UNIX timestamp at which the chocobo rental expires (0 = no rental).
     pub chocobo_rental_until: u64,
+
+    /// Directors (composite actor ids, 6-prefixed) this player is a
+    /// member of. Populated by `add_director` / `remove_director`.
+    pub owned_directors: Vec<u32>,
+    /// If set, the next zone-in bundle spawns this director's actor on
+    /// the client — matches the C# `loginInitDirector`.
+    pub login_init_director: Option<u32>,
+    /// Fast-path cache: which of `owned_directors` is the active
+    /// guildleve (at most one at a time).
+    pub current_guildleve_director: Option<u32>,
+}
+
+impl PlayerHelperState {
+    /// Port of `Player::AddDirector(director, spawnImmediately=false)`.
+    /// The outbox event moves member-bookkeeping into the director's
+    /// side; this just tracks the fact on the player.
+    pub fn add_director(
+        &mut self,
+        director_actor_id: u32,
+        is_guildleve: bool,
+        outbox: &mut crate::director::DirectorOutbox,
+        player_actor_id: u32,
+    ) {
+        if !self.owned_directors.contains(&director_actor_id) {
+            self.owned_directors.push(director_actor_id);
+        }
+        if is_guildleve {
+            self.current_guildleve_director = Some(director_actor_id);
+        }
+        outbox.push(crate::director::DirectorEvent::MemberAdded {
+            director_id: director_actor_id,
+            actor_id: player_actor_id,
+            is_player: true,
+        });
+    }
+
+    /// Port of `Player::RemoveDirector(director)`.
+    pub fn remove_director(
+        &mut self,
+        director_actor_id: u32,
+        outbox: &mut crate::director::DirectorOutbox,
+        player_actor_id: u32,
+    ) {
+        self.owned_directors.retain(|id| *id != director_actor_id);
+        if self.current_guildleve_director == Some(director_actor_id) {
+            self.current_guildleve_director = None;
+        }
+        if self.login_init_director == Some(director_actor_id) {
+            self.login_init_director = None;
+        }
+        outbox.push(crate::director::DirectorEvent::MemberRemoved {
+            director_id: director_actor_id,
+            actor_id: player_actor_id,
+            is_player: true,
+        });
+    }
+
+    /// Port of `Player::GetGuildleveDirector()`.
+    pub fn guildleve_director(&self) -> Option<u32> {
+        self.current_guildleve_director
+    }
 }
 
 impl Player {
