@@ -16,3 +16,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true
 mysql_async.workspace = true
+md-5 = { workspace = true }
+base64 = { workspace = true }
+byteorder.workspace = true
+clap = { workspace = true }
+bytes.workspace = true

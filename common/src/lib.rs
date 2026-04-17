@@ -10,6 +10,7 @@ pub mod blowfish;
 pub mod error;
 pub mod hash_table;
 pub mod ini;
+pub mod luaparam;
 pub mod math;
 pub mod packet;
 pub mod subpacket;
@@ -17,6 +18,7 @@ pub mod utils;
 
 pub use blowfish::Blowfish;
 pub use error::PacketError;
+pub use luaparam::LuaParam;
 pub use math::Vector3;
 pub use packet::{BasePacket, BasePacketHeader, PACKET_TYPE_CHAT, PACKET_TYPE_ZONE};
 pub use subpacket::{GameMessageHeader, SubPacket, SubPacketHeader};
