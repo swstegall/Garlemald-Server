@@ -24,6 +24,7 @@ mod packets;
 mod processor;
 mod runtime;
 mod server;
+mod social;
 mod status;
 mod world_manager;
 mod zone;

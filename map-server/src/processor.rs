@@ -15,10 +15,22 @@ use crate::event::EventOutbox;
 use crate::event::dispatcher::dispatch_event_event;
 use crate::lua::LuaEngine;
 use crate::packets::opcodes::{
-    OP_HANDSHAKE_RESPONSE, OP_PONG, OP_PONG_RESPONSE, OP_RX_EVENT_START, OP_RX_EVENT_UPDATE,
-    OP_RX_UPDATE_PLAYER_POSITION, OP_SESSION_BEGIN, OP_SESSION_END,
+    OP_HANDSHAKE_RESPONSE, OP_PONG, OP_PONG_RESPONSE, OP_RX_BLACKLIST_ADD, OP_RX_BLACKLIST_REMOVE,
+    OP_RX_BLACKLIST_REQUEST, OP_RX_CHAT_MESSAGE, OP_RX_END_RECRUITING, OP_RX_EVENT_START,
+    OP_RX_EVENT_UPDATE, OP_RX_FAQ_BODY_REQUEST, OP_RX_FAQ_LIST_REQUEST, OP_RX_FRIENDLIST_ADD,
+    OP_RX_FRIENDLIST_REMOVE, OP_RX_FRIENDLIST_REQUEST, OP_RX_FRIEND_STATUS,
+    OP_RX_GM_TICKET_BODY, OP_RX_GM_TICKET_END, OP_RX_GM_TICKET_SEND, OP_RX_GM_TICKET_STATE,
+    OP_RX_RECRUITER_STATE, OP_RX_RECRUITING_DETAILS, OP_RX_START_RECRUITING,
+    OP_RX_SUPPORT_ISSUE_REQUEST, OP_RX_UPDATE_PLAYER_POSITION, OP_SESSION_BEGIN, OP_SESSION_END,
 };
-use crate::packets::receive::{EventStartPacket, EventUpdatePacket, UpdatePlayerPositionPacket};
+use crate::packets::receive::{
+    AddRemoveSocialPacket, ChatMessagePacket, EventStartPacket, EventUpdatePacket,
+    UpdatePlayerPositionPacket,
+};
+use crate::social::{
+    dispatch_social_event, message_type_from_u32, recruitment, support, ChatKind, SocialEvent,
+    SocialOutbox,
+};
 use crate::packets::send as tx;
 use crate::runtime::actor_registry::{ActorHandle, ActorKindTag, ActorRegistry};
 use crate::world_manager::WorldManager;
@@ -182,6 +194,25 @@ impl PacketProcessor {
             OP_RX_UPDATE_PLAYER_POSITION => self.handle_update_position(source, &sub.data).await?,
             OP_RX_EVENT_START => self.handle_event_start(source, &sub.data).await?,
             OP_RX_EVENT_UPDATE => self.handle_event_update(source, &sub.data).await?,
+            OP_RX_CHAT_MESSAGE => self.handle_chat_message(source, &sub.data).await?,
+            OP_RX_BLACKLIST_ADD => self.handle_blacklist_add(source, &sub.data).await?,
+            OP_RX_BLACKLIST_REMOVE => self.handle_blacklist_remove(source, &sub.data).await?,
+            OP_RX_BLACKLIST_REQUEST => self.handle_blacklist_request(source).await?,
+            OP_RX_FRIENDLIST_ADD => self.handle_friendlist_add(source, &sub.data).await?,
+            OP_RX_FRIENDLIST_REMOVE => self.handle_friendlist_remove(source, &sub.data).await?,
+            OP_RX_FRIENDLIST_REQUEST => self.handle_friendlist_request(source).await?,
+            OP_RX_FRIEND_STATUS => self.handle_friend_status(source).await?,
+            OP_RX_START_RECRUITING => self.handle_recruiting_start(source).await?,
+            OP_RX_END_RECRUITING => self.handle_recruiting_end(source).await?,
+            OP_RX_RECRUITER_STATE => self.handle_recruiter_state(source).await?,
+            OP_RX_RECRUITING_DETAILS => self.handle_recruiting_details(source).await?,
+            OP_RX_FAQ_LIST_REQUEST => self.handle_faq_list(source).await?,
+            OP_RX_FAQ_BODY_REQUEST => self.handle_faq_body(source).await?,
+            OP_RX_SUPPORT_ISSUE_REQUEST => self.handle_support_issue(source).await?,
+            OP_RX_GM_TICKET_STATE => self.handle_gm_ticket_state(source).await?,
+            OP_RX_GM_TICKET_BODY => self.handle_gm_ticket_body(source).await?,
+            OP_RX_GM_TICKET_SEND => self.handle_gm_ticket_send(source).await?,
+            OP_RX_GM_TICKET_END => self.handle_gm_ticket_end(source).await?,
             _ => {
                 tracing::debug!(
                     opcode = format!("0x{:X}", opcode),
@@ -294,4 +325,358 @@ impl PacketProcessor {
             .await;
         Ok(())
     }
+
+    // ---------------------------------------------------------------
+    // Phase 7 — chat, social, recruitment, support desk, GM commands.
+    // ---------------------------------------------------------------
+
+    async fn handle_chat_message(&self, session_id: u32, data: &[u8]) -> Result<()> {
+        let Ok(pkt) = ChatMessagePacket::parse(data) else {
+            return Ok(());
+        };
+        let Some(handle) = self.registry.by_session(session_id).await else {
+            return Ok(());
+        };
+
+        // GM `!command` shortcut — eat the message on match.
+        if pkt.message.starts_with('!') {
+            tracing::debug!(
+                session = session_id,
+                cmd = %pkt.message,
+                "gm command prefix (Lua runner pending)",
+            );
+            // Phase 7d stub — the Lua gm_command runner already exists
+            // in `lua::gm_command`; hook it up once the LuaEngine is
+            // wired into PacketProcessor in the cross-cutting sprint.
+            return Ok(());
+        }
+
+        let sender_name = {
+            let c = handle.character.read().await;
+            c.base.display_name().to_string()
+        };
+        let kind = message_type_from_u32(pkt.log_type);
+        let mut ob = SocialOutbox::new();
+        match kind {
+            ChatKind::Say | ChatKind::Shout | ChatKind::Yell => {
+                ob.push(SocialEvent::ChatBroadcast {
+                    source_actor_id: handle.actor_id,
+                    kind,
+                    sender_name,
+                    message: pkt.message,
+                });
+            }
+            ChatKind::Tell => {
+                // Tell routing needs a name → actor id lookup; the
+                // world-manager side owns that. For now just log.
+                tracing::debug!(session = session_id, "chat tell (lookup pending)");
+            }
+            ChatKind::Party | ChatKind::Linkshell => {
+                // Group chat — the fan-out target is determined by the
+                // player's cached party/linkshell roster on
+                // PlayerHelperState (Phase 6 scaffolding).
+                tracing::debug!(
+                    session = session_id,
+                    kind = ?kind,
+                    "group chat (party-roster wiring pending)",
+                );
+            }
+            _ => {}
+        }
+        for e in ob.drain() {
+            dispatch_social_event(&e, &self.registry, &self.world).await;
+        }
+        Ok(())
+    }
+
+    async fn handle_blacklist_add(&self, session_id: u32, data: &[u8]) -> Result<()> {
+        let Ok(pkt) = AddRemoveSocialPacket::parse(data) else {
+            return Ok(());
+        };
+        let Some(handle) = self.registry.by_session(session_id).await else {
+            return Ok(());
+        };
+        let mut ob = SocialOutbox::new();
+        ob.push(SocialEvent::BlacklistAdded {
+            actor_id: handle.actor_id,
+            name: pkt.name,
+            success: true,
+        });
+        for e in ob.drain() {
+            dispatch_social_event(&e, &self.registry, &self.world).await;
+        }
+        Ok(())
+    }
+
+    async fn handle_blacklist_remove(&self, session_id: u32, data: &[u8]) -> Result<()> {
+        let Ok(pkt) = AddRemoveSocialPacket::parse(data) else {
+            return Ok(());
+        };
+        let Some(handle) = self.registry.by_session(session_id).await else {
+            return Ok(());
+        };
+        let mut ob = SocialOutbox::new();
+        ob.push(SocialEvent::BlacklistRemoved {
+            actor_id: handle.actor_id,
+            name: pkt.name,
+            success: true,
+        });
+        for e in ob.drain() {
+            dispatch_social_event(&e, &self.registry, &self.world).await;
+        }
+        Ok(())
+    }
+
+    async fn handle_blacklist_request(&self, session_id: u32) -> Result<()> {
+        let Some(handle) = self.registry.by_session(session_id).await else {
+            return Ok(());
+        };
+        let names = {
+            let c = handle.character.read().await;
+            c.event_session
+                .current_event_name
+                .split_terminator(' ')
+                .next()
+                .map(|_| ())
+                .into_iter()
+                .chain(std::iter::empty::<()>())
+                .map(|_| "Test".to_string())
+                .collect::<Vec<_>>()
+        };
+        let mut ob = SocialOutbox::new();
+        ob.push(SocialEvent::BlacklistSend {
+            actor_id: handle.actor_id,
+            names,
+        });
+        for e in ob.drain() {
+            dispatch_social_event(&e, &self.registry, &self.world).await;
+        }
+        Ok(())
+    }
+
+    async fn handle_friendlist_add(&self, session_id: u32, data: &[u8]) -> Result<()> {
+        let Ok(pkt) = AddRemoveSocialPacket::parse(data) else {
+            return Ok(());
+        };
+        let Some(handle) = self.registry.by_session(session_id).await else {
+            return Ok(());
+        };
+        // The C# stubs a hash-based id; our port does the same so the
+        // round-trip stays idempotent without a real name→id resolver.
+        let friend_id = hash_name_to_id(&pkt.name);
+        let mut ob = SocialOutbox::new();
+        ob.push(SocialEvent::FriendlistAdded {
+            actor_id: handle.actor_id,
+            friend_character_id: friend_id,
+            name: pkt.name,
+            success: true,
+            is_online: true,
+        });
+        for e in ob.drain() {
+            dispatch_social_event(&e, &self.registry, &self.world).await;
+        }
+        Ok(())
+    }
+
+    async fn handle_friendlist_remove(&self, session_id: u32, data: &[u8]) -> Result<()> {
+        let Ok(pkt) = AddRemoveSocialPacket::parse(data) else {
+            return Ok(());
+        };
+        let Some(handle) = self.registry.by_session(session_id).await else {
+            return Ok(());
+        };
+        let mut ob = SocialOutbox::new();
+        ob.push(SocialEvent::FriendlistRemoved {
+            actor_id: handle.actor_id,
+            name: pkt.name,
+            success: true,
+        });
+        for e in ob.drain() {
+            dispatch_social_event(&e, &self.registry, &self.world).await;
+        }
+        Ok(())
+    }
+
+    async fn handle_friendlist_request(&self, session_id: u32) -> Result<()> {
+        let Some(handle) = self.registry.by_session(session_id).await else {
+            return Ok(());
+        };
+        let entries = vec![(1i64, "Test2".to_string())];
+        let mut ob = SocialOutbox::new();
+        ob.push(SocialEvent::FriendlistSend {
+            actor_id: handle.actor_id,
+            entries,
+        });
+        for e in ob.drain() {
+            dispatch_social_event(&e, &self.registry, &self.world).await;
+        }
+        Ok(())
+    }
+
+    async fn handle_friend_status(&self, session_id: u32) -> Result<()> {
+        let Some(handle) = self.registry.by_session(session_id).await else {
+            return Ok(());
+        };
+        let mut ob = SocialOutbox::new();
+        ob.push(SocialEvent::FriendStatus {
+            actor_id: handle.actor_id,
+            entries: vec![],
+        });
+        for e in ob.drain() {
+            dispatch_social_event(&e, &self.registry, &self.world).await;
+        }
+        Ok(())
+    }
+
+    async fn handle_recruiting_start(&self, session_id: u32) -> Result<()> {
+        let Some(handle) = self.registry.by_session(session_id).await else {
+            return Ok(());
+        };
+        let mut ob = SocialOutbox::new();
+        ob.push(SocialEvent::RecruitingStarted {
+            actor_id: handle.actor_id,
+            success: true,
+        });
+        for e in ob.drain() {
+            dispatch_social_event(&e, &self.registry, &self.world).await;
+        }
+        Ok(())
+    }
+
+    async fn handle_recruiting_end(&self, session_id: u32) -> Result<()> {
+        let Some(handle) = self.registry.by_session(session_id).await else {
+            return Ok(());
+        };
+        let mut ob = SocialOutbox::new();
+        ob.push(SocialEvent::RecruitingEnded {
+            actor_id: handle.actor_id,
+        });
+        for e in ob.drain() {
+            dispatch_social_event(&e, &self.registry, &self.world).await;
+        }
+        Ok(())
+    }
+
+    async fn handle_recruiter_state(&self, session_id: u32) -> Result<()> {
+        let Some(handle) = self.registry.by_session(session_id).await else {
+            return Ok(());
+        };
+        let mut ob = SocialOutbox::new();
+        ob.push(SocialEvent::RecruiterStateQueried {
+            actor_id: handle.actor_id,
+            is_recruiter: false,
+            is_recruiting: false,
+            total_recruiters: 0,
+        });
+        for e in ob.drain() {
+            dispatch_social_event(&e, &self.registry, &self.world).await;
+        }
+        Ok(())
+    }
+
+    async fn handle_recruiting_details(&self, session_id: u32) -> Result<()> {
+        let Some(handle) = self.registry.by_session(session_id).await else {
+            return Ok(());
+        };
+        let mut ob = SocialOutbox::new();
+        recruitment::emit_canned_details(handle.actor_id, &mut ob);
+        for e in ob.drain() {
+            dispatch_social_event(&e, &self.registry, &self.world).await;
+        }
+        Ok(())
+    }
+
+    async fn handle_faq_list(&self, session_id: u32) -> Result<()> {
+        let Some(handle) = self.registry.by_session(session_id).await else {
+            return Ok(());
+        };
+        let mut ob = SocialOutbox::new();
+        support::emit_faq_list(handle.actor_id, &mut ob);
+        for e in ob.drain() {
+            dispatch_social_event(&e, &self.registry, &self.world).await;
+        }
+        Ok(())
+    }
+
+    async fn handle_faq_body(&self, session_id: u32) -> Result<()> {
+        let Some(handle) = self.registry.by_session(session_id).await else {
+            return Ok(());
+        };
+        let mut ob = SocialOutbox::new();
+        support::emit_faq_body(handle.actor_id, &mut ob);
+        for e in ob.drain() {
+            dispatch_social_event(&e, &self.registry, &self.world).await;
+        }
+        Ok(())
+    }
+
+    async fn handle_support_issue(&self, session_id: u32) -> Result<()> {
+        let Some(handle) = self.registry.by_session(session_id).await else {
+            return Ok(());
+        };
+        let mut ob = SocialOutbox::new();
+        support::emit_issue_list(handle.actor_id, &mut ob);
+        for e in ob.drain() {
+            dispatch_social_event(&e, &self.registry, &self.world).await;
+        }
+        Ok(())
+    }
+
+    async fn handle_gm_ticket_state(&self, session_id: u32) -> Result<()> {
+        let Some(handle) = self.registry.by_session(session_id).await else {
+            return Ok(());
+        };
+        let mut ob = SocialOutbox::new();
+        support::emit_gm_ticket_state(handle.actor_id, /* is_active */ false, &mut ob);
+        for e in ob.drain() {
+            dispatch_social_event(&e, &self.registry, &self.world).await;
+        }
+        Ok(())
+    }
+
+    async fn handle_gm_ticket_body(&self, session_id: u32) -> Result<()> {
+        let Some(handle) = self.registry.by_session(session_id).await else {
+            return Ok(());
+        };
+        let mut ob = SocialOutbox::new();
+        support::emit_gm_ticket_response(handle.actor_id, &mut ob);
+        for e in ob.drain() {
+            dispatch_social_event(&e, &self.registry, &self.world).await;
+        }
+        Ok(())
+    }
+
+    async fn handle_gm_ticket_send(&self, session_id: u32) -> Result<()> {
+        let Some(handle) = self.registry.by_session(session_id).await else {
+            return Ok(());
+        };
+        let mut ob = SocialOutbox::new();
+        support::emit_gm_ticket_sent(handle.actor_id, /* accepted */ true, &mut ob);
+        for e in ob.drain() {
+            dispatch_social_event(&e, &self.registry, &self.world).await;
+        }
+        Ok(())
+    }
+
+    async fn handle_gm_ticket_end(&self, session_id: u32) -> Result<()> {
+        let Some(handle) = self.registry.by_session(session_id).await else {
+            return Ok(());
+        };
+        let mut ob = SocialOutbox::new();
+        support::emit_gm_ticket_ended(handle.actor_id, &mut ob);
+        for e in ob.drain() {
+            dispatch_social_event(&e, &self.registry, &self.world).await;
+        }
+        Ok(())
+    }
+}
+
+fn hash_name_to_id(name: &str) -> u64 {
+    // Matches the C# `addFriendList.name.GetHashCode()` fallback —
+    // deterministic and collision-tolerant for Phase 7 echoes.
+    let mut h: u64 = 1469598103934665603;
+    for b in name.bytes() {
+        h = h.wrapping_mul(1099511628211).wrapping_add(b as u64);
+    }
+    h
 }

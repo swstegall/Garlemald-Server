@@ -40,6 +40,36 @@ pub const OP_RX_LOCK_TARGET: u16 = 0x00CC;
 pub const OP_RX_ZONE_IN_COMPLETE: u16 = 0x0007;
 pub const OP_RX_EVENT_START: u16 = 0x012D;
 pub const OP_RX_EVENT_UPDATE: u16 = 0x012E;
+
+/// Chat. Client sends at opcode 0x0003 (collision with send's
+/// `OP_SEND_MESSAGE_PUBLIC` — distinguished by direction).
+pub const OP_RX_CHAT_MESSAGE: u16 = 0x0003;
+
+/// Recruitment (party finder).
+pub const OP_RX_START_RECRUITING: u16 = 0x01C3;
+pub const OP_RX_END_RECRUITING: u16 = 0x01C4;
+pub const OP_RX_RECRUITER_STATE: u16 = 0x01C5;
+pub const OP_RX_RECRUITING_ACCEPTED: u16 = 0x01C6;
+pub const OP_RX_RECRUITING_SEARCH: u16 = 0x01C7;
+pub const OP_RX_RECRUITING_DETAILS: u16 = 0x01C8;
+
+/// Social (blacklist / friendlist).
+pub const OP_RX_BLACKLIST_ADD: u16 = 0x01C9;
+pub const OP_RX_BLACKLIST_REMOVE: u16 = 0x01CA;
+pub const OP_RX_BLACKLIST_REQUEST: u16 = 0x01CB;
+pub const OP_RX_FRIENDLIST_ADD: u16 = 0x01CC;
+pub const OP_RX_FRIENDLIST_REMOVE: u16 = 0x01CD;
+pub const OP_RX_FRIENDLIST_REQUEST: u16 = 0x01CE;
+pub const OP_RX_FRIEND_STATUS: u16 = 0x01CF;
+
+/// Support desk.
+pub const OP_RX_FAQ_LIST_REQUEST: u16 = 0x01D0;
+pub const OP_RX_FAQ_BODY_REQUEST: u16 = 0x01D1;
+pub const OP_RX_SUPPORT_ISSUE_REQUEST: u16 = 0x01D2;
+pub const OP_RX_GM_TICKET_STATE: u16 = 0x01D3;
+pub const OP_RX_GM_TICKET_BODY: u16 = 0x01D4;
+pub const OP_RX_GM_TICKET_SEND: u16 = 0x01D5;
+pub const OP_RX_GM_TICKET_END: u16 = 0x01D6;
 pub const OP_REMOVE_ACTOR: u16 = 0x00CB;
 pub const OP_ACTOR_INSTANTIATE: u16 = 0x00CC;
 pub const OP_SET_ACTOR_POSITION: u16 = 0x00CE;
