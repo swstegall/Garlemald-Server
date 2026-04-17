@@ -135,6 +135,7 @@ impl Quest {
         outbox.push(EventEvent::QuestCheckCompletion {
             player_actor_id: self.owner_actor_id,
             quest_id: self.quest_id(),
+            quest_name: self.name.clone(),
         });
     }
 
@@ -151,6 +152,7 @@ impl Quest {
         outbox.push(EventEvent::QuestCheckCompletion {
             player_actor_id: self.owner_actor_id,
             quest_id: self.quest_id(),
+            quest_name: self.name.clone(),
         });
     }
 
@@ -159,6 +161,7 @@ impl Quest {
         outbox.push(EventEvent::QuestAbandonHook {
             player_actor_id: self.owner_actor_id,
             quest_id: self.quest_id(),
+            quest_name: self.name.clone(),
         });
         outbox.push(EventEvent::QuestGameMessage {
             player_actor_id: self.owner_actor_id,

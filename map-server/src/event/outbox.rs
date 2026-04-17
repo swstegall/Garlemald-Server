@@ -54,9 +54,18 @@ pub enum EventEvent {
 
     // ---- Quest side effects -------------------------------------------
     /// Fire `isObjectivesComplete(player, quest)` on the Lua side.
-    QuestCheckCompletion { player_actor_id: u32, quest_id: u32 },
+    /// `quest_name` resolves to `quests/<prefix>/<name>.lua`.
+    QuestCheckCompletion {
+        player_actor_id: u32,
+        quest_id: u32,
+        quest_name: String,
+    },
     /// Fire `onAbandonQuest(player, quest)`.
-    QuestAbandonHook { player_actor_id: u32, quest_id: u32 },
+    QuestAbandonHook {
+        player_actor_id: u32,
+        quest_id: u32,
+        quest_name: String,
+    },
     /// DB write — `Database::SaveQuest(player, quest)`.
     QuestSaveToDb {
         player_actor_id: u32,

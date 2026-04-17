@@ -13,6 +13,7 @@ use crate::data::{ClientHandle, Session};
 use crate::database::Database;
 use crate::event::EventOutbox;
 use crate::event::dispatcher::dispatch_event_event;
+use crate::lua::LuaEngine;
 use crate::packets::opcodes::{
     OP_HANDSHAKE_RESPONSE, OP_PONG, OP_PONG_RESPONSE, OP_RX_EVENT_START, OP_RX_EVENT_UPDATE,
     OP_RX_UPDATE_PLAYER_POSITION, OP_SESSION_BEGIN, OP_SESSION_END,
@@ -26,6 +27,9 @@ pub struct PacketProcessor {
     pub db: Arc<Database>,
     pub world: Arc<WorldManager>,
     pub registry: Arc<ActorRegistry>,
+    /// Optional — when present, the event dispatcher calls
+    /// `onEventStarted` / `isObjectivesComplete` / etc. on real scripts.
+    pub lua: Option<Arc<LuaEngine>>,
 }
 
 impl PacketProcessor {
@@ -215,7 +219,7 @@ impl PacketProcessor {
             );
         }
         for e in outbox.drain() {
-            dispatch_event_event(&e, &self.registry, &self.world, &self.db).await;
+            dispatch_event_event(&e, &self.registry, &self.world, &self.db, self.lua.as_ref()).await;
         }
         tracing::debug!(
             player = actor_id,
@@ -251,7 +255,7 @@ impl PacketProcessor {
             );
         }
         for e in outbox.drain() {
-            dispatch_event_event(&e, &self.registry, &self.world, &self.db).await;
+            dispatch_event_event(&e, &self.registry, &self.world, &self.db, self.lua.as_ref()).await;
         }
         Ok(())
     }

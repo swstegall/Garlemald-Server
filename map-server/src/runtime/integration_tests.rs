@@ -322,7 +322,7 @@ async fn event_start_then_run_event_function_reaches_client() {
 
     // 4. Dispatch → packets on socket queue.
     for e in outbox.drain() {
-        dispatch_event_event(&e, &registry, &world, &db).await;
+        dispatch_event_event(&e, &registry, &world, &db, None).await;
     }
 
     let first = rx.recv().await.expect("run_event_function should queue bytes");

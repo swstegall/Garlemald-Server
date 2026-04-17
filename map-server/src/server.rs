@@ -29,7 +29,15 @@ pub async fn run(
     let listener = TcpListener::bind(&addr).await.with_context(|| format!("bind {addr}"))?;
     tracing::info!(%addr, "map server listening");
 
-    let processor = Arc::new(PacketProcessor { db, world, registry });
+    let processor = Arc::new(PacketProcessor {
+        db,
+        world,
+        registry,
+        // Phase 4 follow-up leaves this `None` on the socket path; the
+        // game-loop wiring in `main.rs` constructs a `LuaEngine` and
+        // a variant of the processor with it plugged in as feature work.
+        lua: None,
+    });
 
     loop {
         let (socket, peer) = match listener.accept().await {
