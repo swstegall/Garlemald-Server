@@ -25,6 +25,7 @@ pub mod recruitment;
 pub mod search;
 pub mod social;
 pub mod supportdesk;
+pub mod world_packets;
 
 use std::io::Write;
 
@@ -75,3 +76,5 @@ pub use search::*;
 pub use social::*;
 #[allow(unused_imports)]
 pub use supportdesk::*;
+#[allow(unused_imports)]
+pub use world_packets::*;

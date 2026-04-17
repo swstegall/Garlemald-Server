@@ -29,6 +29,28 @@ pub const OP_SESSION_END: u16 = 0x1001;
 pub const OP_WORLD_ZONE_CHANGE_REQUEST: u16 = 0x1002;
 
 // ---------------------------------------------------------------------------
+// World↔map-server group coordination (0x1020-0x1032). Used when the map
+// server asks the world server to mutate shared party/linkshell state.
+// ---------------------------------------------------------------------------
+pub const OP_WORLD_PARTY_MODIFY: u16 = 0x1020;
+pub const OP_WORLD_PARTY_LEAVE: u16 = 0x1021;
+pub const OP_WORLD_PARTY_INVITE: u16 = 0x1022;
+pub const OP_WORLD_GROUP_INVITE_RESULT: u16 = 0x1023;
+pub const OP_WORLD_CREATE_LINKSHELL: u16 = 0x1025;
+pub const OP_WORLD_MODIFY_LINKSHELL: u16 = 0x1026;
+pub const OP_WORLD_DELETE_LINKSHELL: u16 = 0x1027;
+pub const OP_WORLD_LINKSHELL_CHANGE: u16 = 0x1028;
+pub const OP_WORLD_LINKSHELL_INVITE: u16 = 0x1029;
+pub const OP_WORLD_LINKSHELL_INVITE_CANCEL: u16 = 0x1030;
+pub const OP_WORLD_LINKSHELL_LEAVE: u16 = 0x1031;
+pub const OP_WORLD_LINKSHELL_RANK_CHANGE: u16 = 0x1032;
+
+// World → map-server result/error frames received on the same channel.
+pub const OP_WORLD_PARTY_SYNC: u16 = 0x1010;
+pub const OP_WORLD_LINKSHELL_RESULT: u16 = 0x1011;
+pub const OP_WORLD_ERROR: u16 = 0x1FFF;
+
+// ---------------------------------------------------------------------------
 // Actor lifecycle (game-message opcode in the gamemessage header).
 // ---------------------------------------------------------------------------
 /// Inbound opcode for `UpdatePlayerPositionPacket` — shares its wire id

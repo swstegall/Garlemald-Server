@@ -102,6 +102,49 @@ impl Character {
         self.add_tp(-amount);
     }
 
+    // ----- Stat recalculation ---------------------------------------------
+
+    /// Port of `Character.CalculateBaseStats`. Reads `Modifier::Hp` /
+    /// `HpPercent` / `Mp` / `MpPercent` off the modifier map and
+    /// writes them to the max/current pools. HitCount is seeded to 1.
+    /// Scripts drive the modifier map via `player:SetMod(id, val)` when
+    /// gear changes, so running this after equip/unequip gives the
+    /// client the correct totals.
+    pub fn calculate_base_stats(&mut self) {
+        let hp_mod = self.chara.mods.get(Modifier::Hp) as i32;
+        if hp_mod > 0 {
+            self.set_max_hp(hp_mod);
+            let hpp = self.chara.mods.get(Modifier::HpPercent);
+            let hp = if hpp > 0.0 {
+                ((hpp / 100.0) * hp_mod as f64).ceil() as i32
+            } else {
+                hp_mod
+            };
+            self.set_hp(hp);
+        }
+        let mp_mod = self.chara.mods.get(Modifier::Mp) as i32;
+        if mp_mod > 0 {
+            self.set_max_mp(mp_mod);
+            let mpp = self.chara.mods.get(Modifier::MpPercent);
+            let mp = if mpp > 0.0 {
+                ((mpp / 100.0) * mp_mod as f64).ceil() as i32
+            } else {
+                mp_mod
+            };
+            self.set_mp(mp);
+        }
+        // HitCount always starts at 1 — dual-wield etc. bumps it later.
+        self.chara.mods.set(Modifier::HitCount, 1.0);
+    }
+
+    /// Port of `Character.RecalculateStats`. The C# original is a
+    /// thin wrapper that used to call `CalculateBaseStats`; our port
+    /// does the same. Triggered on equip, unequip, level-up, trait
+    /// change.
+    pub fn recalculate_stats(&mut self) {
+        self.calculate_base_stats();
+    }
+
     // ----- Class / level ----------------------------------------------------
 
     pub fn get_class(&self) -> i16 {
@@ -260,6 +303,45 @@ impl CharaState {
     pub fn clear_derived(&mut self) {
         self.mods.clear();
         self.stats = [0; STAT_COUNT];
+    }
+}
+
+#[cfg(test)]
+mod recalc_tests {
+    use super::*;
+    use crate::actor::Character;
+
+    #[test]
+    fn recalculate_stats_applies_hp_and_mp_mods() {
+        let mut c = Character::new(1);
+        c.chara.mods.set(Modifier::Hp, 800.0);
+        c.chara.mods.set(Modifier::Mp, 300.0);
+        c.recalculate_stats();
+        assert_eq!(c.chara.max_hp, 800);
+        assert_eq!(c.chara.hp, 800);
+        assert_eq!(c.chara.max_mp, 300);
+        assert_eq!(c.chara.mp, 300);
+        assert_eq!(c.chara.mods.get(Modifier::HitCount), 1.0);
+    }
+
+    #[test]
+    fn hp_percent_scales_current_from_max() {
+        let mut c = Character::new(1);
+        c.chara.mods.set(Modifier::Hp, 1000.0);
+        c.chara.mods.set(Modifier::HpPercent, 75.0);
+        c.recalculate_stats();
+        assert_eq!(c.chara.max_hp, 1000);
+        assert_eq!(c.chara.hp, 750);
+    }
+
+    #[test]
+    fn zero_hp_mod_leaves_pool_unchanged() {
+        let mut c = Character::new(1);
+        c.chara.max_hp = 1234;
+        c.chara.hp = 1000;
+        c.recalculate_stats();
+        assert_eq!(c.chara.max_hp, 1234);
+        assert_eq!(c.chara.hp, 1000);
     }
 }
 

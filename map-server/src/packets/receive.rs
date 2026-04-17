@@ -120,6 +120,56 @@ impl SessionEndRequest {
     }
 }
 
+/// `PartySyncPacket` — world server pushes a party roster snapshot to the
+/// map server (C# `Packets/WorldPackets/Receive/PartySyncPacket.cs`).
+#[derive(Debug, Clone)]
+pub struct PartySyncPacket {
+    pub party_group_id: u64,
+    pub owner: u32,
+    pub member_actor_ids: Vec<u32>,
+}
+
+impl PartySyncPacket {
+    pub fn parse(data: &[u8]) -> Result<Self> {
+        let mut c = Cursor::new(data);
+        let party_group_id = c.read_u64::<LittleEndian>()?;
+        let owner = c.read_u32::<LittleEndian>()?;
+        let n = c.read_u32::<LittleEndian>()? as usize;
+        let mut member_actor_ids = Vec::with_capacity(n);
+        for _ in 0..n {
+            member_actor_ids.push(c.read_u32::<LittleEndian>()?);
+        }
+        Ok(Self { party_group_id, owner, member_actor_ids })
+    }
+}
+
+/// `LinkshellResultPacket` — world server echoes the result of a
+/// linkshell-mutation RPC back to map server.
+#[derive(Debug, Clone)]
+pub struct LinkshellResultPacket {
+    pub result_code: i32,
+}
+
+impl LinkshellResultPacket {
+    pub fn parse(data: &[u8]) -> Result<Self> {
+        let mut c = Cursor::new(data);
+        Ok(Self { result_code: c.read_i32::<LittleEndian>()? })
+    }
+}
+
+/// `ErrorPacket` — generic world-server error frame.
+#[derive(Debug, Clone)]
+pub struct WorldErrorPacket {
+    pub error_code: u32,
+}
+
+impl WorldErrorPacket {
+    pub fn parse(data: &[u8]) -> Result<Self> {
+        let mut c = Cursor::new(data);
+        Ok(Self { error_code: c.read_u32::<LittleEndian>()? })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Misc client frames
 // ---------------------------------------------------------------------------
