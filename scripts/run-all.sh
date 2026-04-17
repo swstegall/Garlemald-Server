@@ -44,8 +44,9 @@ start() {
     local log="$REPO_ROOT/logs/$name.log"
     say "Starting $name (log: $log)"
     "$bin_dir/$name" "$@" >"$log" 2>&1 &
-    pids+=("$!")
-    ok "$name pid=${pids[-1]}"
+    local pid=$!
+    pids+=("$pid")
+    ok "$name pid=$pid"
 }
 
 # Lobby first (it's the only one that holds external-facing client auth),
