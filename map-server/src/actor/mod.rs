@@ -202,6 +202,9 @@ impl CharaState {
 pub struct Character {
     pub base: BaseActor,
     pub chara: CharaState,
+    /// Status-effect bookkeeping (effect map + the client-visible
+    /// `charaWork.status[20]` / `charaWork.statusShownTime[20]` arrays).
+    pub status_effects: crate::status::StatusEffectContainer,
 }
 
 impl Character {
@@ -209,6 +212,7 @@ impl Character {
         Self {
             base: BaseActor::new(actor_id),
             chara: CharaState { is_auto_attack_enabled: true, ..Default::default() },
+            status_effects: crate::status::StatusEffectContainer::new(actor_id),
         }
     }
 }

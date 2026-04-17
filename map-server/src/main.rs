@@ -18,6 +18,7 @@ mod lua;
 mod packets;
 mod processor;
 mod server;
+mod status;
 mod world_manager;
 
 use crate::command_processor::CommandProcessor;
