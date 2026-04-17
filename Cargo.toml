@@ -11,9 +11,8 @@ members = [
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
-license = "AGPL-3.0-or-later"
-repository = "https://github.com/garlemald/garlemald-server"
-authors = ["Garlemald Contributors"]
+license = ""
+repository = "https://github.com/swstegall/Garlemald-Server"
 
 [workspace.dependencies]
 common = { path = "common" }
