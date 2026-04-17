@@ -1,0 +1,19 @@
+[package]
+name = "map-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "map-server"
+path = "src/main.rs"
+
+[dependencies]
+common.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+mysql_async.workspace = true
+mlua.workspace = true
