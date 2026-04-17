@@ -1,12 +1,15 @@
-//! Zone/actor registry. The C# `WorldManager` is 2000+ lines and owns:
-//!   - zone templates (from DB)
-//!   - per-zone actor lists
-//!   - spawn lifecycle (respawn timers, seamless boundaries)
-//!   - zone-change routing
-//!   - the StaticActors singletons
+//! Zone + session registry. Phase 1 trims the placeholder down and swaps it
+//! onto the real `zone::Zone` so the game loop can drive it each tick.
 //!
-//! Phase 4 lands the public API surface so the packet processor can sit on
-//! top of it; deep spawn/AI logic is TODO.
+//! Character state (Players, Npcs, BattleNpcs) no longer lives on
+//! `WorldManager` — it moves to `ActorRegistry` (`crate::runtime::actor_registry`).
+//! The WorldManager now owns only:
+//!
+//! * The zone table — canonical `zone::Zone` instances keyed by zone id.
+//! * The session table — `ClientHandle`s keyed by session id.
+//!
+//! Both are `RwLock<HashMap<_,_>>` so independent zones / sessions don't
+//! contend during PvE ticks.
 #![allow(dead_code)]
 
 use std::collections::HashMap;
@@ -14,47 +17,35 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
-use crate::actor::{BattleNpc, Npc, Player};
-use crate::data::{SeamlessBoundary, Session, ZoneConnection};
+use crate::data::{ClientHandle, Session};
+use crate::zone::Zone;
 
-/// In-memory zone descriptor. The real server populates this from
-/// `zone_list` + `server_zones_seamless` + `server_zones_instance` on startup.
-#[derive(Debug, Clone, Default)]
-pub struct Zone {
-    pub zone_id: u32,
-    pub name: String,
-    pub region_id: u32,
-    pub is_isolated: bool,
-    pub is_inn: bool,
-    pub can_ride_chocobo: bool,
-    pub can_stealth: bool,
-    pub is_instance_raid: bool,
-    pub is_private: bool,
-
-    pub zone_connections: Vec<ZoneConnection>,
-    pub seamless_boundaries: Vec<SeamlessBoundary>,
-
-    pub players: HashMap<u32, Player>,
-    pub npcs: HashMap<u32, Npc>,
-    pub battle_npcs: HashMap<u32, BattleNpc>,
-}
-
-/// Top-level zone registry. Each operation acquires the per-zone lock, so
-/// PvE actions in different zones don't contend with each other.
+/// Top-level zone + session registry.
 pub struct WorldManager {
     zones: RwLock<HashMap<u32, Arc<RwLock<Zone>>>>,
+    /// Sessions keyed by session id (from the packet source id).
     sessions: RwLock<HashMap<u32, Session>>,
+    /// Live socket handles keyed by session id. Used by packet dispatchers
+    /// to fan outbound SubPackets to the right clients.
+    clients: RwLock<HashMap<u32, ClientHandle>>,
 }
 
 impl WorldManager {
     pub fn new() -> Self {
-        Self { zones: RwLock::new(HashMap::new()), sessions: RwLock::new(HashMap::new()) }
+        Self {
+            zones: RwLock::new(HashMap::new()),
+            sessions: RwLock::new(HashMap::new()),
+            clients: RwLock::new(HashMap::new()),
+        }
     }
 
-    /// Register (or replace) a zone template. Called once per zone during
-    /// startup by the equivalent of `WorldManager.LoadZones()`.
+    // -----------------------------------------------------------------
+    // Zones
+    // -----------------------------------------------------------------
+
+    /// Register (or replace) a zone. Called once per zone during startup.
     pub async fn register_zone(&self, zone: Zone) {
-        let id = zone.zone_id;
+        let id = zone.core.actor_id;
         self.zones.write().await.insert(id, Arc::new(RwLock::new(zone)));
     }
 
@@ -62,20 +53,19 @@ impl WorldManager {
         self.zones.read().await.get(&zone_id).cloned()
     }
 
-    pub async fn add_player(&self, zone_id: u32, player: Player) {
-        if let Some(zone) = self.zone(zone_id).await {
-            let mut z = zone.write().await;
-            z.players.insert(player.character.base.actor_id, player);
-        }
+    /// Snapshot of all zone ids — used by the game ticker to drive each
+    /// zone's `update()` without holding a global lock.
+    pub async fn zone_ids(&self) -> Vec<u32> {
+        self.zones.read().await.keys().copied().collect()
     }
 
-    pub async fn remove_player(&self, zone_id: u32, actor_id: u32) -> Option<Player> {
-        if let Some(zone) = self.zone(zone_id).await {
-            let mut z = zone.write().await;
-            return z.players.remove(&actor_id);
-        }
-        None
+    pub async fn zone_count(&self) -> usize {
+        self.zones.read().await.len()
     }
+
+    // -----------------------------------------------------------------
+    // Sessions
+    // -----------------------------------------------------------------
 
     pub async fn upsert_session(&self, session: Session) {
         self.sessions.write().await.insert(session.id, session);
@@ -86,7 +76,24 @@ impl WorldManager {
     }
 
     pub async fn remove_session(&self, id: u32) -> Option<Session> {
+        self.clients.write().await.remove(&id);
         self.sessions.write().await.remove(&id)
+    }
+
+    // -----------------------------------------------------------------
+    // Client handles (outbound-packet channels)
+    // -----------------------------------------------------------------
+
+    pub async fn register_client(&self, id: u32, handle: ClientHandle) {
+        self.clients.write().await.insert(id, handle);
+    }
+
+    pub async fn client(&self, id: u32) -> Option<ClientHandle> {
+        self.clients.read().await.get(&id).cloned()
+    }
+
+    pub async fn all_clients(&self) -> Vec<ClientHandle> {
+        self.clients.read().await.values().cloned().collect()
     }
 }
 

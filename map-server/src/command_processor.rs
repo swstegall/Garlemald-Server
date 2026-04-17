@@ -33,10 +33,7 @@ impl CommandProcessor {
             "help" => Ok("commands: help, who, version, reload".into()),
             "version" => Ok(format!("map-server {}", env!("CARGO_PKG_VERSION"))),
             "who" => {
-                let zones = {
-                    let zones = self.world.zone(0).await;
-                    zones.is_some() as usize
-                };
+                let zones = self.world.zone_count().await;
                 Ok(format!("{zones} zone(s) loaded"))
             }
             "reload" => {

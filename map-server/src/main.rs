@@ -18,6 +18,7 @@ mod inventory;
 mod lua;
 mod packets;
 mod processor;
+mod runtime;
 mod server;
 mod status;
 mod world_manager;
@@ -26,6 +27,7 @@ mod zone;
 use crate::command_processor::CommandProcessor;
 use crate::config::{Config, LaunchArgs};
 use crate::database::Database;
+use crate::runtime::{ActorRegistry, GameTicker, TickerConfig};
 use crate::world_manager::WorldManager;
 
 #[tokio::main]
@@ -60,7 +62,23 @@ async fn main() -> Result<()> {
     }
 
     let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
     let cmd = Arc::new(CommandProcessor::new(world.clone()));
+
+    // Spawn the game-loop ticker. Walks every zone every 100ms and
+    // drains the four typed outboxes (status / battle / area / inventory)
+    // into real packets + DB writes + Lua calls.
+    tokio::spawn({
+        let ticker = GameTicker::new(
+            TickerConfig::default(),
+            world.clone(),
+            registry.clone(),
+            db.clone(),
+        );
+        async move {
+            ticker.run().await;
+        }
+    });
 
     // Interactive console reader, mirroring the blocking `Console.ReadLine`
     // loop in the C# Program.Main.
