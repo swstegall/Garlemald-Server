@@ -1,0 +1,253 @@
+//! Inventory flow packets.
+//!
+//! The client expects inventory changes to come in a strict bracket:
+//! `InventoryBeginChange` → one or more `InventorySetBegin` +
+//! `InventoryListX*` / `InventoryRemoveX*` + `InventorySetEnd` → finally
+//! `InventoryEndChange`.
+//!
+//! Each `InventoryListX01/08/16/32/64` variant serializes N items at a time;
+//! callers batch through their inventory via a `list_offset` cursor to match
+//! the C# `ref int listOffset` pattern.
+
+use std::io::Cursor;
+use std::io::Write as _;
+
+use byteorder::{LittleEndian, WriteBytesExt};
+use common::subpacket::SubPacket;
+
+use super::super::opcodes::*;
+use super::body;
+use crate::data::InventoryItem;
+
+/// 0x0116D — "about to push inventory updates; optionally wipe first".
+pub fn build_inventory_begin_change(actor_id: u32, clear_item_package: bool) -> SubPacket {
+    let mut data = body(0x28);
+    data[0] = clear_item_package as u8;
+    SubPacket::new(OP_INVENTORY_BEGIN_CHANGE, actor_id, data)
+}
+
+/// 0x016E — end of inventory update stream.
+pub fn build_inventory_end_change(actor_id: u32) -> SubPacket {
+    SubPacket::new(OP_INVENTORY_END_CHANGE, actor_id, body(0x28))
+}
+
+/// 0x0146 InventorySetBeginPacket: prefix for a package update.
+/// `code` is the package id (0=NORMAL, 0x04=LOOT, 0x05=MELDREQUEST, …).
+pub fn build_inventory_set_begin(actor_id: u32, size: u16, code: u16) -> SubPacket {
+    let mut data = vec![0u8; 8];
+    let mut c = Cursor::new(&mut data[..]);
+    c.write_u32::<LittleEndian>(actor_id).unwrap();
+    c.write_u16::<LittleEndian>(size).unwrap();
+    c.write_u16::<LittleEndian>(code).unwrap();
+    SubPacket::new(OP_INVENTORY_SET_BEGIN, actor_id, data)
+}
+
+/// 0x0147 InventorySetEndPacket.
+pub fn build_inventory_set_end(actor_id: u32) -> SubPacket {
+    SubPacket::new(OP_INVENTORY_SET_END, actor_id, body(0x28))
+}
+
+/// 0x0149 InventoryItemEndPacket — matches InventoryListX08 shape when there's
+/// 1-2 items left at end of stream.
+pub fn build_inventory_item_end(
+    actor_id: u32,
+    items: &[InventoryItem],
+    list_offset: &mut usize,
+) -> SubPacket {
+    build_inventory_list_x08(actor_id, items, list_offset, OP_INVENTORY_LIST_X08, 0x90)
+}
+
+/// 0x014A InventoryItemPacket — single-item inline.
+pub fn build_inventory_item(
+    actor_id: u32,
+    items: &[InventoryItem],
+    list_offset: &mut usize,
+) -> SubPacket {
+    build_inventory_list_x08(actor_id, items, list_offset, OP_INVENTORY_LIST_X16, 0x90)
+}
+
+/// 0x0148 InventoryListX01Packet — single item.
+pub fn build_inventory_list_x01(actor_id: u32, item: &InventoryItem) -> SubPacket {
+    let mut data = body(0x90);
+    let mut c = Cursor::new(&mut data[..]);
+    c.write_all(&encode_item(item)).unwrap();
+    // C# writes `max = 1` at offset 0x70.
+    data[0x70..0x74].copy_from_slice(&1u32.to_le_bytes());
+    SubPacket::new(OP_INVENTORY_LIST_X01, actor_id, data)
+}
+
+/// 0x0149 InventoryListX08Packet — up to 8 items.
+pub fn build_inventory_list_x08_n(
+    actor_id: u32,
+    items: &[InventoryItem],
+    list_offset: &mut usize,
+) -> SubPacket {
+    build_inventory_list_x08(actor_id, items, list_offset, OP_INVENTORY_LIST_X08, 0x3A8)
+}
+
+/// 0x014A InventoryListX16 — up to 16 items.
+pub fn build_inventory_list_x16(
+    actor_id: u32,
+    items: &[InventoryItem],
+    list_offset: &mut usize,
+) -> SubPacket {
+    build_inventory_list_n(actor_id, items, list_offset, 16, OP_INVENTORY_LIST_X16, 0x720)
+}
+
+/// 0x014B InventoryListX32 — up to 32 items.
+pub fn build_inventory_list_x32(
+    actor_id: u32,
+    items: &[InventoryItem],
+    list_offset: &mut usize,
+) -> SubPacket {
+    build_inventory_list_n(actor_id, items, list_offset, 32, OP_INVENTORY_LIST_X32, 0xE20)
+}
+
+/// 0x014C InventoryListX64 — up to 64 items.
+pub fn build_inventory_list_x64(
+    actor_id: u32,
+    items: &[InventoryItem],
+    list_offset: &mut usize,
+) -> SubPacket {
+    build_inventory_list_n(actor_id, items, list_offset, 64, OP_INVENTORY_LIST_X64, 0x1C20)
+}
+
+fn build_inventory_list_x08(
+    actor_id: u32,
+    items: &[InventoryItem],
+    list_offset: &mut usize,
+    opcode: u16,
+    packet_size: usize,
+) -> SubPacket {
+    build_inventory_list_n(actor_id, items, list_offset, 8, opcode, packet_size)
+}
+
+fn build_inventory_list_n(
+    actor_id: u32,
+    items: &[InventoryItem],
+    list_offset: &mut usize,
+    cap: usize,
+    opcode: u16,
+    packet_size: usize,
+) -> SubPacket {
+    let mut data = body(packet_size);
+    let max = items.len().saturating_sub(*list_offset).min(cap);
+    let mut c = Cursor::new(&mut data[..]);
+    for i in 0..max {
+        c.write_all(&encode_item(&items[*list_offset + i])).unwrap();
+    }
+    *list_offset += max;
+    // C# writes (UInt32)max at `cap * 0x70` (i.e. end of per-item block).
+    let tail = cap * 0x70;
+    if tail + 4 <= data.len() {
+        data[tail..tail + 4].copy_from_slice(&(max as u32).to_le_bytes());
+    }
+    SubPacket::new(opcode, actor_id, data)
+}
+
+/// 0x0152 InventoryRemoveX01Packet — one slot.
+pub fn build_inventory_remove_x01(actor_id: u32, slot: u16) -> SubPacket {
+    let mut data = body(0x28);
+    data[..2].copy_from_slice(&slot.to_le_bytes());
+    // C# writes max=1 at offset 0x10.
+    data[0x10] = 1;
+    SubPacket::new(OP_INVENTORY_REMOVE_X01, actor_id, data)
+}
+
+/// 0x0153 InventoryRemoveX08Packet — up to 8 slots.
+pub fn build_inventory_remove_x08(
+    actor_id: u32,
+    slots: &[u16],
+    list_offset: &mut usize,
+) -> SubPacket {
+    build_inventory_remove_n(actor_id, slots, list_offset, 8, OP_INVENTORY_REMOVE_X08, 0x38, 0x10)
+}
+
+pub fn build_inventory_remove_x16(
+    actor_id: u32,
+    slots: &[u16],
+    list_offset: &mut usize,
+) -> SubPacket {
+    build_inventory_remove_n(actor_id, slots, list_offset, 16, OP_INVENTORY_REMOVE_X16, 0x40, 0x20)
+}
+
+pub fn build_inventory_remove_x32(
+    actor_id: u32,
+    slots: &[u16],
+    list_offset: &mut usize,
+) -> SubPacket {
+    build_inventory_remove_n(actor_id, slots, list_offset, 32, OP_INVENTORY_REMOVE_X32, 0x60, 0x40)
+}
+
+pub fn build_inventory_remove_x64(
+    actor_id: u32,
+    slots: &[u16],
+    list_offset: &mut usize,
+) -> SubPacket {
+    build_inventory_remove_n(actor_id, slots, list_offset, 64, OP_INVENTORY_REMOVE_X64, 0xA0, 0x80)
+}
+
+fn build_inventory_remove_n(
+    actor_id: u32,
+    slots: &[u16],
+    list_offset: &mut usize,
+    cap: usize,
+    opcode: u16,
+    packet_size: usize,
+    count_offset: usize,
+) -> SubPacket {
+    let mut data = body(packet_size);
+    let max = slots.len().saturating_sub(*list_offset).min(cap);
+    let mut c = Cursor::new(&mut data[..]);
+    for i in 0..max {
+        c.write_u16::<LittleEndian>(slots[*list_offset + i]).unwrap();
+    }
+    *list_offset += max;
+    if count_offset < data.len() {
+        data[count_offset] = max as u8;
+    }
+    SubPacket::new(opcode, actor_id, data)
+}
+
+/// 0x014D LinkedItemListX01 — equip slot linking for one item.
+pub fn build_linked_item_list_x01(actor_id: u32, position: u16, item: &InventoryItem) -> SubPacket {
+    let mut data = body(0x28);
+    let mut c = Cursor::new(&mut data[..]);
+    c.write_u16::<LittleEndian>(position).unwrap();
+    // The C# writes a 0x6-byte "linked handle" (itemUniqueId as u64 trunc'd
+    // to 48 bits + the slot). We serialize the same 8-byte prefix.
+    c.write_u64::<LittleEndian>(item.unique_id).unwrap();
+    SubPacket::new(OP_LINKED_ITEM_LIST_X01, actor_id, data)
+}
+
+/// 0x0178 SetInitialEquipmentPacket — 35-slot full-equipment snapshot.
+/// The payload is simply 35 u32 item ids in equip-slot order.
+pub fn build_set_initial_equipment(actor_id: u32, item_ids: &[u32; 35]) -> SubPacket {
+    let mut data = body(0x58);
+    let mut c = Cursor::new(&mut data[..]);
+    for id in item_ids {
+        c.write_u32::<LittleEndian>(*id).unwrap();
+    }
+    SubPacket::new(0x0178, actor_id, data)
+}
+
+fn encode_item(item: &InventoryItem) -> Vec<u8> {
+    let mut out = vec![0u8; 0x70];
+    let mut c = Cursor::new(&mut out[..]);
+    c.write_u64::<LittleEndian>(item.unique_id).unwrap();
+    c.write_i32::<LittleEndian>(item.quantity).unwrap();
+    c.write_u32::<LittleEndian>(item.item_id).unwrap();
+    let slot = if item.link_slot == 0xFFFF { item.slot } else { item.link_slot };
+    c.write_u16::<LittleEndian>(slot).unwrap();
+    // dealingVal + dealingMode bytes + three dealingAttached u32 — left zero
+    // until trade/bazaar plumbing lights up.
+    for _ in 0..(1 + 1 + 4 + 4 + 4) {
+        c.write_u8(0).unwrap();
+    }
+    // tags[] + tagValues[] — 16 bytes total of defaults.
+    for _ in 0..16 {
+        c.write_u8(0).unwrap();
+    }
+    c.write_u8(item.quality).unwrap();
+    out
+}

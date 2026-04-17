@@ -11,7 +11,7 @@ use common::subpacket::{SUBPACKET_TYPE_GAMEMESSAGE, SubPacket};
 use crate::data::ClientHandle;
 use crate::database::Database;
 use crate::packets::opcodes::{
-    OP_HANDSHAKE_RESPONSE, OP_PING, OP_PONG, OP_SESSION_BEGIN, OP_SESSION_END,
+    OP_HANDSHAKE_RESPONSE, OP_PONG, OP_PONG_RESPONSE, OP_SESSION_BEGIN, OP_SESSION_END,
 };
 use crate::packets::send as tx;
 use crate::world_manager::WorldManager;
@@ -33,8 +33,10 @@ impl PacketProcessor {
 
         for sub in packet.get_subpackets()? {
             match sub.header.r#type {
-                OP_PING => self.handle_ping(client).await?,
-                OP_PONG => {
+                // Client→server ping arrives as OP_PONG (0x0008); server→client
+                // ping reply is OP_PONG_RESPONSE (0x0001).
+                OP_PONG => self.handle_ping(client).await?,
+                OP_PONG_RESPONSE => {
                     tracing::debug!(session = client.session_id, "pong");
                 }
                 OP_HANDSHAKE_RESPONSE => {
