@@ -21,6 +21,7 @@ mod processor;
 mod server;
 mod status;
 mod world_manager;
+mod zone;
 
 use crate::command_processor::CommandProcessor;
 use crate::config::{Config, LaunchArgs};
