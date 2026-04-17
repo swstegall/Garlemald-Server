@@ -313,9 +313,24 @@ pub async fn dispatch_area_event(
                 }
             }
         }
-        AreaEvent::ActorAdded { .. }
-        | AreaEvent::ActorRemoved { .. }
-        | AreaEvent::ActorMoved { .. }
+        AreaEvent::ActorAdded { area_id, actor_id } => {
+            // Fan the Npc::GetSpawnPackets bundle to every Player
+            // within 50 yalms. Uses the zone's spatial grid — no
+            // broadcast when the actor being added *is* the player
+            // themselves (they'll get a self-spawn via a separate
+            // zone-in flow).
+            spawn_bundle_fanout(world, registry, zone, *area_id, *actor_id).await;
+        }
+        AreaEvent::ActorRemoved { area_id: _, actor_id } => {
+            // Broadcast RemoveActor to nearby players. The grid has
+            // already dropped the projection; we reach around it via
+            // broadcast_around_actor's 50-yalm neighbour set using the
+            // actor's last-known cell. The broadcast helper is happy
+            // with a missing actor (falls back to no-op).
+            let packet = tx::actor::build_remove_actor(*actor_id);
+            broadcast_around_actor(world, registry, zone, *actor_id, packet.to_bytes()).await;
+        }
+        AreaEvent::ActorMoved { .. }
         | AreaEvent::DirectorCreated { .. }
         | AreaEvent::DirectorDeleted { .. }
         | AreaEvent::ContentAreaCreated { .. }
@@ -323,6 +338,47 @@ pub async fn dispatch_area_event(
         | AreaEvent::SpawnActor { .. } => {
             tracing::debug!(?event, "area event (observability-only)");
         }
+    }
+}
+
+/// Pump the seven-packet actor-spawn bundle to every Player within
+/// BROADCAST_RADIUS of `actor_id`. Matches the C# `Npc::GetSpawnPackets`
+/// sequence: AddActor + Speed + SpawnPosition + Name + State +
+/// IsZoning + (ScriptBind later once Lua wire-up lands).
+async fn spawn_bundle_fanout(
+    world: &WorldManager,
+    registry: &ActorRegistry,
+    zone: &Arc<RwLock<Zone>>,
+    _area_id: u32,
+    actor_id: u32,
+) {
+    let Some(handle) = registry.get(actor_id).await else {
+        return;
+    };
+    // Snapshot the character's base state for the spawn bundle.
+    let (name, state, display_name_id, position, rotation) = {
+        let c = handle.character.read().await;
+        (
+            c.base.display_name().to_string(),
+            c.base.current_main_state as u8,
+            c.base.display_name_id,
+            c.base.position(),
+            c.base.rotation,
+        )
+    };
+    let packets = [
+        tx::actor::build_add_actor(actor_id, 0).to_bytes(),
+        tx::actor::build_set_actor_speed_default(actor_id).to_bytes(),
+        tx::actor::build_set_actor_position(
+            actor_id, -1, position.x, position.y, position.z, rotation, 1, false,
+        )
+        .to_bytes(),
+        tx::actor::build_set_actor_name(actor_id, display_name_id, &name).to_bytes(),
+        tx::actor::build_set_actor_state(actor_id, state, 0).to_bytes(),
+        tx::actor::build_set_actor_is_zoning(actor_id, false).to_bytes(),
+    ];
+    for bytes in packets {
+        broadcast_around_actor(world, registry, zone, actor_id, bytes).await;
     }
 }
 

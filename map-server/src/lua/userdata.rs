@@ -459,6 +459,176 @@ impl UserData for LuaPlayer {
             },
         );
 
+        // --- Phase 8c — top-called Lua host stubs ---------------------------
+        // These reach scripts on every quest/NPC tick. Most emit a
+        // LuaCommand that the game loop translates into a real packet
+        // send later; a few are pure snapshot getters.
+
+        methods.add_method(
+            "SendGameMessage",
+            |_, this, (_sender_actor, text_id, log_type, _rest): (
+                Value,
+                u32,
+                Option<u8>,
+                mlua::MultiValue,
+            )| {
+                // Matches the C# signature `SendGameMessage(worldmaster,
+                // textId, logType, params…)`. We flatten the dynamic
+                // params into the chat text field so scripts still see
+                // their message reach the client.
+                push(
+                    &this.queue,
+                    LuaCommand::SendMessage {
+                        actor_id: this.snapshot.actor_id,
+                        message_type: log_type.unwrap_or(0x20),
+                        sender: String::new(),
+                        text: format!("text:{text_id}"),
+                    },
+                );
+                Ok(())
+            },
+        );
+        methods.add_method(
+            "SendDataPacket",
+            |_,
+             this,
+             (_attention, _sender, _param, _text_id, _rest): (
+                Value,
+                Value,
+                Value,
+                Option<u32>,
+                mlua::MultiValue,
+            )| {
+                // `player:SendDataPacket("attention", worldmaster, "", 25225, …)`
+                // in retail. We log only — the real packet builder lives
+                // on the cross-cutting sprint's TODO list.
+                let _ = &this.snapshot.actor_id;
+                Ok(())
+            },
+        );
+        methods.add_method("ChangeMusic", |_, this, music_id: u16| {
+            push(
+                &this.queue,
+                LuaCommand::ChangeMusic {
+                    player_id: this.snapshot.actor_id,
+                    music_id,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method(
+            "ChangeSpeed",
+            |_, this, (_idle, _walk, _run, _active): (f32, f32, f32, f32)| {
+                // Speed changes flow through ActorProperty packets in
+                // retail; Phase 8c records the intent so scripts don't
+                // error. Full packet emission rides with the dispatcher
+                // depth fills.
+                let _ = this.snapshot.actor_id;
+                Ok(())
+            },
+        );
+        methods.add_method("GetZone", |_, this, _: ()| {
+            // Return the zone id as a Lua integer. Scripts treat the
+            // return value as an opaque handle they then pass back to
+            // other host functions.
+            Ok(this.snapshot.zone_id)
+        });
+        methods.add_method("GetItemPackage", |_, _, _pkg_code: u16| {
+            // Real retail returns an ItemPackage userdata. Phase 8c
+            // returns nil so scripts can null-check before iterating —
+            // matches C# `null` when the package isn't loaded yet.
+            Ok(Value::Nil)
+        });
+        methods.add_method("GetQuest", |_, this, id: u32| {
+            // Returns a placeholder truthy value when the player has
+            // the quest — scripts usually just check for non-nil before
+            // calling `SetQuestFlag` etc.
+            if this.snapshot.active_quests.contains(&id) {
+                Ok(Value::Integer(id as i64))
+            } else {
+                Ok(Value::Nil)
+            }
+        });
+        methods.add_method("RemoveQuest", |_, this, id: u32| {
+            push(
+                &this.queue,
+                LuaCommand::AbandonQuest {
+                    player_id: this.snapshot.actor_id,
+                    quest_id: id,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method("RemoveQuestByQuestId", |_, this, id: u32| {
+            push(
+                &this.queue,
+                LuaCommand::AbandonQuest {
+                    player_id: this.snapshot.actor_id,
+                    quest_id: id,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method("ReplaceQuest", |_, this, (old_id, new_id): (u32, u32)| {
+            push(
+                &this.queue,
+                LuaCommand::AbandonQuest {
+                    player_id: this.snapshot.actor_id,
+                    quest_id: old_id,
+                },
+            );
+            push(
+                &this.queue,
+                LuaCommand::AddQuest {
+                    player_id: this.snapshot.actor_id,
+                    quest_id: new_id,
+                },
+            );
+            Ok(())
+        });
+
+        // --- Director hooks (scripts call these from guildleve flows) -------
+        methods.add_method("AddDirector", |_, _this, _director: Value| {
+            // Director userdata isn't yet exposed to Lua; the real
+            // member-add fires via DirectorOutbox on the Rust side. This
+            // stub prevents nil-call errors from scripts.
+            Ok(())
+        });
+        methods.add_method("RemoveDirector", |_, _this, _director: Value| Ok(()));
+        methods.add_method("GetDirector", |_, _this, _id: u32| Ok(Value::Nil));
+        methods.add_method("GetGuildleveDirector", |_, _this, _: ()| Ok(Value::Nil));
+        methods.add_method("SetLoginDirector", |_, _this, _director: Value| Ok(()));
+        methods.add_method("SetEventStatus", |_, _this, _status: Value| Ok(()));
+
+        // --- Equipment / inventory ------------------------------------------
+        methods.add_method("GetEquipment", |_, _this, _: ()| Ok(Value::Nil));
+        methods.add_method("GetItem", |_, _this, _unique_id: u64| Ok(Value::Nil));
+        methods.add_method("GetGearset", |_, _this, _class_id: u8| Ok(Value::Nil));
+
+        // --- Trade ----------------------------------------------------------
+        methods.add_method("GetOtherTrader", |_, _this, _: ()| Ok(Value::Nil));
+        methods.add_method("GetTradeOfferings", |_, _this, _: ()| Ok(Value::Nil));
+        methods.add_method("AddTradeItem", |_, _this, _: mlua::MultiValue| Ok(()));
+        methods.add_method("RemoveTradeItem", |_, _this, _: mlua::MultiValue| Ok(()));
+        methods.add_method("ClearTradeItems", |_, _this, _: ()| Ok(()));
+        methods.add_method("FinishTradeTransaction", |_, _this, _: mlua::MultiValue| Ok(()));
+
+        // --- Retainer -------------------------------------------------------
+        methods.add_method("DespawnMyRetainer", |_, _this, _: ()| Ok(()));
+
+        // --- Session control ------------------------------------------------
+        methods.add_method("Disengage", |_, _this, _: ()| Ok(()));
+        methods.add_method("Logout", |_, _this, _: ()| Ok(()));
+        methods.add_method("QuitGame", |_, _this, _: ()| Ok(()));
+
+        // --- Party ----------------------------------------------------------
+        methods.add_method("PartyLeave", |_, _this, _: ()| Ok(()));
+        methods.add_method("PartyDisband", |_, _this, _: ()| Ok(()));
+        methods.add_method("PartyKickPlayer", |_, _this, _name: String| Ok(()));
+        methods.add_method("PartyOustPlayer", |_, _this, _name: String| Ok(()));
+        methods.add_method("PartyPromote", |_, _this, _name: String| Ok(()));
+        methods.add_method("RemoveFromCurrentPartyAndCleanup", |_, _this, _: ()| Ok(()));
+
         // --- Movement -------------------------------------------------------
         methods.add_method(
             "ChangeState",

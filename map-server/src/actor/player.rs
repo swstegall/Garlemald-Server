@@ -81,6 +81,20 @@ pub struct PlayerHelperState {
     pub current_content_group_id: Option<u64>,
     /// Linkshell group ids this player has joined (retail cap = 8).
     pub current_linkshell_ids: Vec<u64>,
+
+    // ---- Phase 8 — achievements / titles / retainer / bazaar ---------
+    /// Ids of earned achievements. Serialised into the completed-bits
+    /// array on zone-in.
+    pub earned_achievements: std::collections::HashSet<u32>,
+    pub achievement_points: u32,
+    /// The 5 most-recently-earned ids, FIFO. Retail shows these in the
+    /// profile card.
+    pub latest_achievements: [u32; 5],
+    /// Currently-equipped title id. 0 = none.
+    pub current_title_id: u32,
+    /// Non-zero when the player has a retainer spawned in-zone — lets
+    /// the item-package-request dispatch tell retainer from player.
+    pub current_spawned_retainer_id: u32,
 }
 
 impl PlayerHelperState {
@@ -172,6 +186,84 @@ impl PlayerHelperState {
 
     pub fn is_in_linkshell(&self, ls_id: u64) -> bool {
         self.current_linkshell_ids.contains(&ls_id)
+    }
+
+    // ----- Phase 8 — achievements / titles / retainer -----------------
+
+    /// Port of `Player.EarnAchievement(id, points)`. Idempotent: the
+    /// same id can't be earned twice. Returns `true` if this was a
+    /// first-time earn (the only case that emits an `Earned` toast in
+    /// retail).
+    pub fn earn_achievement(
+        &mut self,
+        player_actor_id: u32,
+        achievement_id: u32,
+        points: u32,
+        outbox: &mut crate::achievement::AchievementOutbox,
+    ) -> bool {
+        if !self.earned_achievements.insert(achievement_id) {
+            return false;
+        }
+        self.achievement_points = self.achievement_points.saturating_add(points);
+        // Shift latest_achievements FIFO: new entry lands at index 0.
+        self.latest_achievements.rotate_right(1);
+        self.latest_achievements[0] = achievement_id;
+
+        outbox.push(crate::achievement::AchievementEvent::Earned {
+            player_actor_id,
+            achievement_id,
+        });
+        outbox.push(crate::achievement::AchievementEvent::SetPoints {
+            player_actor_id,
+            points: self.achievement_points,
+        });
+        outbox.push(crate::achievement::AchievementEvent::SetLatest {
+            player_actor_id,
+            latest_ids: self.latest_achievements,
+        });
+        true
+    }
+
+    pub fn has_achievement(&self, id: u32) -> bool {
+        self.earned_achievements.contains(&id)
+    }
+
+    /// Build the wire-format bit array. Indices up to the retail cap
+    /// (`COMPLETED_ACHIEVEMENTS_BITS`) get a `true` if earned.
+    pub fn completed_achievement_bits(&self) -> Vec<bool> {
+        let mut bits = vec![false; crate::achievement::COMPLETED_ACHIEVEMENTS_BITS];
+        for &id in &self.earned_achievements {
+            if (id as usize) < bits.len() {
+                bits[id as usize] = true;
+            }
+        }
+        bits
+    }
+
+    /// Port of `Player.SetTitle(id)`.
+    pub fn set_title(
+        &mut self,
+        player_actor_id: u32,
+        title_id: u32,
+        outbox: &mut crate::achievement::AchievementOutbox,
+    ) {
+        self.current_title_id = title_id;
+        outbox.push(crate::achievement::AchievementEvent::SetPlayerTitle {
+            player_actor_id,
+            title_id,
+        });
+    }
+
+    pub fn set_spawned_retainer(&mut self, actor_id: u32) {
+        self.current_spawned_retainer_id = actor_id;
+    }
+
+    pub fn clear_spawned_retainer(&mut self) {
+        self.current_spawned_retainer_id = 0;
+    }
+
+    pub fn has_spawned_retainer(&self) -> bool {
+        self.current_spawned_retainer_id != 0
     }
 }
 

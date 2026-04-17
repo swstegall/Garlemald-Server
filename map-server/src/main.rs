@@ -7,6 +7,7 @@ use anyhow::Result;
 use clap::Parser;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
+mod achievement;
 mod actor;
 mod battle;
 mod command_processor;
@@ -32,6 +33,7 @@ mod zone;
 use crate::command_processor::CommandProcessor;
 use crate::config::{Config, LaunchArgs};
 use crate::database::Database;
+use crate::lua::LuaEngine;
 use crate::runtime::{ActorRegistry, GameTicker, TickerConfig};
 use crate::world_manager::WorldManager;
 
@@ -69,6 +71,42 @@ async fn main() -> Result<()> {
     let world = Arc::new(WorldManager::new());
     let registry = Arc::new(ActorRegistry::new());
     let cmd = Arc::new(CommandProcessor::new(world.clone()));
+    let lua = Arc::new(LuaEngine::new(config.script_root.clone()));
+    tracing::info!(path = ?config.script_root, "lua engine initialised");
+
+    // Phase-2 loaders — zones, private areas, entrances, seamless
+    // boundaries. Skipped when the test harness flips
+    // `load_from_database = false`.
+    if config.load_from_database {
+        match world
+            .load_from_database(&db, &config.bind_ip, config.port)
+            .await
+        {
+            Ok(()) => tracing::info!(zones = world.zone_count().await, "zones loaded"),
+            Err(e) => {
+                tracing::error!(error = %e, "world load failed; continuing with empty zones");
+            }
+        }
+        // Phase-3 spawn pass — materialise NPCs from the seed rows the
+        // zone loaders just populated. Requires `ActorClass` metadata
+        // loaded from DB, so do that first.
+        match db.load_actor_classes().await {
+            Ok(classes) => {
+                let battle_ids = std::collections::HashSet::<u32>::new();
+                let ctx = crate::npc::SpawnContext {
+                    world: &world,
+                    registry: &registry,
+                    actor_classes: &classes,
+                    battle_class_ids: &battle_ids,
+                };
+                let spawned = ctx.spawn_all_actors().await;
+                tracing::info!(count = spawned.len(), "npc spawn pass complete");
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "actor classes load failed; skipping spawn pass");
+            }
+        }
+    }
 
     // Spawn the game-loop ticker. Walks every zone every 100ms and
     // drains the four typed outboxes (status / battle / area / inventory)
@@ -103,5 +141,5 @@ async fn main() -> Result<()> {
         }
     });
 
-    server::run(config, db, world, registry).await
+    server::run(config, db, world, registry, lua).await
 }

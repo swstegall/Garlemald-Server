@@ -62,6 +62,12 @@ pub const OP_RX_FRIENDLIST_REMOVE: u16 = 0x01CD;
 pub const OP_RX_FRIENDLIST_REQUEST: u16 = 0x01CE;
 pub const OP_RX_FRIEND_STATUS: u16 = 0x01CF;
 
+/// Achievement progress query.
+pub const OP_RX_ACHIEVEMENT_PROGRESS: u16 = 0x0135;
+/// Item-package query (the C# 0x0131 path — used for retainer item
+/// listings + bazaar).
+pub const OP_RX_ITEM_PACKAGE_REQUEST: u16 = 0x0131;
+
 /// Support desk.
 pub const OP_RX_FAQ_LIST_REQUEST: u16 = 0x01D0;
 pub const OP_RX_FAQ_BODY_REQUEST: u16 = 0x01D1;

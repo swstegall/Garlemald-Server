@@ -16,11 +16,13 @@
 #![allow(dead_code, unused_imports, clippy::module_inception)]
 
 pub mod director;
+pub mod dispatcher;
 pub mod guildleve;
 pub mod guildleve_work;
 pub mod outbox;
 
 pub use director::{Director, DirectorKind};
+pub use dispatcher::dispatch_director_event;
 pub use guildleve::{
     guildleve_start_animation, guildleve_script_for_plate, GuildleveDirector, GuildleveLocationMusic,
     GL_TEXT_ABANDON, GL_TEXT_COMPLETE, GL_TEXT_REWARD_EXP, GL_TEXT_REWARD_GIL, GL_TEXT_START,

@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 use crate::config::Config;
 use crate::data::ClientHandle;
 use crate::database::Database;
+use crate::lua::LuaEngine;
 use crate::processor::PacketProcessor;
 use crate::runtime::ActorRegistry;
 use crate::world_manager::WorldManager;
@@ -24,6 +25,7 @@ pub async fn run(
     db: Arc<Database>,
     world: Arc<WorldManager>,
     registry: Arc<ActorRegistry>,
+    lua: Arc<LuaEngine>,
 ) -> Result<()> {
     let addr = format!("{}:{}", config.bind_ip, config.port);
     let listener = TcpListener::bind(&addr).await.with_context(|| format!("bind {addr}"))?;
@@ -33,10 +35,7 @@ pub async fn run(
         db,
         world,
         registry,
-        // Phase 4 follow-up leaves this `None` on the socket path; the
-        // game-loop wiring in `main.rs` constructs a `LuaEngine` and
-        // a variant of the processor with it plugged in as feature work.
-        lua: None,
+        lua: Some(lua),
     });
 
     loop {

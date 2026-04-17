@@ -340,6 +340,81 @@ async fn event_start_then_run_event_function_reaches_client() {
 }
 
 #[tokio::test]
+async fn actor_added_fans_spawn_bundle_to_nearby_players() {
+    use crate::runtime::dispatcher::dispatch_area_event;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use crate::zone::area::{ActorKind, StoredActor};
+    use crate::zone::navmesh::StubNavmeshLoader;
+    use crate::zone::outbox::AreaEvent;
+    use crate::zone::Zone;
+    use tokio::sync::mpsc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+
+    let zone = Zone::new(
+        100, "test", 1, "/Area/Zone/Test", 0, 0, 0, false, false, false, false, false,
+        Some(&StubNavmeshLoader),
+    );
+    world.register_zone(zone).await;
+
+    // Place a Player at origin + spawn an NPC at (5, 0, 0) nearby.
+    {
+        let z = world.zone(100).await.unwrap();
+        let mut z = z.write().await;
+        let mut ob = crate::zone::outbox::AreaOutbox::new();
+        z.core.add_actor(
+            StoredActor {
+                actor_id: 1,
+                kind: ActorKind::Player,
+                position: Vector3::ZERO,
+                grid: (0, 0),
+                is_alive: true,
+            },
+            &mut ob,
+        );
+        z.core.add_actor(
+            StoredActor {
+                actor_id: 2,
+                kind: ActorKind::Npc,
+                position: Vector3::new(5.0, 0.0, 0.0),
+                grid: (0, 0),
+                is_alive: true,
+            },
+            &mut ob,
+        );
+    }
+    registry
+        .insert(ActorHandle::new(
+            1, ActorKindTag::Player, 100, 11, Character::new(1),
+        ))
+        .await;
+    registry
+        .insert(ActorHandle::new(
+            2, ActorKindTag::Npc, 100, 0, Character::new(2),
+        ))
+        .await;
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(32);
+    world.register_client(11, ClientHandle::new(11, tx)).await;
+
+    let zone_arc = world.zone(100).await.unwrap();
+    dispatch_area_event(
+        &AreaEvent::ActorAdded { area_id: 100, actor_id: 2 },
+        &registry,
+        &world,
+        &zone_arc,
+    )
+    .await;
+
+    // The fan-out sends six packets: AddActor + Speed + Position +
+    // Name + State + IsZoning. Each lands on the player's queue.
+    for _ in 0..6 {
+        let got = rx.recv().await.expect("spawn bundle packet");
+        assert!(!got.is_empty());
+    }
+}
+
+#[tokio::test]
 async fn hate_add_event_updates_attacker_hate_container() {
     let world = Arc::new(WorldManager::new());
     let registry = Arc::new(ActorRegistry::new());

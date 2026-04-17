@@ -19,6 +19,15 @@ pub struct Config {
     pub db_name: String,
     pub db_user: String,
     pub db_password: String,
+
+    /// Filesystem root of the Lua script tree (`scripts/`). Loaded
+    /// with `LuaEngine::new(script_root)`. Defaults to `./scripts` so
+    /// a checked-out `Data/scripts` directory works out of the box.
+    pub script_root: std::path::PathBuf,
+    /// When `false`, skip the DB loaders (`load_from_database`) +
+    /// `spawn_all_actors`. Used by the integration test harness so the
+    /// server boots against an offline MySQL mock.
+    pub load_from_database: bool,
 }
 
 impl Config {
@@ -57,6 +66,12 @@ impl Config {
             db_name: ini.get_value("Database", "database", String::new()),
             db_user: ini.get_value("Database", "username", String::new()),
             db_password: ini.get_value("Database", "password", String::new()),
+            script_root: ini
+                .get_value("General", "script_root", "./scripts".to_string())
+                .into(),
+            load_from_database: ini
+                .get_value("General", "load_from_database", "true".to_string())
+                .eq_ignore_ascii_case("true"),
         })
     }
 

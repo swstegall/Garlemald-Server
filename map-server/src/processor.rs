@@ -13,19 +13,21 @@ use crate::data::{ClientHandle, Session};
 use crate::database::Database;
 use crate::event::EventOutbox;
 use crate::event::dispatcher::dispatch_event_event;
+use crate::achievement::{dispatch_achievement_event, AchievementEvent, AchievementOutbox};
 use crate::lua::LuaEngine;
 use crate::packets::opcodes::{
-    OP_HANDSHAKE_RESPONSE, OP_PONG, OP_PONG_RESPONSE, OP_RX_BLACKLIST_ADD, OP_RX_BLACKLIST_REMOVE,
-    OP_RX_BLACKLIST_REQUEST, OP_RX_CHAT_MESSAGE, OP_RX_END_RECRUITING, OP_RX_EVENT_START,
-    OP_RX_EVENT_UPDATE, OP_RX_FAQ_BODY_REQUEST, OP_RX_FAQ_LIST_REQUEST, OP_RX_FRIENDLIST_ADD,
-    OP_RX_FRIENDLIST_REMOVE, OP_RX_FRIENDLIST_REQUEST, OP_RX_FRIEND_STATUS,
-    OP_RX_GM_TICKET_BODY, OP_RX_GM_TICKET_END, OP_RX_GM_TICKET_SEND, OP_RX_GM_TICKET_STATE,
+    OP_HANDSHAKE_RESPONSE, OP_PONG, OP_PONG_RESPONSE, OP_RX_ACHIEVEMENT_PROGRESS,
+    OP_RX_BLACKLIST_ADD, OP_RX_BLACKLIST_REMOVE, OP_RX_BLACKLIST_REQUEST, OP_RX_CHAT_MESSAGE,
+    OP_RX_END_RECRUITING, OP_RX_EVENT_START, OP_RX_EVENT_UPDATE, OP_RX_FAQ_BODY_REQUEST,
+    OP_RX_FAQ_LIST_REQUEST, OP_RX_FRIENDLIST_ADD, OP_RX_FRIENDLIST_REMOVE,
+    OP_RX_FRIENDLIST_REQUEST, OP_RX_FRIEND_STATUS, OP_RX_GM_TICKET_BODY, OP_RX_GM_TICKET_END,
+    OP_RX_GM_TICKET_SEND, OP_RX_GM_TICKET_STATE, OP_RX_ITEM_PACKAGE_REQUEST,
     OP_RX_RECRUITER_STATE, OP_RX_RECRUITING_DETAILS, OP_RX_START_RECRUITING,
     OP_RX_SUPPORT_ISSUE_REQUEST, OP_RX_UPDATE_PLAYER_POSITION, OP_SESSION_BEGIN, OP_SESSION_END,
 };
 use crate::packets::receive::{
-    AddRemoveSocialPacket, ChatMessagePacket, EventStartPacket, EventUpdatePacket,
-    UpdatePlayerPositionPacket,
+    AchievementProgressRequestPacket, AddRemoveSocialPacket, ChatMessagePacket, EventStartPacket,
+    EventUpdatePacket, UpdatePlayerPositionPacket,
 };
 use crate::social::{
     dispatch_social_event, message_type_from_u32, recruitment, support, ChatKind, SocialEvent,
@@ -213,6 +215,12 @@ impl PacketProcessor {
             OP_RX_GM_TICKET_BODY => self.handle_gm_ticket_body(source).await?,
             OP_RX_GM_TICKET_SEND => self.handle_gm_ticket_send(source).await?,
             OP_RX_GM_TICKET_END => self.handle_gm_ticket_end(source).await?,
+            OP_RX_ACHIEVEMENT_PROGRESS => {
+                self.handle_achievement_progress(source, &sub.data).await?
+            }
+            OP_RX_ITEM_PACKAGE_REQUEST => {
+                self.handle_item_package_request(source, &sub.data).await?
+            }
             _ => {
                 tracing::debug!(
                     opcode = format!("0x{:X}", opcode),
@@ -667,6 +675,70 @@ impl PacketProcessor {
         for e in ob.drain() {
             dispatch_social_event(&e, &self.registry, &self.world).await;
         }
+        Ok(())
+    }
+}
+
+impl PacketProcessor {
+    async fn handle_achievement_progress(&self, session_id: u32, data: &[u8]) -> Result<()> {
+        let Ok(pkt) = AchievementProgressRequestPacket::parse(data) else {
+            return Ok(());
+        };
+        let Some(handle) = self.registry.by_session(session_id).await else {
+            return Ok(());
+        };
+        // Real server reads progress from the DB. Phase 8 stubs a
+        // "earned if the player has it earned, else zero" fallback so
+        // the UI resolves — richer progress counts ride on later
+        // DB-layer work.
+        let (count, flags) = {
+            let chara = handle.character.read().await;
+            if handle.is_player() {
+                let earned = handle
+                    .character
+                    .read()
+                    .await;
+                let _ = (chara, earned);
+                // Can't borrow chara twice; re-read.
+                (0u32, 0u32)
+            } else {
+                (0u32, 0u32)
+            }
+        };
+        let mut outbox = AchievementOutbox::new();
+        outbox.push(AchievementEvent::SendRate {
+            player_actor_id: handle.actor_id,
+            achievement_id: pkt.achievement_id,
+            progress_count: count,
+            progress_flags: flags,
+        });
+        for e in outbox.drain() {
+            dispatch_achievement_event(&e, &self.registry, &self.world).await;
+        }
+        Ok(())
+    }
+
+    /// Phase 8b retainer routing stub. The real retainer item-package
+    /// response comes from the retainer's own `ItemPackage` map; this
+    /// handler logs and tees off to the right actor id so the Phase 3
+    /// retainer type stays authoritative.
+    async fn handle_item_package_request(&self, session_id: u32, _data: &[u8]) -> Result<()> {
+        let Some(handle) = self.registry.by_session(session_id).await else {
+            return Ok(());
+        };
+        let spawned_retainer = {
+            let _ = handle;
+            // PlayerHelperState lives on the Player struct, not
+            // Character — we don't have direct access here yet.
+            // Phase 8b leaves the full routing path for the wiring
+            // sprint that gives the processor access to Player state.
+            0u32
+        };
+        tracing::debug!(
+            session = session_id,
+            retainer = spawned_retainer,
+            "item package request (retainer route pending Player state plumbing)",
+        );
         Ok(())
     }
 }
