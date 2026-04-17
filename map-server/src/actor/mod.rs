@@ -205,6 +205,15 @@ pub struct Character {
     /// Status-effect bookkeeping (effect map + the client-visible
     /// `charaWork.status[20]` / `charaWork.statusShownTime[20]` arrays).
     pub status_effects: crate::status::StatusEffectContainer,
+    /// Top-level AI / state-machine orchestrator. Populated for actors
+    /// that actually fight; stubbed for the static/NPC cases.
+    pub ai_container: crate::battle::AIContainer,
+    /// Enmity tracker — populated for BattleNpcs; empty for Players.
+    pub hate: crate::battle::HateContainer,
+    /// Transient battle state (cast-gauge speed, timing flags).
+    pub battle_temp: crate::battle::BattleTemp,
+    /// Persistent battle state — skill levels + physical level.
+    pub battle_save: crate::battle::BattleSave,
 }
 
 impl Character {
@@ -213,6 +222,10 @@ impl Character {
             base: BaseActor::new(actor_id),
             chara: CharaState { is_auto_attack_enabled: true, ..Default::default() },
             status_effects: crate::status::StatusEffectContainer::new(actor_id),
+            ai_container: crate::battle::AIContainer::new(actor_id, None, None),
+            hate: crate::battle::HateContainer::new(actor_id),
+            battle_temp: crate::battle::BattleTemp::default(),
+            battle_save: crate::battle::BattleSave::default(),
         }
     }
 }

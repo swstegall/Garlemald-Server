@@ -8,6 +8,7 @@ use clap::Parser;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 mod actor;
+mod battle;
 mod command_processor;
 mod config;
 mod data;
