@@ -347,6 +347,13 @@ impl ModifierMap {
     pub fn clear(&mut self) {
         self.map.clear();
     }
+
+    /// Iterate `(raw_key, value)` pairs — used by callers that merge one
+    /// `ModifierMap` into another (e.g. stacking pool/genus/spawn layers
+    /// on a BattleNpc).
+    pub fn iter(&self) -> impl Iterator<Item = (u32, f64)> + '_ {
+        self.map.iter().map(|(k, v)| (*k, *v))
+    }
 }
 
 #[cfg(test)]

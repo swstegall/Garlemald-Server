@@ -16,6 +16,7 @@ mod database;
 mod gamedata;
 mod inventory;
 mod lua;
+mod npc;
 mod packets;
 mod processor;
 mod runtime;

@@ -186,6 +186,82 @@ async fn seamless_boundary_moves_player_between_zones() {
 }
 
 #[tokio::test]
+async fn spawner_populates_zone_and_ticker_drives_them() {
+    use std::collections::{HashMap, HashSet};
+
+    use crate::npc::{spawn_all_actors, ActorClass, SpawnContext};
+    use crate::runtime::{GameTicker, TickerConfig};
+    use crate::zone::SpawnLocation;
+    use crate::zone::Zone;
+
+    // Build world + registry.
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::new("mysql://invalid/dummy").expect("db stub"),
+    );
+
+    // One zone with two seeds: a plain NPC and a BattleNpc.
+    let mut zone = Zone::new(
+        200, "field", 1, "/Area/Zone/Field", 0, 0, 0, false, false, false, false, false,
+        Some(&StubNavmeshLoader),
+    );
+    zone.add_spawn_location(SpawnLocation::new(
+        11_001, "greeter", 200, "", 0, 0.0, 0.0, 0.0, 0.0, 0, 0,
+    ))
+    .unwrap();
+    zone.add_spawn_location(SpawnLocation::new(
+        22_002, "dodo", 200, "", 0, 5.0, 0.0, 5.0, 0.0, 0, 0,
+    ))
+    .unwrap();
+    world.register_zone(zone).await;
+
+    // Actor classes + which ids are battle mobs.
+    let mut classes = HashMap::new();
+    classes.insert(
+        11_001,
+        ActorClass::new(11_001, "/Chara/Npc/Populace/Greeter", 0, 0, "", 0, 0, 0),
+    );
+    classes.insert(
+        22_002,
+        ActorClass::new(22_002, "/Chara/Npc/Mob/Dodo", 0, 0, "", 0, 0, 0),
+    );
+    let mut battle_ids = HashSet::new();
+    battle_ids.insert(22_002);
+
+    // Spawn pass.
+    let ctx = SpawnContext {
+        world: &world,
+        registry: &registry,
+        actor_classes: &classes,
+        battle_class_ids: &battle_ids,
+    };
+    let spawned = spawn_all_actors(&ctx).await;
+    assert_eq!(spawned.len(), 2);
+
+    // Give one of the spawned battle npcs a Regen mod, drop its HP, and
+    // confirm the ticker's status path pumps it back up.
+    let bnpc_handle = {
+        let in_zone = registry.actors_in_zone(200).await;
+        in_zone
+            .into_iter()
+            .find(|h| h.kind == crate::runtime::ActorKindTag::BattleNpc)
+            .expect("battle npc was spawned")
+    };
+    {
+        let mut chara = bnpc_handle.character.write().await;
+        chara.chara.max_hp = 500;
+        chara.chara.hp = 100;
+        chara.chara.mods.set(crate::actor::modifier::Modifier::Regen, 10.0);
+    }
+    let ticker = GameTicker::new(TickerConfig::default(), world.clone(), registry.clone(), db);
+    ticker.tick_once(5_000).await;
+
+    let hp_after = bnpc_handle.character.read().await.chara.hp;
+    assert!(hp_after > 100, "spawn→tick→regen should raise hp; got {hp_after}");
+}
+
+#[tokio::test]
 async fn hate_add_event_updates_attacker_hate_container() {
     let world = Arc::new(WorldManager::new());
     let registry = Arc::new(ActorRegistry::new());

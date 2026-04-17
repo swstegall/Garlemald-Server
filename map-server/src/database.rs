@@ -153,6 +153,73 @@ impl Database {
         Ok(out)
     }
 
+    /// Port of `LoadActorClasses`. Reads `gamedata_actor_class`
+    /// (LEFT JOIN `gamedata_actor_pushcommand`) into an `id → ActorClass`
+    /// map. Called once at boot.
+    pub async fn load_actor_classes(&self) -> Result<HashMap<u32, crate::npc::ActorClass>> {
+        let mut conn = self.pool.get_conn().await?;
+        let rows: Vec<Row> = r"SELECT
+                gamedata_actor_class.id AS id,
+                gamedata_actor_class.classPath AS classPath,
+                gamedata_actor_class.displayNameId AS displayNameId,
+                gamedata_actor_class.propertyFlags AS propertyFlags,
+                gamedata_actor_class.eventConditions AS eventConditions,
+                gamedata_actor_pushcommand.pushCommand AS pushCommand,
+                gamedata_actor_pushcommand.pushCommandSub AS pushCommandSub,
+                gamedata_actor_pushcommand.pushCommandPriority AS pushCommandPriority
+            FROM gamedata_actor_class
+            LEFT JOIN gamedata_actor_pushcommand
+              ON gamedata_actor_class.id = gamedata_actor_pushcommand.id"
+            .with(())
+            .fetch(&mut conn)
+            .await?;
+        let mut out = HashMap::with_capacity(rows.len());
+        for mut r in rows {
+            let id: u32 = r.take("id").unwrap_or_default();
+            let ac = crate::npc::ActorClass::new(
+                id,
+                r.take::<String, _>("classPath").unwrap_or_default(),
+                r.take::<u32, _>("displayNameId").unwrap_or_default(),
+                r.take::<u32, _>("propertyFlags").unwrap_or_default(),
+                r.take::<String, _>("eventConditions").unwrap_or_default(),
+                r.take::<u16, _>("pushCommand").unwrap_or_default(),
+                r.take::<u16, _>("pushCommandSub").unwrap_or_default(),
+                r.take::<u8, _>("pushCommandPriority").unwrap_or_default(),
+            );
+            out.insert(id, ac);
+        }
+        Ok(out)
+    }
+
+    /// Load the non-battle spawn seeds from `server_spawn_locations`.
+    /// These populate `Npc` actors — BattleNpc spawns live in a separate
+    /// table and land through `load_battle_npc_spawns`.
+    pub async fn load_npc_spawn_locations(&self) -> Result<Vec<crate::zone::SpawnLocation>> {
+        let mut conn = self.pool.get_conn().await?;
+        let rows: Vec<Row> = r"SELECT
+                actorClassId, uniqueId, zoneId,
+                privateAreaName, privateAreaLevel,
+                positionX, positionY, positionZ, rotation,
+                actorState, animationId
+            FROM server_spawn_locations"
+            .with(())
+            .fetch(&mut conn)
+            .await?;
+        Ok(rows.into_iter().map(|mut r| crate::zone::SpawnLocation {
+            class_id: r.take("actorClassId").unwrap_or_default(),
+            unique_id: r.take::<String, _>("uniqueId").unwrap_or_default(),
+            zone_id: r.take("zoneId").unwrap_or_default(),
+            private_area_name: r.take::<String, _>("privateAreaName").unwrap_or_default(),
+            private_area_level: r.take("privateAreaLevel").unwrap_or_default(),
+            x: r.take("positionX").unwrap_or_default(),
+            y: r.take("positionY").unwrap_or_default(),
+            z: r.take("positionZ").unwrap_or_default(),
+            rotation: r.take("rotation").unwrap_or_default(),
+            state: r.take("actorState").unwrap_or_default(),
+            animation_id: r.take("animationId").unwrap_or_default(),
+        }).collect())
+    }
+
     /// Port of `LoadSeamlessBoundryList`. Keyed by region id so
     /// `SeamlessCheck` only iterates the boundaries in the player's region.
     pub async fn load_seamless_boundaries(&self) -> Result<HashMap<u32, Vec<SeamlessBoundary>>> {
