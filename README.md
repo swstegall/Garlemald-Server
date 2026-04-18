@@ -1,68 +1,160 @@
 # Garlemald Server
 
-A Rust port of [Project Meteor](https://bitbucket.org/Ioncannon/project-meteor-server/) — a server emulator for **Final Fantasy XIV 1.23b**. The original is a C# codebase; Garlemald re-implements the same three-server architecture, wire protocol, and database contract in async Rust on top of Tokio.
+## Contents
 
-This repo is a sibling of `project-meteor-mirror/` in the parent workspace. The C# tree is kept alongside as the reference implementation — when behavior is ambiguous, the C# source is authoritative.
+1. [NOTICE](#notice)
+2. [Introduction](#introduction)
+   - [What's different from Project Meteor Server](#whats-different-from-project-meteor-server)
+   - [Server Layout](#server-layout)
+3. [Requirements](#requirements)
+   - [Running the server](#running-the-server)
+   - [Running the client](#running-the-client)
+   - [Optional downloads](#optional-downloads)
+4. [Building from source](#building-from-source)
+   - [Get the code](#get-the-code)
+   - [Build](#build)
+5. [Server Setup](#server-setup)
+   - [1. Database](#1-database)
+   - [2. Static actor data](#2-static-actor-data)
+   - [3. Lua script tree](#3-lua-script-tree)
+   - [4. Configure](#4-configure)
+   - [5. Create a session](#5-create-a-session)
+6. [Starting the servers](#starting-the-servers)
+7. [Client Setup](#client-setup)
+8. [Logging](#logging)
+9. [Testing](#testing)
+10. [Layout](#layout)
+11. [Troubleshooting](#troubleshooting)
+12. [References](#references)
 
-## What this is
+## NOTICE
 
-FFXIV 1.23b shipped with a three-tier server: a lobby for authentication and character selection, a world server for account-wide state, and a map server that runs the actual game world. Garlemald preserves that split:
+This project serves the **FINAL FANTASY XIV v1.23b** client (the original 1.0
+iteration of the game), not A Realm Reborn. If your client reports
+`2012.09.19.0001` as its version, you are in the right place; any other
+client version will not negotiate the wire protocol correctly.
 
-| Crate          | Default port | Role                                                                                      |
-| -------------- | -----------: | ----------------------------------------------------------------------------------------- |
-| `lobby-server` |        54994 | Client auth, account login, character list, character create/delete.                      |
-| `world-server` |        54992 | World-level services: party, linkshell, friend list, MOTD, world metadata.                |
-| `map-server`   |         1989 | Game runtime: zones, actors, NPCs, battle, inventory, events, Lua scripting, tick loop.   |
-| `common`       |            — | Shared library: blowfish, packet/subpacket framing, SQLite helper, hash table, math helpers. |
+## Introduction
 
-All three binaries share a single **SQLite** database file (default `./data/garlemald.db`, created with schema on first run). The map server additionally loads a tree of **Lua scripts** (zones, NPCs, commands, directors) at runtime via [`mlua`](https://crates.io/crates/mlua) with vendored Lua 5.4.
+Garlemald is a Rust port of
+[Project Meteor Server](https://bitbucket.org/Ioncannon/project-meteor-server/).
+It preserves the three-tier FFXIV 1.0 architecture (lobby / world / map)
+and the original wire protocol, but collapses every external service the
+upstream C# project relies on - web server, PHP processor, MySQL / MariaDB
+daemon, WAMP stack - into a single cargo workspace that runs anywhere
+Rust does.
 
-## How it works
+The reference C# tree lives alongside this repo in the parent workspace at
+`../project-meteor-mirror/`. When behaviour is ambiguous, that source is
+authoritative.
 
-### Connection flow
+### What's different from Project Meteor Server
+
+| Aspect           | Project Meteor                       | Garlemald                                         |
+|------------------|--------------------------------------|---------------------------------------------------|
+| Language         | C# (.NET Framework 4.5)              | Rust (2024 edition, pinned to 1.95)               |
+| Platform         | Windows only, Visual Studio          | any Rust tier-1 target (macOS, Linux, Windows)    |
+| Web/login server | Apache + PHP account creation        | none - session rows go straight into SQLite       |
+| Database         | MySQL 5.7 / MariaDB 10 running       | SQLite file created automatically on first boot   |
+| WAMP stack       | required (or manual Apache+PHP+SQL)  | not required                                      |
+| Scripting        | Lua 5.1 via NLua                     | Lua 5.4 via mlua (vendored, built from source)    |
+| Config format    | `.ini`                               | `.toml` (with serde + sensible defaults)          |
+| Config defaults  | none - copy from `data/` by hand     | localhost defaults committed to `configs/`        |
+
+### Server Layout
+
+A running Garlemald rig is three long-lived processes sharing one SQLite
+file:
 
 ```
-    Client ──► lobby-server (54994)   auth + character list
-                    │
-                    ▼  (handoff via world/map endpoints baked into the character row)
-    Client ──► world-server (54992)   social + world state
-    Client ──► map-server   (1989)    zone/actor state, driven by a 100ms tick
+                         +--------------------+
+                         |   SQLite file      |
+                         |   ./data/          |
+                         |   garlemald.db     |
+                         +--------------------+
+                               ^   ^   ^
+                               |   |   |
+         +---------------------+   |   +---------------------+
+         |                         |                         |
+  +---------------+        +---------------+         +---------------+
+  |  lobby-server |        |  world-server |         |   map-server  |
+  |   :54994      |        |   :54992      |         |    :1989      |
+  +---------------+        +---------------+         +---------------+
+           ^                       ^                         ^
+           |                       |                         |
+           +-----------------------+-------------------------+
+                                   |
+                      +----------------------------+
+                      | FFXIV 1.23b client         |
+                      | (SeventhUmbral Launcher    |
+                      |  or garlemald-client)      |
+                      +----------------------------+
 ```
 
-The lobby hands the client back a set of IP/port pairs for the world + map servers, read from the `servers` table in the DB. The client then opens a second connection to the world/map pair for the selected character.
+Each process has a narrow role:
 
-### Wire protocol
+1. **Lobby server (port 54994).** Validates session tokens, fans out the
+   character list, handles character create / rename / delete, and hands
+   the client off to the world / map pair when a character is selected.
+2. **World server (port 54992).** Owns per-account social state: party,
+   linkshell, friend list, retainers, MOTD. Talks to the map server to
+   route in-world chat.
+3. **Map server (port 1989).** Runs the actual game world - zones, actors,
+   NPCs, battle, inventory, events, Lua scripting, and the 100 ms tick
+   loop.
 
-Packets are the same Project Meteor frame: an outer `BasePacket` header followed by one or more `SubPacket`s. Transport is Blowfish-encrypted once the session key has been exchanged. The `common` crate implements the framing; see `common/src/packet.rs`, `common/src/subpacket.rs`, and `common/src/blowfish.rs`.
+Unlike the retail layout (multiple worlds, each with multiple region
+servers), Garlemald ships a single world / map pair. Running multiple
+worlds is possible by copying the config + data dir and bumping the ports
+and `world_id`.
 
-### Map server internals
+## Requirements
 
-- `world_manager` holds every loaded zone, private area, and seamless boundary.
-- `actor`, `npc`, `battle`, `status`, `inventory`, `event`, `director`, `group`, `social`, `achievement` each own a slice of runtime state.
-- `runtime::GameTicker` walks every zone every 100ms and drains four typed outboxes (status / battle / area / inventory) into packets, DB writes, and Lua calls.
-- `lua::LuaEngine` is the single entry point into scripts; the tree it reads is the same `scripts/` directory shipped with Project Meteor.
+### Running the server
 
-## Layout
+| Component     | Minimum                          | Notes                                                                                   |
+|---------------|----------------------------------|-----------------------------------------------------------------------------------------|
+| Rust toolchain| 1.95.0                           | Pinned in `rust-toolchain.toml`; `rustup` installs automatically on first build.        |
+| C compiler    | any (`cc`, `clang`, `gcc`, MSVC) | `mlua` and `rusqlite` build Lua and SQLite from source via vendored / bundled features. |
+| Disk          | ~500 MB                          | Compile artefacts plus SQLite data file.                                                |
+| OS            | macOS, Linux, Windows            | Any tier-1 Rust target.                                                                 |
 
+No web server, no PHP, no MySQL / MariaDB daemon, no WAMP install.
+
+### Running the client
+
+| Component              | Version                                                                          |
+|------------------------|----------------------------------------------------------------------------------|
+| Final Fantasy XIV 1.23b| `2012.09.19.0001`                                                                |
+| Launcher               | Seventh Umbral Launcher 1.03 (Windows), or `../garlemald-client` (cross-platform)|
+
+If your client install is older than 1.23b, either launcher can bring it
+up to date via the patch flow.
+
+### Optional downloads
+
+Only required for full gameplay (zones, NPCs, items, etc.):
+
+- **Project Meteor data assets** at `../project-meteor-mirror/Data/`:
+  - `scripts/` - Lua script tree the map server loads at boot. Without
+    it the server still runs but NPCs have no behaviour.
+  - `staticactors.bin` - the compiled actor-class table; see
+    [Server Setup step 2](#2-static-actor-data).
+
+Garlemald's SQLite schema is embedded at `common/sql/schema.sql` and
+applied automatically on first run. You do **not** need to import Project
+Meteor's SQL dumps.
+
+## Building from source
+
+### Get the code
+
+```bash
+git clone https://github.com/swstegall/Garlemald-Server.git
+cd Garlemald-Server
 ```
-garlemald-server/
-├── Cargo.toml           workspace manifest
-├── rust-toolchain.toml  pinned toolchain (currently 1.95.0)
-├── common/              shared library crate
-├── lobby-server/        binary crate
-├── world-server/        binary crate
-├── map-server/          binary crate
-├── scripts/             build + run wrappers (bash)
-└── logs/                created on first run; per-server log files land here
-```
 
-## Prerequisites
-
-- **Rust 1.95.0** (pinned in `rust-toolchain.toml` — `rustup` will install it automatically on first build). Includes `clippy` and `rustfmt`.
-- **A C compiler** (`cc`, `clang`, or `gcc`). `mlua` vendors Lua 5.4 and builds it from source; `rusqlite` vendors SQLite.
-- **Project Meteor data assets** (optional, for real gameplay) — `project-meteor-mirror/Data/scripts/` is what the map server loads at boot. The `Data/sql/*.sql` dumps are no longer consumed directly; Garlemald ships its own SQLite schema in `common/sql/schema.sql` and applies it automatically.
-
-## Building
+### Build
 
 The workspace builds with plain cargo:
 
@@ -70,36 +162,71 @@ The workspace builds with plain cargo:
 cargo build --workspace --release
 ```
 
-Or use the helper scripts under `scripts/` — they run the environment check first and print whether `cargo`, the toolchain version, a C compiler, and `clippy`/`rustfmt` are present:
+Or use the helper scripts under `scripts/`, which run an environment check
+first (Rust toolchain, C compiler, `clippy`, `rustfmt`):
 
 ```bash
-./scripts/build.sh             # release (default)
+./scripts/check-env.sh         # environment check only
+./scripts/build.sh             # release profile (default)
 ./scripts/build.sh --debug     # dev profile
-./scripts/check-env.sh         # env check only
 ./scripts/test.sh              # cargo test --workspace
 ```
 
 Built binaries land at `target/{release,debug}/{lobby-server,world-server,map-server}`.
 
-## Database setup
+If the compile fails on Windows because of the C toolchain, install the
+MSVC Build Tools, or pass `--target x86_64-pc-windows-gnu` with
+MinGW-w64 on `PATH`.
 
-None required — Garlemald uses a local SQLite file (default `./data/garlemald.db`) that is created automatically on first boot. `common/sql/schema.sql` ships the full DDL for every table the three servers touch, plus a single seeded row in `servers` (`id=1, Fernehalwes, 127.0.0.1:54992`) so the lobby → world handoff works out of the box.
+## Server Setup
 
-If you want to point at a different file (e.g. to keep multiple test rigs side-by-side), edit `database.path` in the relevant `configs/*.toml` or pass `--db-path /path/to/your.db` on the command line.
+### 1. Database
 
-## Configuring
+Nothing to configure. The first time any of the three binaries boots
+against a non-existent SQLite path, `common/sql/schema.sql` is applied
+automatically. The default path is `./data/garlemald.db`; override it in
+`configs/*.toml` or via `--db-path`.
 
-Each binary reads a TOML file from `./configs/` by default. Localhost defaults ship in the repo:
+The schema seeds a single world row in `servers` (`id=1`, `Fernehalwes`,
+`127.0.0.1:54992`) so that lobby -> world handoff works out of the box
+for a localhost rig.
 
+### 2. Static actor data
+
+The 1.23b client ships a compiled actor-class table at
+`client/script/rq9q1797qvs.san`. Copy it next to the map-server binary
+under the name `staticactors.bin`:
+
+```bash
+cp "/path/to/FINAL FANTASY XIV/client/script/rq9q1797qvs.san" ./staticactors.bin
 ```
-configs/lobby.toml   configs/world.toml   configs/map.toml
+
+Without it the map-server still runs; NPC class resolution will be
+limited.
+
+### 3. Lua script tree
+
+Point `scripting.script_root` in `configs/map.toml` at Project Meteor's
+`Data/scripts/` directory, or symlink it next to the binary:
+
+```bash
+ln -s ../project-meteor-mirror/Data/scripts ./scripts
 ```
 
-Their contents (shown below for `lobby.toml`) are the same defaults the `Config::Default` impl uses, so any or all of them can be deleted — the binaries still boot with sensible localhost values.
+Without scripts, the map server boots but NPC / quest / director behaviour
+is absent.
+
+### 4. Configure
+
+Localhost defaults are committed as `configs/{lobby,world,map}.toml`.
+They work as-is for a single-box rig. For multi-machine deployments,
+edit the relevant fields.
+
+`configs/lobby.toml`:
 
 ```toml
 [server]
-bind_ip = "127.0.0.1"
+bind_ip = "0.0.0.0"          # bind on all interfaces
 port = 54994
 show_timestamp = true
 
@@ -107,43 +234,96 @@ show_timestamp = true
 path = "./data/garlemald.db"
 ```
 
-Defaults if a key (or the whole file) is missing:
+`configs/world.toml`:
 
-| Key                             | Lobby            | World            | Map              |
-| ------------------------------- | ---------------- | ---------------- | ---------------- |
-| `server.bind_ip`                | `127.0.0.1`      | `127.0.0.1`      | `127.0.0.1`      |
-| `server.port`                   | `54994`          | `54992`          | `1989`           |
-| `server.world_id`               | —                | `1`              | `1`              |
-| `database.path`                 | `./data/garlemald.db` | `./data/garlemald.db` | `./data/garlemald.db` |
-| `scripting.script_root`         | —                | —                | `./scripts`      |
-| `scripting.load_from_database`  | —                | —                | `true`           |
+```toml
+[server]
+bind_ip = "0.0.0.0"
+port = 54992
+show_timestamp = true
+world_id = 1                 # row id in the `servers` table
 
-The map server expects `scripting.script_root` to point at the `Data/scripts` tree from Project Meteor (symlink or copy it next to the binary).
+[database]
+path = "./data/garlemald.db"
+```
 
-### Command-line overrides
+`configs/map.toml`:
 
-Every server accepts these flags, which override the TOML values after load:
+```toml
+[server]
+bind_ip = "0.0.0.0"
+port = 1989
+show_timestamp = true
+world_id = 1
+
+[database]
+path = "./data/garlemald.db"
+
+[scripting]
+script_root = "./scripts"
+load_from_database = true
+```
+
+Also update the `servers` table so the address / port the lobby hands to
+clients is reachable from the outside network:
+
+```bash
+sqlite3 ./data/garlemald.db \
+  "UPDATE servers SET address='198.51.100.42', port=54992 WHERE id=1;"
+```
+
+Default CLI overrides (every binary accepts these):
 
 ```
 --ip <ADDR>         bind IP
 --port <PORT>       bind port
 --db-path <PATH>    SQLite file path
---world-id <ID>     servers.id row (world + map only)
---config <PATH>     path to the TOML file (default ./configs/{lobby,world,map}.toml)
+--world-id <ID>     servers.id (world + map only)
+--config <PATH>     TOML path (default ./configs/{lobby,world,map}.toml)
 ```
 
-## Running
+Default field values if a key (or the whole file) is missing:
 
-### All three at once
+| Key                             | Lobby                 | World                 | Map                   |
+|---------------------------------|-----------------------|-----------------------|-----------------------|
+| `server.bind_ip`                | `127.0.0.1`           | `127.0.0.1`           | `127.0.0.1`           |
+| `server.port`                   | `54994`               | `54992`               | `1989`                |
+| `server.world_id`               | -                     | `1`                   | `1`                   |
+| `database.path`                 | `./data/garlemald.db` | `./data/garlemald.db` | `./data/garlemald.db` |
+| `scripting.script_root`         | -                     | -                     | `./scripts`           |
+| `scripting.load_from_database`  | -                     | -                     | `true`                |
 
-The `run-all.sh` wrapper builds the workspace, then spawns all three servers with logs tee'd to `logs/{lobby,world,map}-server.log`. Ctrl-C shuts the whole stack down cleanly.
+### 5. Create a session
+
+Garlemald ships no login web server. To let the client authenticate,
+insert a row into the `sessions` table with a 56-character session id
+and a future expiration:
+
+```bash
+sqlite3 ./data/garlemald.db \
+  "INSERT INTO sessions (id, userId, expiration) VALUES \
+   (printf('%056d', 1), 1, datetime('now', '+1 day'));"
+```
+
+The session id is the string the client sends in its first lobby
+packet; any 56-character value works as long as it matches what your
+launcher is configured to send. See
+`../garlemald-client/README.md` for how the sibling launcher is wired
+to produce one.
+
+## Starting the servers
+
+Run all three at once, with each process's stdout / stderr tee'd to
+`logs/{lobby,world,map}-server.log`:
 
 ```bash
 ./scripts/run-all.sh
-tail -f logs/*.log           # in another terminal
+tail -f logs/*.log
 ```
 
-### One server at a time
+Ctrl-C on the wrapper shuts the whole stack down cleanly.
+
+Or start them individually:
 
 ```bash
 ./scripts/run-lobby.sh
@@ -151,13 +331,7 @@ tail -f logs/*.log           # in another terminal
 ./scripts/run-map.sh
 ```
 
-Extra args after the script name are forwarded to the binary, e.g.:
-
-```bash
-./scripts/run-lobby.sh --ip 0.0.0.0 --port 54994 --config /etc/garlemald/lobby.toml
-```
-
-### Directly
+Or invoke the binaries directly:
 
 ```bash
 ./target/release/lobby-server --config ./configs/lobby.toml
@@ -165,29 +339,114 @@ Extra args after the script name are forwarded to the binary, e.g.:
 ./target/release/map-server   --config ./configs/map.toml
 ```
 
-The map server also runs an interactive stdin console — type commands at the running process the same way the C# server's `Console.ReadLine` loop accepted them.
+The map server also runs an interactive stdin console - type commands at
+the running process the same way the C# server's `Console.ReadLine`
+loop accepted them.
+
+## Client Setup
+
+If you are using the original Windows-only **Seventh Umbral Launcher**:
+
+1. Install the Final Fantasy XIV 1.x client.
+2. Install the Seventh Umbral launcher.
+3. Edit `<Seventh Umbral launcher install location>/servers.xml` and add:
+   ```xml
+   <Server Name="Localhost" Address="127.0.0.1" LoginUrl="" />
+   ```
+   If the server is on a different machine, replace `127.0.0.1` with
+   its IP.
+4. Launch `Launcher.exe`, open **Game Settings**, and point at the FFXIV
+   1.x install directory.
+5. Select **Localhost** from the server dropdown and sign in with the
+   session id you created above.
+
+If you are using the cross-platform **garlemald-client** rewrite:
+
+1. `cd ../garlemald-client && cargo run --release`.
+2. A `Localhost` entry is pre-seeded in the client's default server list
+   pointing at `127.0.0.1`.
+3. See `../garlemald-client/README.md` for platform-specific setup
+   (Wine prefix on macOS / Linux, registry paths on Windows, etc.).
 
 ## Logging
 
-Logging uses [`tracing`](https://crates.io/crates/tracing) with an env filter. Default level is `info`. Raise or narrow it with `RUST_LOG`:
+Every process prefixes each line with an ASCII tag so three servers
+sharing one terminal (or three log files tailed together) stay readable:
+
+```
+[LOBBY] 2026-04-18T03:43:35Z INFO  lobby_server::server: lobby server listening addr=127.0.0.1:54994
+[WORLD] 2026-04-18T03:43:34Z INFO  world_server::server: world server listening addr=127.0.0.1:54992
+[MAP]   2026-04-18T03:43:35Z INFO  map_server::server:   map server listening addr=127.0.0.1:1989
+```
+
+ANSI colour escapes are disabled so `logs/*.log` stays plain text.
+
+Default filter is `info` for third-party crates and `debug` for
+Garlemald's own code - you see per-packet dispatch and DB query tracing
+out of the box. Override via `RUST_LOG`:
 
 ```bash
-RUST_LOG=debug ./target/release/map-server
-RUST_LOG=map_server=trace,lobby_server=debug,info ./scripts/run-all.sh
+RUST_LOG=trace ./target/release/map-server
+RUST_LOG=map_server=trace,info ./scripts/run-all.sh
 ```
 
 ## Testing
 
 ```bash
-cargo test --workspace        # or ./scripts/test.sh
+cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 
-The map-server integration tests can boot the server with `scripting.load_from_database = false` in `configs/map.toml` to skip the DB loaders and exercise the runtime against a fresh schema.
+The map-server integration tests use a temp SQLite file per test, so
+they exercise the real schema without needing any external service.
+
+## Layout
+
+```
+garlemald-server/
+|-- Cargo.toml             workspace manifest
+|-- rust-toolchain.toml    pinned toolchain (1.95.0)
+|-- configs/               TOML configs for each binary (localhost defaults)
+|   |-- lobby.toml
+|   |-- world.toml
+|   `-- map.toml
+|-- common/                shared crate (packet / crypto / db / logging)
+|   `-- sql/schema.sql     SQLite schema, applied on first run
+|-- lobby-server/          binary crate
+|-- world-server/          binary crate
+|-- map-server/            binary crate
+|-- scripts/               build + run wrappers (bash)
+`-- logs/                  created on first run; per-server log files
+```
+
+## Troubleshooting
+
+- **"connection refused" from the client.** Check that the relevant
+  server is listening (`lsof -i :54994` or `netstat -an | grep 54994`)
+  and grep `logs/lobby-server.log` for errors.
+- **"Your session has expired, please login again."** No matching row
+  in `sessions` for the token the client sent. Re-run Server Setup
+  step 5.
+- **Map server logs `zones loaded zones=0`.** The `server_zones` table
+  is empty. Either import Project Meteor's zone seed
+  (`sqlite3 ./data/garlemald.db < ../project-meteor-mirror/Data/sql/server_zones.sql`
+  after porting it to SQLite syntax), or accept that the map server
+  will bind but serve no zones until the table is populated.
+- **Build error `linker cc not found`.** Install Xcode CLI tools
+  (`xcode-select --install`) on macOS, `build-essential` on
+  Debian / Ubuntu, or MSVC Build Tools on Windows.
+- **`duplicate column name` at DB init.** You are opening a file
+  created under an older schema. Delete `./data/` and boot again to
+  regenerate.
+- **Windows firewall blocks incoming connections.** Add inbound rules
+  for TCP 54994, 54992, and 1989 (or run the servers on different
+  ports and update `configs/*.toml` accordingly).
 
 ## References
 
-- Upstream Project Meteor: <https://bitbucket.org/Ioncannon/project-meteor-server/>
-- Setup wiki (schema, client patching, full context): <http://ffxivclassic.fragmenterworks.com/wiki/index.php/Setting_up_the_project>
-- Reference C# sources live at `../project-meteor-mirror/` in this workspace.
+- Upstream Project Meteor Server: <https://bitbucket.org/Ioncannon/project-meteor-server/>
+- Setup wiki (schema, client patching, full context):
+  <http://ffxivclassic.fragmenterworks.com/wiki/index.php/Setting_up_the_project>
+- Reference C# source lives at `../project-meteor-mirror/` in this workspace.
+- Sibling launcher: `../garlemald-client/`.
