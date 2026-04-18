@@ -39,6 +39,13 @@ impl WorldMaster {
         self.zone_routing.lock().await.insert(zone_id, handle);
     }
 
+    pub async fn unregister_zone_server(&self, zone_ids: &[u32]) {
+        let mut routing = self.zone_routing.lock().await;
+        for zid in zone_ids {
+            routing.remove(zid);
+        }
+    }
+
     pub async fn zone_server_for(&self, zone_id: u32) -> Option<Arc<ZoneServerHandle>> {
         self.zone_routing.lock().await.get(&zone_id).cloned()
     }

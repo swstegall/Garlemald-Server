@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use common::BasePacket;
@@ -188,10 +189,12 @@ async fn handle_connection(
     }
 }
 
-/// Load `server_zones` and open one TCP connection per unique map-server
-/// endpoint. Each established connection is registered in `WorldMaster`
-/// against every zone id that endpoint claims to own, and a reader task
-/// is spawned to relay inbound subpackets back to their target session.
+/// Load `server_zones` and spawn one supervisor task per unique map-server
+/// endpoint. Each supervisor loops: connect → register handle against every
+/// zone id it owns → drive reader/writer halves → on disconnect, deregister
+/// and retry with backoff. This decouples startup ordering: the world server
+/// can boot before the map server is listening, and transient map-server
+/// restarts automatically reattach.
 async fn connect_zone_servers(
     db: &Arc<Database>,
     world: &Arc<WorldMaster>,
@@ -205,7 +208,6 @@ async fn connect_zone_servers(
         }
     };
 
-    // Group by endpoint so we open one socket per map server.
     let mut by_endpoint: HashMap<(String, u16), Vec<u32>> = HashMap::new();
     for (zone_id, ip, port) in rows {
         by_endpoint.entry((ip, port)).or_default().push(zone_id);
@@ -217,112 +219,156 @@ async fn connect_zone_servers(
     }
 
     for ((ip, port), zone_ids) in by_endpoint {
-        let addr = format!("{ip}:{port}");
+        let world = world.clone();
+        let sessions = sessions.clone();
+        tokio::spawn(async move {
+            supervise_zone_endpoint(ip, port, zone_ids, world, sessions).await;
+        });
+    }
+}
+
+/// Retry-forever connection supervisor for a single map-server endpoint.
+async fn supervise_zone_endpoint(
+    ip: String,
+    port: u16,
+    zone_ids: Vec<u32>,
+    world: Arc<WorldMaster>,
+    sessions: Arc<SessionRegistry>,
+) {
+    let addr = format!("{ip}:{port}");
+    let mut backoff = Duration::from_secs(1);
+    let max_backoff = Duration::from_secs(30);
+
+    loop {
         tracing::info!(%addr, zones = zone_ids.len(), "connecting to zone server");
         let socket = match TcpStream::connect(&addr).await {
             Ok(s) => s,
             Err(e) => {
-                tracing::error!(error = %e, %addr, "zone-server connect failed");
+                tracing::warn!(error = %e, %addr, retry_in = ?backoff, "zone-server connect failed");
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(max_backoff);
                 continue;
             }
         };
+        tracing::info!(%addr, "zone server connected");
+        backoff = Duration::from_secs(1);
 
-        let (tx, mut rx) = mpsc::channel::<Vec<u8>>(SEND_QUEUE_DEPTH);
-        let (mut read_half, mut write_half) = tokio::io::split(socket);
+        run_zone_connection(socket, &ip, port, &zone_ids, &world, &sessions).await;
 
-        // Writer — wraps each outbound SubPacket payload in a BasePacket
-        // frame, matching the server-to-server wire protocol used by the
-        // map server's inbound reader.
-        let addr_write = addr.clone();
-        tokio::spawn(async move {
-            while let Some(bytes) = rx.recv().await {
-                let frame = common::wrap_subpackets_in_basepacket(bytes);
-                if write_half.write_all(&frame).await.is_err() {
-                    tracing::warn!(addr = %addr_write, "zone-server write failed");
-                    break;
+        tracing::warn!(%addr, retry_in = ?backoff, "zone server disconnected; will retry");
+        tokio::time::sleep(backoff).await;
+    }
+}
+
+/// Drive a single live connection to a map-server endpoint until it drops.
+/// Registers the handle against every owned zone id on entry; the caller
+/// deregisters on return.
+async fn run_zone_connection(
+    socket: TcpStream,
+    ip: &str,
+    port: u16,
+    zone_ids: &[u32],
+    world: &Arc<WorldMaster>,
+    sessions: &Arc<SessionRegistry>,
+) {
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(SEND_QUEUE_DEPTH);
+    let (mut read_half, mut write_half) = tokio::io::split(socket);
+
+    let addr = format!("{ip}:{port}");
+
+    // Writer — wraps each outbound SubPacket payload in a BasePacket frame,
+    // matching the server-to-server wire protocol used by the map server's
+    // inbound reader.
+    let addr_write = addr.clone();
+    let writer = tokio::spawn(async move {
+        while let Some(bytes) = rx.recv().await {
+            let frame = common::wrap_subpackets_in_basepacket(bytes);
+            if write_half.write_all(&frame).await.is_err() {
+                tracing::warn!(addr = %addr_write, "zone-server write failed");
+                break;
+            }
+        }
+    });
+
+    let handle = Arc::new(ZoneServerHandle {
+        address: ip.to_string(),
+        port,
+        owned_zone_ids: zone_ids.to_vec(),
+        outbound: tx,
+    });
+    for zid in zone_ids {
+        world.register_zone_server(*zid, handle.clone()).await;
+    }
+
+    // Reader — parses BasePackets from the zone server, fans the inner
+    // SubPackets out to the session identified by `target_id`, and forwards
+    // them to that session's client connection.
+    let mut buffer = vec![0u8; BUFFER_SIZE];
+    let mut pending = 0usize;
+    loop {
+        let n = match read_half.read(&mut buffer[pending..]).await {
+            Ok(0) => {
+                tracing::warn!(%addr, "zone server disconnected");
+                break;
+            }
+            Ok(n) => n,
+            Err(e) => {
+                tracing::warn!(%addr, error = %e, "zone-server read err");
+                break;
+            }
+        };
+        let bytes_in = pending + n;
+
+        let mut offset = 0usize;
+        while let Some(mut packet) =
+            BasePacket::try_from_buffer(&buffer[..bytes_in], &mut offset, bytes_in)
+        {
+            if packet.header.is_compressed == 0x01
+                && let Err(e) = packet.decompress()
+            {
+                tracing::warn!(error = %e, "zone reply decompress failed");
+                continue;
+            }
+            let subs = match packet.get_subpackets() {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!(error = %e, "zone reply subpacket parse failed");
+                    continue;
+                }
+            };
+            for sub in subs {
+                let target = sub.header.target_id;
+                if target == 0 {
+                    continue;
+                }
+                // Try Zone channel first; Chat sessions also receive
+                // peer-to-peer forwards, so fall back there.
+                let session = sessions.get(SessionChannel::Zone, target).await;
+                let session = match session {
+                    Some(s) => Some(s),
+                    None => sessions.get(SessionChannel::Chat, target).await,
+                };
+                if let Some(session) = session {
+                    session.client.send_bytes(sub.to_bytes()).await;
+                } else {
+                    tracing::debug!(target, "zone reply to unknown session");
                 }
             }
-        });
-
-        let handle = Arc::new(ZoneServerHandle {
-            address: ip.clone(),
-            port,
-            owned_zone_ids: zone_ids.clone(),
-            outbound: tx,
-        });
-
-        for zid in &zone_ids {
-            world.register_zone_server(*zid, handle.clone()).await;
         }
 
-        // Reader — parses BasePackets from the zone server, fans the
-        // inner SubPackets out to the session identified by
-        // `target_id`, and forwards them to that session's client
-        // connection. Closes silently on zone-server disconnect.
-        let sessions_r = sessions.clone();
-        let addr_read = addr.clone();
-        tokio::spawn(async move {
-            let mut buffer = vec![0u8; BUFFER_SIZE];
-            let mut pending = 0usize;
-            loop {
-                let n = match read_half.read(&mut buffer[pending..]).await {
-                    Ok(0) => {
-                        tracing::warn!(addr = %addr_read, "zone server disconnected");
-                        return;
-                    }
-                    Ok(n) => n,
-                    Err(e) => {
-                        tracing::warn!(addr = %addr_read, error = %e, "zone-server read err");
-                        return;
-                    }
-                };
-                let bytes_in = pending + n;
-
-                let mut offset = 0usize;
-                while let Some(mut packet) = BasePacket::try_from_buffer(
-                    &buffer[..bytes_in],
-                    &mut offset,
-                    bytes_in,
-                ) {
-                    if packet.header.is_compressed == 0x01
-                        && let Err(e) = packet.decompress()
-                    {
-                        tracing::warn!(error = %e, "zone reply decompress failed");
-                        continue;
-                    }
-                    let subs = match packet.get_subpackets() {
-                        Ok(s) => s,
-                        Err(e) => {
-                            tracing::warn!(error = %e, "zone reply subpacket parse failed");
-                            continue;
-                        }
-                    };
-                    for sub in subs {
-                        let target = sub.header.target_id;
-                        if target == 0 {
-                            continue;
-                        }
-                        // Try Zone channel first; Chat sessions also receive
-                        // peer-to-peer forwards, so fall back there.
-                        let session = sessions_r.get(SessionChannel::Zone, target).await;
-                        let session = match session {
-                            Some(s) => Some(s),
-                            None => sessions_r.get(SessionChannel::Chat, target).await,
-                        };
-                        if let Some(session) = session {
-                            session.client.send_bytes(sub.to_bytes()).await;
-                        } else {
-                            tracing::debug!(target, "zone reply to unknown session");
-                        }
-                    }
-                }
-
-                if offset < bytes_in {
-                    buffer.copy_within(offset..bytes_in, 0);
-                }
-                pending = bytes_in - offset;
-                buffer[pending..].fill(0);
-            }
-        });
+        if offset < bytes_in {
+            buffer.copy_within(offset..bytes_in, 0);
+        }
+        pending = bytes_in - offset;
+        buffer[pending..].fill(0);
     }
+
+    // Deregister so new work stops landing on the dying handle, then drop
+    // our own reference. Active sessions may still hold clones via
+    // `routing1`/`routing2`; the writer task exits whenever those finally
+    // drop. We don't await it — blocking on orphaned sessions would stall
+    // reconnect.
+    world.unregister_zone_server(zone_ids).await;
+    drop(handle);
+    drop(writer);
 }

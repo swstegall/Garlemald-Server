@@ -68,15 +68,16 @@ pub fn parse_new_char_request(encoded: &str) -> Result<CharaInfo> {
 
 /// Produce the url-safe base64 appearance blob used by CharacterListPacket.
 ///
-/// The original C# helper reads `memStream.GetBuffer()` (capacity 0x3B0) and
-/// base64-encodes the full backing buffer, padded with zeros. We replicate
-/// that by pre-allocating a fixed-size zeroed buffer and writing over it.
+/// The original C# helper calls `new MemoryStream()` with no initial capacity
+/// and later reads `memStream.GetBuffer()`. .NET's MemoryStream allocates its
+/// backing array in powers of two starting at 256, so the base64 output covers
+/// the logical data plus trailing zero padding up to that capacity. We mirror
+/// that by writing into a growable Vec and rounding up to the same size.
 pub fn build_for_chara_list(chara: &Character, appearance: &Appearance) -> String {
-    const BUF_SIZE: usize = 0x3B0;
-    let mut buf = vec![0u8; BUF_SIZE];
+    let mut buf: Vec<u8> = Vec::new();
 
     {
-        let mut c = Cursor::new(&mut buf[..]);
+        let mut c = Cursor::new(&mut buf);
         let face = FaceInfo {
             characteristics: appearance.characteristics as u32,
             characteristics_color: appearance.characteristics_color as u32,
@@ -176,6 +177,14 @@ pub fn build_for_chara_list(chara: &Character, appearance: &Appearance) -> Strin
         c.write_u32::<LittleEndian>(chara.initial_town as u32).unwrap();
     }
 
+    // Match .NET MemoryStream.GetBuffer(): capacity is a power of two and at
+    // least 256 bytes. The unused tail is zero-padded.
+    let mut capacity = 256usize;
+    while capacity < buf.len() {
+        capacity *= 2;
+    }
+    buf.resize(capacity, 0);
+
     // URL-safe base64 variant: + → -, / → _.
     let encoded = BASE64.encode(&buf);
     encoded.replace('+', "-").replace('/', "_")
@@ -189,10 +198,9 @@ mod tests {
     fn build_for_chara_list_is_stable_shape() {
         let chara = Character { name: "Test".to_string(), tribe: 2, ..Default::default() };
         let out = build_for_chara_list(&chara, &Appearance::default());
-        // base64 of 0x3B0 (944) bytes is 1260 chars including padding ('=' since
-        // 944 is not a multiple of 3 → 944 mod 3 == 2 → 2 padding chars).
-        // 944 * 4 / 3 = 1258.66 → 1260 chars.
-        assert_eq!(out.len(), 1260);
+        // For this input the logical blob is 228 bytes; rounded up to .NET's
+        // 256-byte minimum MemoryStream backing array, base64 is 344 chars.
+        assert_eq!(out.len(), 344);
         assert!(!out.contains('+'));
         assert!(!out.contains('/'));
     }
