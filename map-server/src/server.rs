@@ -66,10 +66,14 @@ async fn handle_connection(
     let (mut read, mut write) = tokio::io::split(socket);
 
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(SEND_QUEUE_DEPTH);
+    // The write task wraps each outbound SubPacket in a BasePacket frame so
+    // the world-server (our only inbound peer) can decode it via the same
+    // `BasePacket::try_from_buffer` reader it uses for client traffic.
     tokio::spawn(async move {
         while let Some(bytes) = rx.recv().await {
-            let len = bytes.len();
-            if write.write_all(&bytes).await.is_err() {
+            let frame = common::wrap_subpackets_in_basepacket(bytes);
+            let len = frame.len();
+            if write.write_all(&frame).await.is_err() {
                 break;
             }
             tracing::trace!(bytes = len, "reply sent");

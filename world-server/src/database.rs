@@ -88,6 +88,31 @@ impl Database {
         Ok(row)
     }
 
+    /// Read `server_zones` for zones that have a map-server endpoint
+    /// configured. Returns `(zone_id, server_ip, server_port)` tuples.
+    pub async fn get_server_zones(&self) -> Result<Vec<(u32, String, u16)>> {
+        let rows = self.conn
+            .call_db(|c| {
+                let mut stmt = c.prepare(
+                    r"SELECT id, serverIp, serverPort
+                      FROM server_zones
+                      WHERE serverIp IS NOT NULL AND serverIp <> '' AND serverPort > 0",
+                )?;
+                let rows: Vec<(u32, String, u16)> = stmt
+                    .query_map([], |r| {
+                        Ok((
+                            r.get::<_, u32>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, u16>(2)?,
+                        ))
+                    })?
+                    .collect::<rusqlite::Result<_>>()?;
+                Ok(rows)
+            })
+            .await?;
+        Ok(rows)
+    }
+
     pub async fn get_all_chara_names(&self) -> Result<Vec<(u32, String)>> {
         let rows = self.conn
             .call_db(|c| {

@@ -22,5 +22,7 @@ pub use blowfish::Blowfish;
 pub use error::PacketError;
 pub use luaparam::LuaParam;
 pub use math::Vector3;
-pub use packet::{BasePacket, BasePacketHeader, PACKET_TYPE_CHAT, PACKET_TYPE_ZONE};
+pub use packet::{
+    BasePacket, BasePacketHeader, PACKET_TYPE_CHAT, PACKET_TYPE_ZONE, wrap_subpackets_in_basepacket,
+};
 pub use subpacket::{GameMessageHeader, SubPacket, SubPacketHeader};

@@ -338,6 +338,45 @@ fn compress_data(data: &[u8]) -> Result<Vec<u8>, PacketError> {
     Ok(encoder.finish()?)
 }
 
+/// Wrap one-or-more already-serialised `SubPacket` payloads inside a
+/// `BasePacket` frame. Counts the contained subpackets by walking the
+/// `subpacket_size` fields, so callers can concatenate multiple subpackets
+/// in one buffer before wrapping.
+///
+/// Used by the server write tasks to keep every TCP frame well-formed
+/// without forcing every caller to know about BasePacket framing.
+pub fn wrap_subpackets_in_basepacket(data: Vec<u8>) -> Vec<u8> {
+    let mut count: u16 = 0;
+    let mut off = 0usize;
+    while off + SUBPACKET_SIZE <= data.len() {
+        let size = u16::from_le_bytes([data[off], data[off + 1]]) as usize;
+        if size < SUBPACKET_SIZE || off + size > data.len() {
+            break;
+        }
+        count += 1;
+        off += size;
+    }
+    if count == 0 {
+        count = 1;
+    }
+
+    let header = BasePacketHeader {
+        is_authenticated: 1,
+        is_compressed: 0,
+        connection_type: 0,
+        packet_size: (BASEPACKET_SIZE + data.len()) as u16,
+        num_subpackets: count,
+        timestamp: utils::millis_unix_timestamp(),
+    };
+
+    let mut out = vec![0u8; BASEPACKET_SIZE + data.len()];
+    let mut hdr_bytes = [0u8; BASEPACKET_SIZE];
+    header.write(&mut hdr_bytes);
+    out[..BASEPACKET_SIZE].copy_from_slice(&hdr_bytes);
+    out[BASEPACKET_SIZE..].copy_from_slice(&data);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -371,5 +410,23 @@ mod tests {
         assert_eq!(subs.len(), 1);
         assert_eq!(subs[0].header.source_id, 0xDEAD);
         assert_eq!(subs[0].data, vec![0xAA, 0xBB, 0xCC, 0xDD]);
+    }
+
+    #[test]
+    fn wrap_counts_multiple_subpackets() {
+        use crate::subpacket::SubPacket;
+        let a = SubPacket::new_with_flag(false, 0x02, 1, vec![1, 2, 3, 4]);
+        let b = SubPacket::new_with_flag(false, 0x07, 2, vec![5, 6, 7, 8]);
+        let mut concatenated = Vec::new();
+        concatenated.extend_from_slice(&a.to_bytes());
+        concatenated.extend_from_slice(&b.to_bytes());
+
+        let frame = wrap_subpackets_in_basepacket(concatenated);
+        let parsed = BasePacket::from_bytes(&frame).unwrap();
+        assert_eq!(parsed.header.num_subpackets, 2);
+        let subs = parsed.get_subpackets().unwrap();
+        assert_eq!(subs.len(), 2);
+        assert_eq!(subs[0].header.source_id, 1);
+        assert_eq!(subs[1].header.source_id, 2);
     }
 }
