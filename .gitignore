@@ -4,3 +4,9 @@ Cargo.lock
 .idea/
 .vscode/
 /logs/
+/data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
