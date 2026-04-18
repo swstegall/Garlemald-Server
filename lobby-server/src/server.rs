@@ -58,10 +58,18 @@ async fn handle_connection(
             return Ok(());
         }
         let bytes_in = pending + n;
+        tracing::trace!(%peer, bytes = n, total = bytes_in, "socket read");
 
         let mut offset = 0usize;
         while let Some(packet) = BasePacket::try_from_buffer(&buffer[..bytes_in], &mut offset, bytes_in) {
+            tracing::debug!(
+                %peer,
+                size = packet.header.packet_size,
+                subpackets = packet.header.num_subpackets,
+                "packet in"
+            );
             let replies = processor.process(&mut session, packet).await?;
+            tracing::trace!(%peer, replies = replies.len(), "packet processed");
             for reply in replies {
                 send_reply(&mut socket, &session, reply).await?;
             }
@@ -92,6 +100,8 @@ async fn send_reply(
             packet.to_bytes()
         }
     };
+    let len = bytes.len();
     socket.write_all(&bytes).await?;
+    tracing::trace!(bytes = len, "reply sent");
     Ok(())
 }

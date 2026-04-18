@@ -10,6 +10,7 @@ pub mod blowfish;
 pub mod db;
 pub mod error;
 pub mod hash_table;
+pub mod logging;
 pub mod luaparam;
 pub mod math;
 pub mod packet;

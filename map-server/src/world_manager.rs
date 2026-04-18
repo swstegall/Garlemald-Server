@@ -89,26 +89,40 @@ impl WorldManager {
         server_ip: &str,
         server_port: u16,
     ) -> Result<()> {
+        tracing::info!(server_ip, server_port, "world boot-load starting");
         // 1. Zones
         let zone_rows = db.load_zones(server_ip, server_port).await?;
+        tracing::info!(count = zone_rows.len(), "zones fetched from DB");
         for row in zone_rows {
             self.install_zone(row).await;
         }
         // 2. Private areas — attach to already-loaded zones.
         let private_area_rows = db.load_private_areas().await?;
+        tracing::info!(count = private_area_rows.len(), "private areas fetched");
         for row in private_area_rows {
             self.install_private_area(row).await;
         }
         // 3. Zone entrances.
         let entrances = db.load_zone_entrances().await?;
+        tracing::info!(count = entrances.len(), "zone entrances loaded");
         *self.zone_entrances.write().await = entrances;
         // 4. Seamless boundaries.
         let seamless = db.load_seamless_boundaries().await?;
+        let total: usize = seamless.values().map(|v| v.len()).sum();
+        tracing::info!(regions = seamless.len(), boundaries = total, "seamless boundaries loaded");
         *self.seamless_boundaries.write().await = seamless;
+        tracing::info!("world boot-load complete");
         Ok(())
     }
 
     async fn install_zone(&self, row: ZoneRow) {
+        tracing::debug!(
+            id = row.id,
+            name = %row.zone_name,
+            region = row.region_id,
+            navmesh = row.load_nav_mesh,
+            "installing zone"
+        );
         let navmesh_loader = if row.load_nav_mesh {
             Some(&StubNavmeshLoader as &dyn crate::zone::navmesh::NavmeshLoader)
         } else {

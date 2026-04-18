@@ -49,22 +49,28 @@ pub async fn run(
         tracing::info!(%peer, "accepted connection");
         let proc = Arc::clone(&processor);
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(socket, proc).await {
+            if let Err(e) = handle_connection(socket, peer, proc).await {
                 tracing::warn!(%peer, error = %e, "connection dropped");
             }
         });
     }
 }
 
-async fn handle_connection(socket: TcpStream, processor: Arc<PacketProcessor>) -> Result<()> {
+async fn handle_connection(
+    socket: TcpStream,
+    peer: std::net::SocketAddr,
+    processor: Arc<PacketProcessor>,
+) -> Result<()> {
     let (mut read, mut write) = tokio::io::split(socket);
 
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(SEND_QUEUE_DEPTH);
     tokio::spawn(async move {
         while let Some(bytes) = rx.recv().await {
+            let len = bytes.len();
             if write.write_all(&bytes).await.is_err() {
                 break;
             }
+            tracing::trace!(bytes = len, "reply sent");
         }
     });
 
@@ -77,14 +83,23 @@ async fn handle_connection(socket: TcpStream, processor: Arc<PacketProcessor>) -
     loop {
         let n = read.read(&mut buffer[pending..]).await?;
         if n == 0 {
+            tracing::info!(%peer, client_id = client.session_id, "disconnected");
             return Ok(());
         }
         let bytes_in = pending + n;
+        tracing::trace!(%peer, bytes = n, total = bytes_in, "socket read");
 
         let mut offset = 0usize;
         while let Some(packet) =
             BasePacket::try_from_buffer(&buffer[..bytes_in], &mut offset, bytes_in)
         {
+            tracing::debug!(
+                %peer,
+                client_id = client.session_id,
+                size = packet.header.packet_size,
+                subpackets = packet.header.num_subpackets,
+                "packet in"
+            );
             if let Err(e) = processor.process_packet(&client, packet).await {
                 tracing::warn!(error = %e, "packet processing error");
             }

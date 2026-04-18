@@ -33,7 +33,23 @@ impl PacketProcessor {
         }
 
         for sub in packet.get_subpackets()? {
-            match sub.header.r#type {
+            let ty = sub.header.r#type;
+            let handler = match ty {
+                0x01 => "hello",
+                0x07 => "ping",
+                0x08 => "zoning_stub",
+                SUBPACKET_TYPE_GAMEMESSAGE => "game_message",
+                t if t >= 0x1000 => "world_packet",
+                _ => "(unhandled)",
+            };
+            tracing::debug!(
+                client_id = client.id,
+                r#type = format!("0x{ty:X}"),
+                opcode = format!("0x{:X}", sub.game_message.opcode),
+                handler,
+                "subpacket dispatch"
+            );
+            match ty {
                 // Initial hello → create session
                 0x01 => self.handle_hello(client, &packet, &sub).await?,
                 // Ping
@@ -44,9 +60,9 @@ impl PacketProcessor {
                 }
                 // Game messages (route to owning zone server)
                 SUBPACKET_TYPE_GAMEMESSAGE => self.handle_game_message(&sub).await?,
-                ty if ty >= 0x1000 => self.handle_world_packet(client, &sub).await?,
+                t if t >= 0x1000 => self.handle_world_packet(client, &sub).await?,
                 _ => {
-                    tracing::debug!(r#type = sub.header.r#type, "unhandled subpacket");
+                    tracing::warn!(r#type = format!("0x{ty:X}"), "unhandled subpacket");
                 }
             }
         }
@@ -65,6 +81,11 @@ impl PacketProcessor {
             common::PACKET_TYPE_CHAT => SessionChannel::Chat,
             _ => SessionChannel::Zone,
         };
+        tracing::info!(
+            session_id = hello.session_id,
+            channel = ?channel,
+            "hello received; session starting"
+        );
         let session = Arc::new(Session::new(hello.session_id, channel, client.clone()));
 
         // Load character data so we have zone/linkshell info ready.

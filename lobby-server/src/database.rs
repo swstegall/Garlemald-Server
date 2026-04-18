@@ -33,6 +33,7 @@ impl Database {
     }
 
     pub async fn user_id_from_session(&self, session_id: &str) -> Result<u32> {
+        tracing::debug!(len = session_id.len(), "db: user_id_from_session");
         let sid = session_id.to_owned();
         let id = self.conn
             .call_db(move |c| {
@@ -46,7 +47,9 @@ impl Database {
                 Ok(v)
             })
             .await?;
-        Ok(id.unwrap_or(0))
+        let user_id = id.unwrap_or(0);
+        tracing::debug!(user_id, "db: session lookup result");
+        Ok(user_id)
     }
 
     /// Attempts to reserve a character slot. Returns `(already_taken, pid, cid)`.
@@ -59,6 +62,7 @@ impl Database {
         server_id: u32,
         name: &str,
     ) -> Result<(bool, u32, u32)> {
+        tracing::debug!(user_id, slot, server_id, name, "db: reserve_character");
         let name = name.to_owned();
         let out = self.conn
             .call_db(move |c| {
@@ -92,6 +96,14 @@ impl Database {
     }
 
     pub async fn make_character(&self, user_id: u32, cid: u32, info: &CharaInfo) -> Result<()> {
+        tracing::debug!(
+            user_id,
+            cid,
+            class = info.current_class,
+            tribe = info.tribe,
+            initial_town = info.initial_town,
+            "db: make_character"
+        );
         let info = info.clone();
         let class_col = class_name_for_id(info.current_class as i16).to_string();
         self.conn
@@ -227,6 +239,7 @@ impl Database {
         server_id: u32,
         new_name: &str,
     ) -> Result<bool> {
+        tracing::debug!(user_id, character_id, server_id, new_name, "db: rename_character");
         let new_name = new_name.to_owned();
         let taken = self.conn
             .call_db(move |c| {
@@ -256,6 +269,7 @@ impl Database {
     }
 
     pub async fn delete_character(&self, character_id: u32, name: &str) -> Result<()> {
+        tracing::debug!(character_id, name, "db: delete_character");
         let name = name.to_owned();
         self.conn
             .call_db(move |c| {

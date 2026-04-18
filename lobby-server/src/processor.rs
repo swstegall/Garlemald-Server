@@ -81,13 +81,27 @@ impl PacketProcessor {
             if sub.header.r#type != common::subpacket::SUBPACKET_TYPE_GAMEMESSAGE {
                 continue;
             }
-            match sub.game_message.opcode {
+            let opcode = sub.game_message.opcode;
+            let handler = match opcode {
+                0x03 => "get_characters",
+                0x04 => "select_character",
+                0x05 => "session_ack",
+                0x0B => "modify_character",
+                _ => "(unknown)",
+            };
+            tracing::debug!(
+                opcode = format!("0x{opcode:X}"),
+                handler,
+                user_id = session.current_user_id,
+                "dispatch"
+            );
+            match opcode {
                 0x03 => replies.extend(self.handle_get_characters(session).await?),
                 0x04 => replies.extend(self.handle_select_character(session, &sub).await?),
                 0x05 => replies.extend(self.handle_session_ack(session, &sub).await?),
                 0x0B => replies.extend(self.handle_modify_character(session, &sub).await?),
                 other => {
-                    tracing::debug!(opcode = format!("0x{other:X}"), "unknown opcode");
+                    tracing::warn!(opcode = format!("0x{other:X}"), "unknown opcode; ignoring");
                 }
             }
         }
@@ -153,6 +167,14 @@ impl PacketProcessor {
             .get_characters(session.current_user_id)
             .await
             .unwrap_or_default();
+        tracing::debug!(
+            user_id = session.current_user_id,
+            worlds = worlds.len(),
+            reserved_names = names.len(),
+            retainers = retainers.len(),
+            characters = characters.len(),
+            "character list loaded"
+        );
         if characters.len() > 8 {
             tracing::error!("warning: got more than 8 characters; truncating in packet");
         }
@@ -207,11 +229,23 @@ impl PacketProcessor {
         };
 
         let Some(world) = world else {
+            tracing::warn!(
+                user_id = session.current_user_id,
+                character_id = req.character_id,
+                "select_character rejected: world inactive or missing"
+            );
             let mut err = error_packet(req.sequence, 0, 0, 13001, "World Does not exist or is inactive.");
             err.set_target_id(0xe0006868);
             return Ok(vec![Reply::Encrypted(vec![err])]);
         };
 
+        tracing::info!(
+            user_id = session.current_user_id,
+            character_id = req.character_id,
+            world = %world.name,
+            handoff = format!("{}:{}", world.address, world.port),
+            "select_character confirmed"
+        );
         let confirm = select_character_confirm_packet(
             req.sequence,
             req.character_id,

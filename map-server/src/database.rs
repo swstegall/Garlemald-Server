@@ -79,6 +79,7 @@ impl Database {
     // =======================================================================
 
     pub async fn load_zones(&self, server_ip: &str, server_port: u16) -> Result<Vec<ZoneRow>> {
+        tracing::debug!(server_ip, server_port, "db: load_zones");
         let server_ip = server_ip.to_owned();
         let rows = self.conn
             .call_db(move |c| {
@@ -181,6 +182,7 @@ impl Database {
     }
 
     pub async fn load_actor_classes(&self) -> Result<HashMap<u32, crate::npc::ActorClass>> {
+        tracing::debug!("db: load_actor_classes");
         let rows = self.conn
             .call_db(|c| {
                 let mut stmt = c.prepare(
@@ -297,6 +299,7 @@ impl Database {
     // =======================================================================
 
     pub async fn user_id_from_session(&self, session_id: &str) -> Result<u32> {
+        tracing::debug!(len = session_id.len(), "db: user_id_from_session");
         let sid = session_id.to_owned();
         let id = self.conn
             .call_db(move |c| {
@@ -548,6 +551,7 @@ impl Database {
     // =======================================================================
 
     pub async fn load_player_character(&self, chara_id: u32) -> Result<Option<LoadedPlayer>> {
+        tracing::debug!(chara_id, "db: load_player_character");
         let basic = self.conn
             .call_db(move |c| {
                 let v = c

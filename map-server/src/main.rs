@@ -38,12 +38,7 @@ use crate::world_manager::WorldManager;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    common::logging::init("[MAP]  ");
 
     tracing::info!("==================================");
     tracing::info!("Garlemald: Map Server");
@@ -51,8 +46,18 @@ async fn main() -> Result<()> {
     tracing::info!("==================================");
 
     let args = LaunchArgs::parse();
+    tracing::debug!(config_path = %args.config, "loading config");
     let mut config = Config::load(&args.config)?;
     config.apply_launch_args(args);
+    tracing::info!(
+        bind_ip = %config.bind_ip(),
+        port = config.port(),
+        world_id = config.world_id(),
+        db_path = %config.db_path().display(),
+        script_root = %config.script_root().display(),
+        load_from_database = config.load_from_database(),
+        "config resolved"
+    );
 
     tracing::info!(db_path = %config.db_path().display(), "opening sqlite database");
     let db = Arc::new(Database::open(config.db_path()).await?);
