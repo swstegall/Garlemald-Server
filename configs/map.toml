@@ -10,7 +10,7 @@ world_id = 1
 path = "./data/garlemald.db"
 
 [scripting]
-script_root = "./scripts"
+script_root = "./scripts/lua"
 # Set false to skip zone/actor loaders (used by the integration test harness
 # to boot against an offline DB). Leave true for a real server.
 load_from_database = true
