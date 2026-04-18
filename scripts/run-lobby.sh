@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Run the lobby server. Uses ./lobby_config.ini by default — the same
+# Run the lobby server. Uses ./configs/lobby.toml by default — the same
 # default the binary itself uses. Extra args are passed through to the
-# `lobby-server` CLI (e.g. --ip 0.0.0.0 --port 54994 --config /path/to.ini).
+# `lobby-server` CLI (e.g. --ip 0.0.0.0 --port 54994 --config /path/to.toml).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

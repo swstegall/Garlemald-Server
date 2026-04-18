@@ -37,11 +37,8 @@ async fn main() -> Result<()> {
     let mut config = Config::load(&args.config)?;
     config.apply_launch_args(args);
 
-    tracing::info!(
-        host = %config.db_host, port = config.db_port, database = %config.db_name,
-        "testing DB connection"
-    );
-    let db = Arc::new(Database::new(&config.mysql_url())?);
+    tracing::info!(db_path = %config.db_path().display(), "opening sqlite database");
+    let db = Arc::new(Database::open(config.db_path()).await?);
     match db.ping().await {
         Ok(()) => tracing::info!("DB connection ok"),
         Err(e) => {
@@ -52,7 +49,7 @@ async fn main() -> Result<()> {
 
     // Pull this world's metadata from the DB (falls back to "Unknown" if the
     // row is missing, matching the C# `Program.cs` welcome message logic).
-    match db.get_server(config.world_id).await {
+    match db.get_server(config.world_id()).await {
         Ok(Some(world)) => {
             tracing::info!(name = %world.name, "loaded world info from DB");
             config.server_name = world.name;

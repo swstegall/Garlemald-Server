@@ -13,9 +13,9 @@ FFXIV 1.23b shipped with a three-tier server: a lobby for authentication and cha
 | `lobby-server` |        54994 | Client auth, account login, character list, character create/delete.                      |
 | `world-server` |        54992 | World-level services: party, linkshell, friend list, MOTD, world metadata.                |
 | `map-server`   |         1989 | Game runtime: zones, actors, NPCs, battle, inventory, events, Lua scripting, tick loop.   |
-| `common`       |            — | Shared library: blowfish, packet/subpacket framing, ini reader, hash table, math helpers. |
+| `common`       |            — | Shared library: blowfish, packet/subpacket framing, SQLite helper, hash table, math helpers. |
 
-All three binaries talk to the same MySQL database. The map server additionally loads a tree of **Lua scripts** (zones, NPCs, commands, directors) at runtime via [`mlua`](https://crates.io/crates/mlua) with vendored Lua 5.4.
+All three binaries share a single **SQLite** database file (default `./data/garlemald.db`, created with schema on first run). The map server additionally loads a tree of **Lua scripts** (zones, NPCs, commands, directors) at runtime via [`mlua`](https://crates.io/crates/mlua) with vendored Lua 5.4.
 
 ## How it works
 
@@ -59,12 +59,8 @@ garlemald-server/
 ## Prerequisites
 
 - **Rust 1.95.0** (pinned in `rust-toolchain.toml` — `rustup` will install it automatically on first build). Includes `clippy` and `rustfmt`.
-- **A C compiler** (`cc`, `clang`, or `gcc`). `mlua` vendors Lua 5.4 and builds it from source.
-- **MySQL 5.7+ / MariaDB 10+** reachable from the machine running the servers.
-- **Project Meteor data assets** — the `Data/` directory from `project-meteor-mirror/` (or upstream). You need:
-  - `Data/sql/*.sql` — schema + seed data for the `ffxiv_server` database.
-  - `Data/scripts/` — Lua scripts the map server loads at boot.
-  - `Data/*_config.ini` — example config files you can copy next to each binary.
+- **A C compiler** (`cc`, `clang`, or `gcc`). `mlua` vendors Lua 5.4 and builds it from source; `rusqlite` vendors SQLite.
+- **Project Meteor data assets** (optional, for real gameplay) — `project-meteor-mirror/Data/scripts/` is what the map server loads at boot. The `Data/sql/*.sql` dumps are no longer consumed directly; Garlemald ships its own SQLite schema in `common/sql/schema.sql` and applies it automatically.
 
 ## Building
 
@@ -87,54 +83,53 @@ Built binaries land at `target/{release,debug}/{lobby-server,world-server,map-se
 
 ## Database setup
 
-Follow the [upstream Project Meteor wiki](http://ffxivclassic.fragmenterworks.com/wiki/index.php/Setting_up_the_project) for the authoritative version — Garlemald consumes the same schema unchanged.
+None required — Garlemald uses a local SQLite file (default `./data/garlemald.db`) that is created automatically on first boot. `common/sql/schema.sql` ships the full DDL for every table the three servers touch, plus a single seeded row in `servers` (`id=1, Fernehalwes, 127.0.0.1:54992`) so the lobby → world handoff works out of the box.
 
-The short version:
-
-1. Create a database (the upstream default name is `ffxiv_server`):
-   ```sql
-   CREATE DATABASE ffxiv_server CHARACTER SET utf8 COLLATE utf8_general_ci;
-   ```
-2. Import every `.sql` file in `project-meteor-mirror/Data/sql/`:
-   ```bash
-   cd ../project-meteor-mirror/Data/sql
-   for f in *.sql; do mysql -u root -p ffxiv_server < "$f"; done
-   ```
-3. Edit the `servers` table so the `world-server` and `map-server` rows point at the IPs/ports your clients will reach (not `127.0.0.1` unless you're running everything locally). The lobby reads those rows and tells the client where to connect next.
+If you want to point at a different file (e.g. to keep multiple test rigs side-by-side), edit `database.path` in the relevant `configs/*.toml` or pass `--db-path /path/to/your.db` on the command line.
 
 ## Configuring
 
-Each binary reads an INI file from the current working directory by default (`--config <path>` overrides it). Copy the examples from the mirror to start:
+Each binary reads a TOML file from `./configs/` by default. Localhost defaults ship in the repo:
 
-```bash
-cp ../project-meteor-mirror/Data/lobby_config.ini ./lobby_config.ini
-cp ../project-meteor-mirror/Data/world_config.ini ./world_config.ini
-cp ../project-meteor-mirror/Data/map_config.ini   ./map_config.ini
+```
+configs/lobby.toml   configs/world.toml   configs/map.toml
 ```
 
-Fill in the `[Database]` section (`host`, `port`, `database`, `username`, `password`) for each file. `[General]` controls `server_ip` (bind address) and `server_port`. Defaults if a key is missing:
+Their contents (shown below for `lobby.toml`) are the same defaults the `Config::Default` impl uses, so any or all of them can be deleted — the binaries still boot with sensible localhost values.
 
-| Key                       | Lobby            | World            | Map              |
-| ------------------------- | ---------------- | ---------------- | ---------------- |
-| `General.server_ip`       | `127.0.0.1`      | `127.0.0.1`      | `127.0.0.1`      |
-| `General.server_port`     | `54994`          | `54992`          | `1989`           |
-| `General.script_root`     | —                | —                | `./scripts`      |
-| `Database.port`           | `3306`           | `3306`           | `3306`           |
+```toml
+[server]
+bind_ip = "127.0.0.1"
+port = 54994
+show_timestamp = true
 
-The map server expects `script_root` to point at the `Data/scripts` tree from Project Meteor (symlink or copy it next to the binary).
+[database]
+path = "./data/garlemald.db"
+```
+
+Defaults if a key (or the whole file) is missing:
+
+| Key                             | Lobby            | World            | Map              |
+| ------------------------------- | ---------------- | ---------------- | ---------------- |
+| `server.bind_ip`                | `127.0.0.1`      | `127.0.0.1`      | `127.0.0.1`      |
+| `server.port`                   | `54994`          | `54992`          | `1989`           |
+| `server.world_id`               | —                | `1`              | `1`              |
+| `database.path`                 | `./data/garlemald.db` | `./data/garlemald.db` | `./data/garlemald.db` |
+| `scripting.script_root`         | —                | —                | `./scripts`      |
+| `scripting.load_from_database`  | —                | —                | `true`           |
+
+The map server expects `scripting.script_root` to point at the `Data/scripts` tree from Project Meteor (symlink or copy it next to the binary).
 
 ### Command-line overrides
 
-Every server accepts the same flags, which override the INI values after load:
+Every server accepts these flags, which override the TOML values after load:
 
 ```
 --ip <ADDR>         bind IP
 --port <PORT>       bind port
---host <HOST>       MySQL host
---db <NAME>         MySQL database
---user <USER>       MySQL username
--p, --password <…>  MySQL password
---config <PATH>     path to the INI file (default ./{lobby,world,map}_config.ini)
+--db-path <PATH>    SQLite file path
+--world-id <ID>     servers.id row (world + map only)
+--config <PATH>     path to the TOML file (default ./configs/{lobby,world,map}.toml)
 ```
 
 ## Running
@@ -159,15 +154,15 @@ tail -f logs/*.log           # in another terminal
 Extra args after the script name are forwarded to the binary, e.g.:
 
 ```bash
-./scripts/run-lobby.sh --ip 0.0.0.0 --port 54994 --config /etc/garlemald/lobby.ini
+./scripts/run-lobby.sh --ip 0.0.0.0 --port 54994 --config /etc/garlemald/lobby.toml
 ```
 
 ### Directly
 
 ```bash
-./target/release/lobby-server --config ./lobby_config.ini
-./target/release/world-server --config ./world_config.ini
-./target/release/map-server   --config ./map_config.ini
+./target/release/lobby-server --config ./configs/lobby.toml
+./target/release/world-server --config ./configs/world.toml
+./target/release/map-server   --config ./configs/map.toml
 ```
 
 The map server also runs an interactive stdin console — type commands at the running process the same way the C# server's `Console.ReadLine` loop accepted them.
@@ -189,7 +184,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 
-The map-server integration tests can boot the server with `load_from_database = false` in `map_config.ini` to skip the DB loaders and exercise the runtime against an offline mock.
+The map-server integration tests can boot the server with `scripting.load_from_database = false` in `configs/map.toml` to skip the DB loaders and exercise the runtime against a fresh schema.
 
 ## References
 

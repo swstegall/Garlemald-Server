@@ -27,7 +27,7 @@ pub async fn run(
     registry: Arc<ActorRegistry>,
     lua: Arc<LuaEngine>,
 ) -> Result<()> {
-    let addr = format!("{}:{}", config.bind_ip, config.port);
+    let addr = format!("{}:{}", config.bind_ip(), config.port());
     let listener = TcpListener::bind(&addr).await.with_context(|| format!("bind {addr}"))?;
     tracing::info!(%addr, "map server listening");
 

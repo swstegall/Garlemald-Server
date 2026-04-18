@@ -11,6 +11,10 @@ byteorder.workspace = true
 flate2.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-rust-ini.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+toml.workspace = true
+rusqlite.workspace = true
+tokio-rusqlite.workspace = true
 
 [dev-dependencies]

@@ -1,0 +1,16 @@
+# Garlemald map-server configuration (localhost defaults).
+
+[server]
+bind_ip = "127.0.0.1"
+port = 1989
+show_timestamp = true
+world_id = 1
+
+[database]
+path = "./data/garlemald.db"
+
+[scripting]
+script_root = "./scripts"
+# Set false to skip zone/actor loaders (used by the integration test harness
+# to boot against an offline DB). Leave true for a real server.
+load_from_database = true

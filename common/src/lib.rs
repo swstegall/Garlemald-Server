@@ -7,9 +7,9 @@
 
 pub mod bitfield;
 pub mod blowfish;
+pub mod db;
 pub mod error;
 pub mod hash_table;
-pub mod ini;
 pub mod luaparam;
 pub mod math;
 pub mod packet;

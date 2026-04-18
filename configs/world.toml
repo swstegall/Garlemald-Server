@@ -1,0 +1,12 @@
+# Garlemald world-server configuration (localhost defaults).
+
+[server]
+bind_ip = "127.0.0.1"
+port = 54992
+show_timestamp = true
+# Row id in the `servers` table — the schema seeds id=1 "Fernehalwes" so
+# this matches out of the box.
+world_id = 1
+
+[database]
+path = "./data/garlemald.db"

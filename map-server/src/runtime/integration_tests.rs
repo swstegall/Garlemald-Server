@@ -23,6 +23,14 @@ use crate::zone::outbox::AreaOutbox;
 use crate::zone::zone::Zone;
 use common::Vector3;
 
+fn tempdb() -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::env::temp_dir().join(format!("garlemald-integration-{nanos}.db"))
+}
+
 #[tokio::test]
 async fn do_battle_action_reaches_player_client_queue() {
     // Scene: Zone 100 contains a BattleNpc (attacker, id=1) at origin and
@@ -198,7 +206,7 @@ async fn spawner_populates_zone_and_ticker_drives_them() {
     let world = Arc::new(WorldManager::new());
     let registry = Arc::new(ActorRegistry::new());
     let db = Arc::new(
-        crate::database::Database::new("mysql://invalid/dummy").expect("db stub"),
+        crate::database::Database::open(tempdb()).await.expect("db stub"),
     );
 
     // One zone with two seeds: a plain NPC and a BattleNpc.
@@ -274,7 +282,7 @@ async fn event_start_then_run_event_function_reaches_client() {
 
     let world = Arc::new(WorldManager::new());
     let registry = Arc::new(ActorRegistry::new());
-    let db = Arc::new(crate::database::Database::new("mysql://invalid/dummy").expect("db stub"));
+    let db = Arc::new(crate::database::Database::open(tempdb()).await.expect("db stub"));
 
     // One Player actor with a client handle attached.
     registry

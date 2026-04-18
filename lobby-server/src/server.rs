@@ -17,7 +17,7 @@ use crate::processor::{LobbySession, PacketProcessor, Reply};
 const BUFFER_SIZE: usize = 0xFFFF;
 
 pub async fn run(config: Config, processor: PacketProcessor) -> Result<()> {
-    let addr = format!("{}:{}", config.bind_ip, config.port);
+    let addr = format!("{}:{}", config.bind_ip(), config.port());
     let listener = TcpListener::bind(&addr).await.with_context(|| format!("bind {addr}"))?;
     tracing::info!(%addr, "lobby server listening");
 

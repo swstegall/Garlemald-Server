@@ -1,5 +1,4 @@
-//! Map server entry point. Phase-4 port of project-meteor-mirror's
-//! `Map Server/Program.cs`.
+//! Map server entry point.
 
 use std::sync::Arc;
 
@@ -55,11 +54,8 @@ async fn main() -> Result<()> {
     let mut config = Config::load(&args.config)?;
     config.apply_launch_args(args);
 
-    tracing::info!(
-        host = %config.db_host, port = config.db_port, database = %config.db_name,
-        "testing DB connection"
-    );
-    let db = Arc::new(Database::new(&config.mysql_url())?);
+    tracing::info!(db_path = %config.db_path().display(), "opening sqlite database");
+    let db = Arc::new(Database::open(config.db_path()).await?);
     match db.ping().await {
         Ok(()) => tracing::info!("DB connection ok"),
         Err(e) => {
@@ -71,17 +67,16 @@ async fn main() -> Result<()> {
     let world = Arc::new(WorldManager::new());
     let registry = Arc::new(ActorRegistry::new());
     let cmd = Arc::new(CommandProcessor::new(world.clone()));
-    let lua = Arc::new(LuaEngine::new(config.script_root.clone()));
-    tracing::info!(path = ?config.script_root, "lua engine initialised");
+    let lua = Arc::new(LuaEngine::new(config.script_root().to_path_buf()));
+    tracing::info!(path = ?config.script_root(), "lua engine initialised");
 
     // Phase-2 loaders — zones, private areas, entrances, seamless
     // boundaries. Skipped when the test harness flips
     // `load_from_database = false`.
-    if config.load_from_database {
-        match world
-            .load_from_database(&db, &config.bind_ip, config.port)
-            .await
-        {
+    if config.load_from_database() {
+        let bind_ip = config.bind_ip().to_string();
+        let port = config.port();
+        match world.load_from_database(&db, &bind_ip, port).await {
             Ok(()) => tracing::info!(zones = world.zone_count().await, "zones loaded"),
             Err(e) => {
                 tracing::error!(error = %e, "world load failed; continuing with empty zones");
@@ -108,9 +103,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Spawn the game-loop ticker. Walks every zone every 100ms and
-    // drains the four typed outboxes (status / battle / area / inventory)
-    // into real packets + DB writes + Lua calls.
+    // Spawn the game-loop ticker.
     tokio::spawn({
         let ticker = GameTicker::new(
             TickerConfig::default(),
@@ -123,8 +116,7 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Interactive console reader, mirroring the blocking `Console.ReadLine`
-    // loop in the C# Program.Main.
+    // Interactive console reader.
     tokio::spawn({
         let cmd = cmd.clone();
         async move {

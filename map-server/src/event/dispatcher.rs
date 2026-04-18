@@ -472,6 +472,15 @@ mod tests {
         dir
     }
 
+    /// Per-test SQLite path — one file per test run so WAL files don't collide.
+    fn tempdb() -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("garlemald-event-dispatch-{nanos}.db"))
+    }
+
     #[tokio::test]
     async fn quest_completion_fires_lua_hook() {
         let root = tmpdir();
@@ -488,7 +497,7 @@ mod tests {
         // Skip real DB round-trip by only dispatching a QuestCheckCompletion
         // event (no DB hit). The stub fails on connect which is fine — that
         // code path isn't reached.
-        let db = Database::new("mysql://invalid/dummy").expect("db stub");
+        let db = Database::open(tempdb()).await.expect("db stub");
 
         let event = EventEvent::QuestCheckCompletion {
             player_actor_id: 1,
@@ -519,7 +528,7 @@ mod tests {
         let lua = Arc::new(LuaEngine::new(&root));
         let registry = ActorRegistry::new();
         let world = WorldManager::new();
-        let db = Database::new("mysql://invalid/dummy").expect("db stub");
+        let db = Database::open(tempdb()).await.expect("db stub");
 
         let event = EventEvent::QuestAbandonHook {
             player_actor_id: 1,
@@ -555,7 +564,7 @@ mod tests {
         let lua = Arc::new(LuaEngine::new(&root));
         let world = WorldManager::new();
         let registry = ActorRegistry::new();
-        let db = Database::new("mysql://invalid/dummy").expect("db stub");
+        let db = Database::open(tempdb()).await.expect("db stub");
 
         // One Zone + one Greeter NPC in it.
         let zone = Zone::new(
@@ -596,7 +605,7 @@ mod tests {
     async fn no_lua_engine_keeps_dispatch_graceful() {
         let registry = ActorRegistry::new();
         let world = WorldManager::new();
-        let db = Database::new("mysql://invalid/dummy").expect("db stub");
+        let db = Database::open(tempdb()).await.expect("db stub");
 
         // All four Lua-hook paths should accept `None` without panicking.
         let events = vec![

@@ -1,88 +1,103 @@
 use std::net::IpAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use common::ini::IniFile;
+use serde::Deserialize;
 
-/// Runtime configuration for the lobby server. Mirrors the C# `ConfigConstants`
-/// plus the `ApplyLaunchArgs` overrides.
-#[derive(Debug, Clone)]
+/// Runtime configuration for the lobby server.
+///
+/// Loaded from a TOML file via `Config::load`; missing sections/fields fall
+/// back to the `Default` impl below so a fresh checkout boots against
+/// localhost without any config file at all.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
+    pub server: ServerSection,
+    pub database: DatabaseSection,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ServerSection {
     pub bind_ip: String,
     pub port: u16,
-    /// Preserved from the C# config so round-trip reads/writes don't drop the
-    /// key, even though our tracing subscriber controls timestamp formatting.
-    #[allow(dead_code)]
+    /// Preserved for round-trip config writes — the tracing subscriber owns
+    /// timestamp formatting so this value is not consulted directly.
     pub show_timestamp: bool,
+}
 
-    pub db_host: String,
-    pub db_port: u16,
-    pub db_name: String,
-    pub db_user: String,
-    pub db_password: String,
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DatabaseSection {
+    /// Path to the SQLite file, created on first run if missing.
+    pub path: PathBuf,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            server: ServerSection::default(),
+            database: DatabaseSection::default(),
+        }
+    }
+}
+
+impl Default for ServerSection {
+    fn default() -> Self {
+        Self {
+            bind_ip: "127.0.0.1".to_string(),
+            port: 54994,
+            show_timestamp: true,
+        }
+    }
+}
+
+impl Default for DatabaseSection {
+    fn default() -> Self {
+        Self {
+            path: PathBuf::from("./data/garlemald.db"),
+        }
+    }
 }
 
 impl Config {
-    pub fn mysql_url(&self) -> String {
-        format!(
-            "mysql://{user}:{pass}@{host}:{port}/{db}",
-            user = self.db_user,
-            pass = self.db_password,
-            host = self.db_host,
-            port = self.db_port,
-            db = self.db_name,
-        )
+    pub fn bind_ip(&self) -> &str {
+        &self.server.bind_ip
+    }
+    pub fn port(&self) -> u16 {
+        self.server.port
+    }
+    pub fn db_path(&self) -> &Path {
+        &self.database.path
     }
 
-    pub fn load(ini_path: impl AsRef<Path>) -> Result<Self> {
-        let path = ini_path.as_ref();
+    pub fn load(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
         if !path.exists() {
-            tracing::warn!(?path, "lobby_config.ini not found, loading defaults");
+            tracing::warn!(?path, "lobby config not found, using defaults");
+            return Ok(Self::default());
         }
-        let ini = IniFile::open_with(path, true, false)
+        let raw = std::fs::read_to_string(path)
             .with_context(|| format!("reading {}", path.display()))?;
-
-        let port: u32 = ini.get_value("General", "server_port", 54994u32);
-        let show_timestamp = ini
-            .get_value("General", "showtimestamp", "true".to_string())
-            .eq_ignore_ascii_case("true");
-        let db_port: u32 = ini.get_value("Database", "port", 3306u32);
-
-        Ok(Config {
-            bind_ip: ini.get_value("General", "server_ip", "127.0.0.1".to_string()),
-            port: port as u16,
-            show_timestamp,
-            db_host: ini.get_value("Database", "host", String::new()),
-            db_port: db_port as u16,
-            db_name: ini.get_value("Database", "database", String::new()),
-            db_user: ini.get_value("Database", "username", String::new()),
-            db_password: ini.get_value("Database", "password", String::new()),
-        })
+        let cfg: Config = toml::from_str(&raw)
+            .with_context(|| format!("parsing {}", path.display()))?;
+        Ok(cfg)
     }
 
     pub fn apply_launch_args(&mut self, args: LaunchArgs) {
         if let Some(ip) = args.ip {
             if ip.parse::<IpAddr>().is_ok() {
-                self.bind_ip = ip;
+                self.server.bind_ip = ip;
             } else {
                 tracing::warn!("invalid --ip ignored");
             }
         }
         if let Some(port) = args.port {
-            self.port = port;
+            self.server.port = port;
         }
-        if let Some(user) = args.user {
-            self.db_user = user;
-        }
-        if let Some(password) = args.password {
-            self.db_password = password;
-        }
-        if let Some(db) = args.db {
-            self.db_name = db;
-        }
-        if let Some(host) = args.host {
-            self.db_host = host;
+        if let Some(db) = args.db_path {
+            self.database.path = db;
         }
     }
 }
@@ -96,19 +111,10 @@ pub struct LaunchArgs {
     /// Override bind port
     #[arg(long)]
     pub port: Option<u16>,
-    /// MySQL host override
-    #[arg(long)]
-    pub host: Option<String>,
-    /// MySQL database name override
-    #[arg(long)]
-    pub db: Option<String>,
-    /// MySQL username override
-    #[arg(long)]
-    pub user: Option<String>,
-    /// MySQL password override (-p matches the C# CLI)
-    #[arg(long = "password", short = 'p')]
-    pub password: Option<String>,
-    /// Path to lobby_config.ini
-    #[arg(long, default_value = "./lobby_config.ini")]
+    /// Override SQLite file path
+    #[arg(long = "db-path")]
+    pub db_path: Option<PathBuf>,
+    /// Path to the lobby TOML config
+    #[arg(long, default_value = "./configs/lobby.toml")]
     pub config: String,
 }

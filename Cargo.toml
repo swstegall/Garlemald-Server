@@ -25,8 +25,9 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
-mysql_async = "0.36"
-rust-ini = "0.21"
+rusqlite = "0.37"
+tokio-rusqlite = { version = "0.7", features = ["bundled"] }
+toml = "0.8"
 md-5 = "0.10"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }

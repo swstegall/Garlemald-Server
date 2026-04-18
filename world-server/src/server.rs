@@ -88,7 +88,7 @@ impl Default for SessionRegistry {
 }
 
 pub async fn run(config: Config, db: Arc<Database>, world: Arc<WorldMaster>) -> Result<()> {
-    let addr = format!("{}:{}", config.bind_ip, config.port);
+    let addr = format!("{}:{}", config.bind_ip(), config.port());
     let listener = TcpListener::bind(&addr).await.with_context(|| format!("bind {addr}"))?;
     tracing::info!(%addr, "world server listening");
 

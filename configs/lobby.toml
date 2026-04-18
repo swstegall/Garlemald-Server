@@ -1,0 +1,12 @@
+# Garlemald lobby-server configuration (localhost defaults).
+# Loaded by `./lobby-server --config ./configs/lobby.toml`.
+
+[server]
+bind_ip = "127.0.0.1"
+port = 54994
+show_timestamp = true
+
+[database]
+# Shared SQLite file used by all three servers. Created (with schema) on
+# first run if missing.
+path = "./data/garlemald.db"

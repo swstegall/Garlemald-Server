@@ -1,89 +1,112 @@
 use std::net::IpAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use common::ini::IniFile;
+use serde::Deserialize;
 
-#[derive(Debug, Clone)]
+/// Runtime configuration for the world server.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
-    pub bind_ip: String,
-    pub port: u16,
-    #[allow(dead_code)]
-    pub show_timestamp: bool,
-
-    pub world_id: u32,
-    pub db_host: String,
-    pub db_port: u16,
-    pub db_name: String,
-    pub db_user: String,
-    pub db_password: String,
-
+    pub server: ServerSection,
+    pub database: DatabaseSection,
     /// Populated at startup from the `servers` table. Default `"Unknown"` if
-    /// the lookup fails, matching the C# behavior.
+    /// the row is missing.
+    #[serde(skip, default = "default_server_name")]
     pub server_name: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ServerSection {
+    pub bind_ip: String,
+    pub port: u16,
+    pub show_timestamp: bool,
+    /// `servers.id` for this world; used to fetch the welcome MOTD.
+    pub world_id: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DatabaseSection {
+    pub path: PathBuf,
+}
+
+fn default_server_name() -> String {
+    "Unknown".to_string()
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            server: ServerSection::default(),
+            database: DatabaseSection::default(),
+            server_name: default_server_name(),
+        }
+    }
+}
+
+impl Default for ServerSection {
+    fn default() -> Self {
+        Self {
+            bind_ip: "127.0.0.1".to_string(),
+            port: 54992,
+            show_timestamp: true,
+            world_id: 1,
+        }
+    }
+}
+
+impl Default for DatabaseSection {
+    fn default() -> Self {
+        Self {
+            path: PathBuf::from("./data/garlemald.db"),
+        }
+    }
+}
+
 impl Config {
-    pub fn mysql_url(&self) -> String {
-        format!(
-            "mysql://{user}:{pass}@{host}:{port}/{db}",
-            user = self.db_user,
-            pass = self.db_password,
-            host = self.db_host,
-            port = self.db_port,
-            db = self.db_name,
-        )
+    pub fn bind_ip(&self) -> &str {
+        &self.server.bind_ip
+    }
+    pub fn port(&self) -> u16 {
+        self.server.port
+    }
+    pub fn world_id(&self) -> u32 {
+        self.server.world_id
+    }
+    pub fn db_path(&self) -> &Path {
+        &self.database.path
     }
 
-    pub fn load(ini_path: impl AsRef<Path>) -> Result<Self> {
-        let path = ini_path.as_ref();
+    pub fn load(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
         if !path.exists() {
-            tracing::warn!(?path, "world_config.ini not found, loading defaults");
+            tracing::warn!(?path, "world config not found, using defaults");
+            return Ok(Self::default());
         }
-        let ini = IniFile::open_with(path, true, false)
+        let raw = std::fs::read_to_string(path)
             .with_context(|| format!("reading {}", path.display()))?;
-
-        let port: u32 = ini.get_value("General", "server_port", 54992u32);
-        let show_timestamp = ini
-            .get_value("General", "showtimestamp", "true".to_string())
-            .eq_ignore_ascii_case("true");
-        let db_port: u32 = ini.get_value("Database", "port", 3306u32);
-
-        Ok(Config {
-            bind_ip: ini.get_value("General", "server_ip", "127.0.0.1".to_string()),
-            port: port as u16,
-            show_timestamp,
-            world_id: ini.get_value("Database", "worldid", 0u32),
-            db_host: ini.get_value("Database", "host", String::new()),
-            db_port: db_port as u16,
-            db_name: ini.get_value("Database", "database", String::new()),
-            db_user: ini.get_value("Database", "username", String::new()),
-            db_password: ini.get_value("Database", "password", String::new()),
-            server_name: "Unknown".to_string(),
-        })
+        let cfg: Config = toml::from_str(&raw)
+            .with_context(|| format!("parsing {}", path.display()))?;
+        Ok(cfg)
     }
 
     pub fn apply_launch_args(&mut self, args: LaunchArgs) {
         if let Some(ip) = args.ip
             && ip.parse::<IpAddr>().is_ok()
         {
-            self.bind_ip = ip;
+            self.server.bind_ip = ip;
         }
         if let Some(port) = args.port {
-            self.port = port;
+            self.server.port = port;
         }
-        if let Some(user) = args.user {
-            self.db_user = user;
+        if let Some(db) = args.db_path {
+            self.database.path = db;
         }
-        if let Some(password) = args.password {
-            self.db_password = password;
-        }
-        if let Some(db) = args.db {
-            self.db_name = db;
-        }
-        if let Some(host) = args.host {
-            self.db_host = host;
+        if let Some(world_id) = args.world_id {
+            self.server.world_id = world_id;
         }
     }
 }
@@ -95,14 +118,10 @@ pub struct LaunchArgs {
     pub ip: Option<String>,
     #[arg(long)]
     pub port: Option<u16>,
-    #[arg(long)]
-    pub host: Option<String>,
-    #[arg(long)]
-    pub db: Option<String>,
-    #[arg(long)]
-    pub user: Option<String>,
-    #[arg(long = "password", short = 'p')]
-    pub password: Option<String>,
-    #[arg(long, default_value = "./world_config.ini")]
+    #[arg(long = "db-path")]
+    pub db_path: Option<PathBuf>,
+    #[arg(long = "world-id")]
+    pub world_id: Option<u32>,
+    #[arg(long, default_value = "./configs/world.toml")]
     pub config: String,
 }
