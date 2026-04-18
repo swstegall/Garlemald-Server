@@ -155,25 +155,20 @@ Only required for full gameplay (zones, NPCs, items, etc.):
 
 Garlemald's SQLite schema is embedded at `common/sql/schema.sql` and
 applied automatically on first run. Every `*.sql` file Project Meteor
-shipped under `Data/sql/` has already been ported to SQLite and bundled
-under `common/sql/seed/` as numbered migrations (`001_*.sql` ...), so
-`gamedata_items`, `gamedata_actor_class`, `server_zones`,
+shipped under `Data/sql/` was ported to SQLite one-shot and now lives
+as a set of numbered migrations under `common/sql/seed/`
+(`001_gamedata_achievements.sql`, `002_gamedata_actor_appearance.sql`,
+...). So `gamedata_items`, `gamedata_actor_class`, `server_zones`,
 `server_battle_commands`, `server_battlenpc_*`, etc. are populated
 automatically on first boot. You do **not** need to import anything by
 hand.
 
-If you pull a newer `project-meteor-mirror` and want Garlemald to pick
-up added seed rows, re-run the converter and rebuild:
-
-```bash
-./scripts/convert-meteor-sql.py     # regenerates common/sql/seed/
-cargo build --workspace --release
-```
-
-The converter is idempotent. On the next boot, any new migration files
-are applied inside their own transaction and recorded in the
-`schema_migrations` table so existing rows / live user accounts are
-never touched.
+To add more seed data later, drop a new `NNN_<name>.sql` file into
+`common/sql/seed/` (`NNN` being the next free number) and rebuild. On
+the next boot, the migration runner applies it inside its own
+transaction and records the filename in the `schema_migrations` table
+so existing rows — and live user accounts in `users` / `sessions` /
+`characters*` — are never touched.
 
 ## Building from source
 
