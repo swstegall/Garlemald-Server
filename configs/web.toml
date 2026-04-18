@@ -1,0 +1,17 @@
+# Garlemald web-server (login / signup) configuration (localhost defaults).
+# Loaded by `./web-server --config ./configs/web.toml`.
+
+[server]
+bind_ip = "127.0.0.1"
+port = 54993
+show_timestamp = true
+
+[database]
+# Shared SQLite file used by every Garlemald binary. Created (with schema)
+# on first run if missing.
+path = "./data/garlemald.db"
+
+[session]
+# How long a session row lives after a successful login/signup. The lobby
+# server rejects rows whose `expiration` is in the past.
+hours = 24

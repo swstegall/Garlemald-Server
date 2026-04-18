@@ -662,6 +662,14 @@ CREATE TABLE IF NOT EXISTS gamedata_achievements (
     rewardPoints   INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS users (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    username     TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    passwordHash TEXT NOT NULL,
+    email        TEXT DEFAULT NULL COLLATE NOCASE,
+    createdAt    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS sessions (
     id         TEXT PRIMARY KEY,
     userId     INTEGER NOT NULL,
