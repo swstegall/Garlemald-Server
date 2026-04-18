@@ -95,18 +95,18 @@ impl PacketProcessor {
         tracing::info!(session = session_id, is_login, "session begin");
 
         // 1. Pull the persisted character from the DB.
+        //    C# Meteor's case 0x1000 sends no reply — `SessionBeginConfirmPacket`
+        //    exists in the .csproj but is never instantiated. Sending one
+        //    leaves the client's handshake state machine in a bad spot
+        //    ("Now Loading" forever, no LanguageCode).
         let loaded = match self.db.load_player_character(session_id).await {
             Ok(Some(row)) => row,
             Ok(None) => {
                 tracing::warn!(session = session_id, "no character row for session");
-                let reply = tx::build_session_begin(session_id, 0);
-                client.send_bytes(reply.to_bytes()).await;
                 return Ok(());
             }
             Err(e) => {
                 tracing::error!(error = %e, session = session_id, "DB load failed");
-                let reply = tx::build_session_begin(session_id, 0);
-                client.send_bytes(reply.to_bytes()).await;
                 return Ok(());
             }
         };
@@ -177,9 +177,7 @@ impl PacketProcessor {
             tracing::error!(error = %e, actor = actor_id, "zone change failed");
         }
 
-        // 5. Ack the session begin.
-        let reply = tx::build_session_begin(session_id, 1);
-        client.send_bytes(reply.to_bytes()).await;
+        let _ = client;
         Ok(())
     }
 
