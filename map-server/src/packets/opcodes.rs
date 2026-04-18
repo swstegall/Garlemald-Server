@@ -60,6 +60,11 @@ pub const OP_ADD_ACTOR: u16 = 0x00CA;
 pub const OP_RX_SET_TARGET: u16 = 0x00CD;
 pub const OP_RX_LOCK_TARGET: u16 = 0x00CC;
 pub const OP_RX_ZONE_IN_COMPLETE: u16 = 0x0007;
+/// LanguageCode (0x0006) — fired by the client once it's safe to receive
+/// world-spawn packets. C# `Map/PacketProcessor.cs` case 0x0006 uses this as
+/// the deferred trigger for `DoZoneIn(actor, isLogin=true, 0x1)` plus the
+/// `onBeginLogin` / `onLogin` Lua hooks.
+pub const OP_RX_LANGUAGE_CODE: u16 = 0x0006;
 pub const OP_RX_EVENT_START: u16 = 0x012D;
 pub const OP_RX_EVENT_UPDATE: u16 = 0x012E;
 

@@ -21,13 +21,13 @@ use crate::packets::opcodes::{
     OP_RX_END_RECRUITING, OP_RX_EVENT_START, OP_RX_EVENT_UPDATE, OP_RX_FAQ_BODY_REQUEST,
     OP_RX_FAQ_LIST_REQUEST, OP_RX_FRIEND_STATUS, OP_RX_FRIENDLIST_ADD, OP_RX_FRIENDLIST_REMOVE,
     OP_RX_FRIENDLIST_REQUEST, OP_RX_GM_TICKET_BODY, OP_RX_GM_TICKET_END, OP_RX_GM_TICKET_SEND,
-    OP_RX_GM_TICKET_STATE, OP_RX_ITEM_PACKAGE_REQUEST, OP_RX_RECRUITER_STATE,
-    OP_RX_RECRUITING_DETAILS, OP_RX_START_RECRUITING, OP_RX_SUPPORT_ISSUE_REQUEST,
-    OP_RX_UPDATE_PLAYER_POSITION, OP_SESSION_BEGIN, OP_SESSION_END,
+    OP_RX_GM_TICKET_STATE, OP_RX_ITEM_PACKAGE_REQUEST, OP_RX_LANGUAGE_CODE,
+    OP_RX_RECRUITER_STATE, OP_RX_RECRUITING_DETAILS, OP_RX_START_RECRUITING,
+    OP_RX_SUPPORT_ISSUE_REQUEST, OP_RX_UPDATE_PLAYER_POSITION, OP_SESSION_BEGIN, OP_SESSION_END,
 };
 use crate::packets::receive::{
     AchievementProgressRequestPacket, AddRemoveSocialPacket, ChatMessagePacket, EventStartPacket,
-    EventUpdatePacket, UpdatePlayerPositionPacket,
+    EventUpdatePacket, LanguageCodePacket, SessionBeginRequest, UpdatePlayerPositionPacket,
 };
 use crate::packets::send as tx;
 use crate::runtime::actor_registry::{ActorHandle, ActorKindTag, ActorRegistry};
@@ -89,7 +89,10 @@ impl PacketProcessor {
 
     async fn handle_session_begin(&self, client: &ClientHandle, sub: &SubPacket) -> Result<()> {
         let session_id = sub.header.source_id;
-        tracing::info!(session = session_id, "session begin");
+        let is_login = SessionBeginRequest::parse(session_id, &sub.data)
+            .map(|p| p.is_login)
+            .unwrap_or(false);
+        tracing::info!(session = session_id, is_login, "session begin");
 
         // 1. Pull the persisted character from the DB.
         let loaded = match self.db.load_player_character(session_id).await {
@@ -161,11 +164,15 @@ impl PacketProcessor {
             ))
             .await;
 
-        // 4. Fire the zone-change that places the player in their zone.
-        if let Err(e) = self
-            .world
-            .do_zone_change(actor_id, session_id, zone_id, spawn, rotation)
-            .await
+        // 4. Fire the zone-change that places the player in their zone —
+        //    but only for non-login transfers. Initial login defers this
+        //    to the opcode-0x6 (LanguageCode) handler so the client has
+        //    signalled it's ready to receive world-spawn packets.
+        if !is_login
+            && let Err(e) = self
+                .world
+                .do_zone_change(actor_id, session_id, zone_id, spawn, rotation)
+                .await
         {
             tracing::error!(error = %e, actor = actor_id, "zone change failed");
         }
@@ -186,11 +193,73 @@ impl PacketProcessor {
         Ok(())
     }
 
-    async fn handle_game_message(&self, _client: &ClientHandle, sub: &SubPacket) -> Result<()> {
+    /// Game-message opcode 0x0002 — the client's "I'm here, ack me" frame.
+    /// Mirrors C# `Map/PacketProcessor.cs` case 0x0002: reply with the canned
+    /// 40-byte 0x2 blob with the session id patched into the first four bytes.
+    async fn handle_gm_handshake_ack(
+        &self,
+        client: &ClientHandle,
+        session_id: u32,
+    ) -> Result<()> {
+        let reply = tx::build_handshake_response(session_id);
+        client.send_bytes(reply.to_bytes()).await;
+        Ok(())
+    }
+
+    /// Game-message opcode 0x0006 (LanguageCode) — the client signalling it's
+    /// safe to receive world-spawn packets. C# `Map/PacketProcessor.cs` case
+    /// 0x0006 fires `onBeginLogin`, `DoZoneIn(actor, isLogin=true, 0x1)`, then
+    /// `onLogin`. The zone-change is the load-bearing piece for getting past
+    /// the loading screen on first login.
+    async fn handle_language_code(&self, session_id: u32, data: &[u8]) -> Result<()> {
+        let lang = LanguageCodePacket::parse(data)
+            .map(|p| p.language_code)
+            .unwrap_or(1);
+
+        let Some(handle) = self.registry.by_session(session_id).await else {
+            tracing::warn!(session = session_id, "language_code: no actor registered");
+            return Ok(());
+        };
+        let Some(mut snap) = self.world.session(session_id).await else {
+            tracing::warn!(session = session_id, "language_code: no session registered");
+            return Ok(());
+        };
+
+        // Persist the language code + login spawn type on the session.
+        snap.language_code = lang;
+        snap.destination_spawn_type = 0x1;
+        let zone = snap.current_zone_id;
+        let spawn = Vector3::new(snap.destination_x, snap.destination_y, snap.destination_z);
+        let rotation = snap.destination_rot;
+        self.world.upsert_session(snap).await;
+
+        let actor_id = handle.actor_id;
+        if let Err(e) = self
+            .world
+            .do_zone_change(actor_id, session_id, zone, spawn, rotation)
+            .await
+        {
+            tracing::error!(error = %e, actor = actor_id, "login zone change failed");
+        }
+
+        // onBeginLogin / onLogin Lua hooks ride on the LuaEngine wiring
+        // sprint — log so we can see the trigger fired.
+        tracing::info!(
+            session = session_id,
+            language = lang,
+            zone,
+            "language code received; login zone-in dispatched",
+        );
+        Ok(())
+    }
+
+    async fn handle_game_message(&self, client: &ClientHandle, sub: &SubPacket) -> Result<()> {
         let opcode = sub.game_message.opcode;
         let source = sub.header.source_id;
 
         match opcode {
+            OP_HANDSHAKE_RESPONSE => self.handle_gm_handshake_ack(client, source).await?,
+            OP_RX_LANGUAGE_CODE => self.handle_language_code(source, &sub.data).await?,
             OP_RX_UPDATE_PLAYER_POSITION => self.handle_update_position(source, &sub.data).await?,
             OP_RX_EVENT_START => self.handle_event_start(source, &sub.data).await?,
             OP_RX_EVENT_UPDATE => self.handle_event_update(source, &sub.data).await?,
