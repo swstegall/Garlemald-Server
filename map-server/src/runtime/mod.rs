@@ -18,5 +18,7 @@ mod integration_tests;
 
 pub use actor_registry::{ActorHandle, ActorKindTag, ActorRegistry};
 pub use broadcast::broadcast_around_actor;
-pub use dispatcher::{dispatch_area_event, dispatch_battle_event, dispatch_inventory_event, dispatch_status_event};
+pub use dispatcher::{
+    dispatch_area_event, dispatch_battle_event, dispatch_inventory_event, dispatch_status_event,
+};
 pub use ticker::{GameTicker, TickerConfig};

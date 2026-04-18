@@ -111,12 +111,7 @@ impl ItemPackage {
         Self::with_flags(owner_actor_id, capacity, code, false)
     }
 
-    pub fn with_flags(
-        owner_actor_id: u32,
-        capacity: u16,
-        code: u16,
-        is_temporary: bool,
-    ) -> Self {
+    pub fn with_flags(owner_actor_id: u32, capacity: u16, code: u16, is_temporary: bool) -> Self {
         let cap = capacity as usize;
         Self {
             owner_actor_id,
@@ -219,7 +214,9 @@ impl ItemPackage {
         quantity: i32,
         quality: u8,
     ) -> bool {
-        let Some(gd) = catalog.get(item_id) else { return !self.is_full() };
+        let Some(gd) = catalog.get(item_id) else {
+            return !self.is_full();
+        };
         let max_stack = gd.stack_size.max(1) as i32;
 
         let mut remaining = quantity;
@@ -249,16 +246,16 @@ impl ItemPackage {
     ) -> bool {
         let mut temp_size = self.count();
         for (i, &item_id) in item_ids.iter().enumerate() {
-            let Some(gd) = catalog.get(item_id) else { return false };
+            let Some(gd) = catalog.get(item_id) else {
+                return false;
+            };
             let max_stack = gd.stack_size.max(1) as i32;
             let q_count = quantity.and_then(|q| q.get(i)).copied().unwrap_or(1) as i32;
             let q_quality = quality.and_then(|q| q.get(i)).copied().unwrap_or(1);
 
             let mut remaining = q_count;
             for item in self.iter_items() {
-                if item.item_id == item_id
-                    && item.quality == q_quality
-                    && item.quantity < max_stack
+                if item.item_id == item_id && item.quality == q_quality && item.quantity < max_stack
                 {
                     remaining -= max_stack - item.quantity;
                     if remaining <= 0 {
@@ -289,7 +286,11 @@ impl ItemPackage {
         if item.item_package != self.code {
             return;
         }
-        if self.list.get(item.slot as usize).is_some_and(|o| o.is_some()) {
+        if self
+            .list
+            .get(item.slot as usize)
+            .is_some_and(|o| o.is_some())
+        {
             self.mark_dirty_slot(item.slot);
         }
     }
@@ -354,7 +355,9 @@ impl ItemPackage {
         if !self.is_space_for_add(catalog, item_id, quantity, quality) {
             return Err(InventoryError::Full);
         }
-        let Some(gd) = catalog.get(item_id) else { return Err(InventoryError::System) };
+        let Some(gd) = catalog.get(item_id) else {
+            return Err(InventoryError::System);
+        };
         if gd.is_exclusive && self.has_item(item_id) {
             return Err(InventoryError::HasUnique);
         }
@@ -365,7 +368,9 @@ impl ItemPackage {
             if quantity <= 0 {
                 break;
             }
-            let Some(item) = self.list[i].as_mut() else { continue };
+            let Some(item) = self.list[i].as_mut() else {
+                continue;
+            };
             if item.item_id != item_id || item.quality != quality || item.quantity >= max_stack {
                 continue;
             }
@@ -376,7 +381,10 @@ impl ItemPackage {
             let unique_id = item.unique_id;
             let new_qty = item.quantity;
             if !self.is_temporary {
-                outbox.push(InventoryEvent::DbQuantity { server_item_id: unique_id, quantity: new_qty });
+                outbox.push(InventoryEvent::DbQuantity {
+                    server_item_id: unique_id,
+                    quantity: new_qty,
+                });
             }
         }
 
@@ -474,7 +482,9 @@ impl ItemPackage {
             if remaining <= 0 {
                 break;
             }
-            let Some(item) = self.list[i].as_mut() else { continue };
+            let Some(item) = self.list[i].as_mut() else {
+                continue;
+            };
             if item.item_id != item_id || item.quality != quality {
                 continue;
             }
@@ -527,7 +537,9 @@ impl ItemPackage {
         else {
             return;
         };
-        let Some(item) = self.list[slot].as_mut() else { return };
+        let Some(item) = self.list[slot].as_mut() else {
+            return;
+        };
         if quantity >= item.quantity {
             let unique_id = item.unique_id;
             self.list[slot] = None;
@@ -571,17 +583,14 @@ impl ItemPackage {
         self.bracketed_send_update(outbox);
     }
 
-    pub fn remove_at_slot_qty(
-        &mut self,
-        slot: u16,
-        quantity: i32,
-        outbox: &mut InventoryOutbox,
-    ) {
+    pub fn remove_at_slot_qty(&mut self, slot: u16, quantity: i32, outbox: &mut InventoryOutbox) {
         let idx = slot as usize;
         if idx >= self.end_of_list_index {
             return;
         }
-        let Some(item) = self.list[idx].as_mut() else { return };
+        let Some(item) = self.list[idx].as_mut() else {
+            return;
+        };
         item.quantity -= quantity;
         let (unique_id, remaining) = (item.unique_id, item.quantity);
         if remaining <= 0 {
@@ -680,7 +689,9 @@ impl ItemPackage {
             self.end_of_list_index = new_end;
         }
         if !position_updates.is_empty() && !self.is_temporary {
-            outbox.push(InventoryEvent::DbPositions { updates: position_updates });
+            outbox.push(InventoryEvent::DbPositions {
+                updates: position_updates,
+            });
         }
     }
 
@@ -690,9 +701,13 @@ impl ItemPackage {
         if self.holding_updates {
             return;
         }
-        outbox.push(InventoryEvent::PacketBeginChange { owner_actor_id: self.owner_actor_id });
+        outbox.push(InventoryEvent::PacketBeginChange {
+            owner_actor_id: self.owner_actor_id,
+        });
         self.send_update(outbox);
-        outbox.push(InventoryEvent::PacketEndChange { owner_actor_id: self.owner_actor_id });
+        outbox.push(InventoryEvent::PacketEndChange {
+            owner_actor_id: self.owner_actor_id,
+        });
     }
 
     /// Build the `InventorySetBegin` → items → remove-tail → `InventorySetEnd`
@@ -735,7 +750,9 @@ impl ItemPackage {
                 slots: dirty_tail_slots,
             });
         }
-        outbox.push(InventoryEvent::PacketSetEnd { owner_actor_id: self.owner_actor_id });
+        outbox.push(InventoryEvent::PacketSetEnd {
+            owner_actor_id: self.owner_actor_id,
+        });
 
         self.clear_dirty();
     }
@@ -754,7 +771,9 @@ impl ItemPackage {
                 items,
             });
         }
-        outbox.push(InventoryEvent::PacketSetEnd { owner_actor_id: self.owner_actor_id });
+        outbox.push(InventoryEvent::PacketSetEnd {
+            owner_actor_id: self.owner_actor_id,
+        });
     }
 }
 
@@ -828,7 +847,10 @@ mod tests {
         let mut outbox = InventoryOutbox::new();
 
         bag.add(&catalog, 42, 10, 1, &mut outbox).unwrap();
-        assert_eq!(bag.add(&catalog, 43, 1, 1, &mut outbox), Err(InventoryError::Full));
+        assert_eq!(
+            bag.add(&catalog, 43, 1, 1, &mut outbox),
+            Err(InventoryError::Full)
+        );
     }
 
     #[test]

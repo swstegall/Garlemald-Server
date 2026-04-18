@@ -5,36 +5,36 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use common::{BasePacket, Vector3};
 use common::subpacket::{SUBPACKET_TYPE_GAMEMESSAGE, SubPacket};
+use common::{BasePacket, Vector3};
 
+use crate::achievement::{AchievementEvent, AchievementOutbox, dispatch_achievement_event};
 use crate::actor::Character;
 use crate::data::{ClientHandle, Session};
 use crate::database::Database;
 use crate::event::EventOutbox;
 use crate::event::dispatcher::dispatch_event_event;
-use crate::achievement::{dispatch_achievement_event, AchievementEvent, AchievementOutbox};
 use crate::lua::LuaEngine;
 use crate::packets::opcodes::{
     OP_HANDSHAKE_RESPONSE, OP_PONG, OP_PONG_RESPONSE, OP_RX_ACHIEVEMENT_PROGRESS,
     OP_RX_BLACKLIST_ADD, OP_RX_BLACKLIST_REMOVE, OP_RX_BLACKLIST_REQUEST, OP_RX_CHAT_MESSAGE,
     OP_RX_END_RECRUITING, OP_RX_EVENT_START, OP_RX_EVENT_UPDATE, OP_RX_FAQ_BODY_REQUEST,
-    OP_RX_FAQ_LIST_REQUEST, OP_RX_FRIENDLIST_ADD, OP_RX_FRIENDLIST_REMOVE,
-    OP_RX_FRIENDLIST_REQUEST, OP_RX_FRIEND_STATUS, OP_RX_GM_TICKET_BODY, OP_RX_GM_TICKET_END,
-    OP_RX_GM_TICKET_SEND, OP_RX_GM_TICKET_STATE, OP_RX_ITEM_PACKAGE_REQUEST,
-    OP_RX_RECRUITER_STATE, OP_RX_RECRUITING_DETAILS, OP_RX_START_RECRUITING,
-    OP_RX_SUPPORT_ISSUE_REQUEST, OP_RX_UPDATE_PLAYER_POSITION, OP_SESSION_BEGIN, OP_SESSION_END,
+    OP_RX_FAQ_LIST_REQUEST, OP_RX_FRIEND_STATUS, OP_RX_FRIENDLIST_ADD, OP_RX_FRIENDLIST_REMOVE,
+    OP_RX_FRIENDLIST_REQUEST, OP_RX_GM_TICKET_BODY, OP_RX_GM_TICKET_END, OP_RX_GM_TICKET_SEND,
+    OP_RX_GM_TICKET_STATE, OP_RX_ITEM_PACKAGE_REQUEST, OP_RX_RECRUITER_STATE,
+    OP_RX_RECRUITING_DETAILS, OP_RX_START_RECRUITING, OP_RX_SUPPORT_ISSUE_REQUEST,
+    OP_RX_UPDATE_PLAYER_POSITION, OP_SESSION_BEGIN, OP_SESSION_END,
 };
 use crate::packets::receive::{
     AchievementProgressRequestPacket, AddRemoveSocialPacket, ChatMessagePacket, EventStartPacket,
     EventUpdatePacket, UpdatePlayerPositionPacket,
 };
-use crate::social::{
-    dispatch_social_event, message_type_from_u32, recruitment, support, ChatKind, SocialEvent,
-    SocialOutbox,
-};
 use crate::packets::send as tx;
 use crate::runtime::actor_registry::{ActorHandle, ActorKindTag, ActorRegistry};
+use crate::social::{
+    ChatKind, SocialEvent, SocialOutbox, dispatch_social_event, message_type_from_u32, recruitment,
+    support,
+};
 use crate::world_manager::WorldManager;
 
 pub struct PacketProcessor {
@@ -129,9 +129,7 @@ impl PacketProcessor {
 
         // 2. Register the ClientHandle + a Session entry so the game
         //    ticker and packet dispatchers can find the socket.
-        self.world
-            .register_client(session_id, client.clone())
-            .await;
+        self.world.register_client(session_id, client.clone()).await;
         let mut session = Session::new(session_id);
         session.current_zone_id = zone_id;
         session.destination_x = spawn.x;
@@ -258,7 +256,8 @@ impl PacketProcessor {
             );
         }
         for e in outbox.drain() {
-            dispatch_event_event(&e, &self.registry, &self.world, &self.db, self.lua.as_ref()).await;
+            dispatch_event_event(&e, &self.registry, &self.world, &self.db, self.lua.as_ref())
+                .await;
         }
         tracing::debug!(
             player = actor_id,
@@ -294,7 +293,8 @@ impl PacketProcessor {
             );
         }
         for e in outbox.drain() {
-            dispatch_event_event(&e, &self.registry, &self.world, &self.db, self.lua.as_ref()).await;
+            dispatch_event_event(&e, &self.registry, &self.world, &self.db, self.lua.as_ref())
+                .await;
         }
         Ok(())
     }
@@ -316,7 +316,8 @@ impl PacketProcessor {
         // 1. Update Character position.
         {
             let mut c = handle.character.write().await;
-            c.base.set_position(Vector3::new(pkt.x, pkt.y, pkt.z), pkt.rot);
+            c.base
+                .set_position(Vector3::new(pkt.x, pkt.y, pkt.z), pkt.rot);
             c.base.move_state = pkt.move_state;
         }
 
@@ -694,10 +695,7 @@ impl PacketProcessor {
         let (count, flags) = {
             let chara = handle.character.read().await;
             if handle.is_player() {
-                let earned = handle
-                    .character
-                    .read()
-                    .await;
+                let earned = handle.character.read().await;
                 let _ = (chara, earned);
                 // Can't borrow chara twice; re-read.
                 (0u32, 0u32)

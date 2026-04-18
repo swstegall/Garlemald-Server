@@ -65,7 +65,8 @@ pub fn build_set_actor_position(
     c.write_f32::<LittleEndian>(z).unwrap();
     c.write_f32::<LittleEndian>(rotation).unwrap();
     c.write_u16::<LittleEndian>(spawn_type).unwrap();
-    c.write_u16::<LittleEndian>(is_zoning_player as u16).unwrap();
+    c.write_u16::<LittleEndian>(is_zoning_player as u16)
+        .unwrap();
     SubPacket::new(OP_SET_ACTOR_POSITION, actor_id, data)
 }
 
@@ -118,7 +119,11 @@ pub fn build_set_actor_target_animated(actor_id: u32, target_id: u32) -> SubPack
 }
 
 /// 0x00D6 SetActorAppearancePacket — 28 appearance slots.
-pub fn build_set_actor_appearance(actor_id: u32, model_id: u32, appearance: &[u32; 28]) -> SubPacket {
+pub fn build_set_actor_appearance(
+    actor_id: u32,
+    model_id: u32,
+    appearance: &[u32; 28],
+) -> SubPacket {
     let mut data = body(0x128);
     let mut c = Cursor::new(&mut data[..]);
     c.write_u32::<LittleEndian>(model_id).unwrap();
@@ -204,7 +209,11 @@ pub fn build_start_countdown(
 /// single u64.
 pub fn build_set_actor_state(actor_id: u32, main_state: u8, sub_state: u8) -> SubPacket {
     let combined = (main_state as u64) | ((sub_state as u64) << 8);
-    SubPacket::new(OP_SET_ACTOR_STATE, actor_id, combined.to_le_bytes().to_vec())
+    SubPacket::new(
+        OP_SET_ACTOR_STATE,
+        actor_id,
+        combined.to_le_bytes().to_vec(),
+    )
 }
 
 /// 0x013D SetActorNamePacket — custom display name override. Size 0x19 per

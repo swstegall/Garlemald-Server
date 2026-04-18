@@ -6,8 +6,8 @@
 
 use std::sync::Arc;
 
-use tokio::sync::mpsc;
 use tokio::sync::RwLock;
+use tokio::sync::mpsc;
 
 use crate::actor::Character;
 use crate::battle::command::{CommandResult, CommandType};
@@ -24,11 +24,14 @@ use crate::zone::zone::Zone;
 use common::Vector3;
 
 fn tempdb() -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("garlemald-integration-{nanos}.db"))
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("garlemald-integration-{nanos}-{seq}.db"))
 }
 
 #[tokio::test]
@@ -41,7 +44,18 @@ async fn do_battle_action_reaches_player_client_queue() {
     // Build zone + its in-memory replica so we can snapshot it before
     // registering.
     let mut canonical = Zone::new(
-        100, "test", 1, "/Area/Zone/Test", 0, 0, 0, false, false, false, false, false,
+        100,
+        "test",
+        1,
+        "/Area/Zone/Test",
+        0,
+        0,
+        0,
+        false,
+        false,
+        false,
+        false,
+        false,
         Some(&StubNavmeshLoader),
     );
     let mut ob = AreaOutbox::new();
@@ -127,11 +141,33 @@ async fn seamless_boundary_moves_player_between_zones() {
 
     // Two adjacent zones in region 103 with a shared seamless boundary.
     let zone_east = Zone::new(
-        1, "east", 103, "/Area/Zone/East", 0, 0, 0, false, false, false, false, false,
+        1,
+        "east",
+        103,
+        "/Area/Zone/East",
+        0,
+        0,
+        0,
+        false,
+        false,
+        false,
+        false,
+        false,
         Some(&StubNavmeshLoader),
     );
     let zone_central = Zone::new(
-        2, "central", 103, "/Area/Zone/Central", 0, 0, 0, false, false, false, false, false,
+        2,
+        "central",
+        103,
+        "/Area/Zone/Central",
+        0,
+        0,
+        0,
+        false,
+        false,
+        false,
+        false,
+        false,
         Some(&StubNavmeshLoader),
     );
     world.register_zone(zone_east).await;
@@ -144,9 +180,18 @@ async fn seamless_boundary_moves_player_between_zones() {
         region_id: 103,
         zone_id_1: 1,
         zone_id_2: 2,
-        zone1_x1: -100.0, zone1_y1: -100.0, zone1_x2: -10.0, zone1_y2: -10.0,
-        zone2_x1: 10.0, zone2_y1: 10.0, zone2_x2: 100.0, zone2_y2: 100.0,
-        merge_x1: -10.0, merge_y1: -10.0, merge_x2: 10.0, merge_y2: 10.0,
+        zone1_x1: -100.0,
+        zone1_y1: -100.0,
+        zone1_x2: -10.0,
+        zone1_y2: -10.0,
+        zone2_x1: 10.0,
+        zone2_y1: 10.0,
+        zone2_x2: 100.0,
+        zone2_y2: 100.0,
+        merge_x1: -10.0,
+        merge_y1: -10.0,
+        merge_x2: 10.0,
+        merge_y2: 10.0,
     };
     // Inject into the seamless table directly — in production this comes
     // from DB::load_seamless_boundaries.
@@ -197,7 +242,7 @@ async fn seamless_boundary_moves_player_between_zones() {
 async fn spawner_populates_zone_and_ticker_drives_them() {
     use std::collections::{HashMap, HashSet};
 
-    use crate::npc::{spawn_all_actors, ActorClass, SpawnContext};
+    use crate::npc::{ActorClass, SpawnContext, spawn_all_actors};
     use crate::runtime::{GameTicker, TickerConfig};
     use crate::zone::SpawnLocation;
     use crate::zone::Zone;
@@ -206,12 +251,25 @@ async fn spawner_populates_zone_and_ticker_drives_them() {
     let world = Arc::new(WorldManager::new());
     let registry = Arc::new(ActorRegistry::new());
     let db = Arc::new(
-        crate::database::Database::open(tempdb()).await.expect("db stub"),
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
     );
 
     // One zone with two seeds: a plain NPC and a BattleNpc.
     let mut zone = Zone::new(
-        200, "field", 1, "/Area/Zone/Field", 0, 0, 0, false, false, false, false, false,
+        200,
+        "field",
+        1,
+        "/Area/Zone/Field",
+        0,
+        0,
+        0,
+        false,
+        false,
+        false,
+        false,
+        false,
         Some(&StubNavmeshLoader),
     );
     zone.add_spawn_location(SpawnLocation::new(
@@ -260,13 +318,19 @@ async fn spawner_populates_zone_and_ticker_drives_them() {
         let mut chara = bnpc_handle.character.write().await;
         chara.chara.max_hp = 500;
         chara.chara.hp = 100;
-        chara.chara.mods.set(crate::actor::modifier::Modifier::Regen, 10.0);
+        chara
+            .chara
+            .mods
+            .set(crate::actor::modifier::Modifier::Regen, 10.0);
     }
     let ticker = GameTicker::new(TickerConfig::default(), world.clone(), registry.clone(), db);
     ticker.tick_once(5_000).await;
 
     let hp_after = bnpc_handle.character.read().await.chara.hp;
-    assert!(hp_after > 100, "spawn→tick→regen should raise hp; got {hp_after}");
+    assert!(
+        hp_after > 100,
+        "spawn→tick→regen should raise hp; got {hp_after}"
+    );
 }
 
 #[tokio::test]
@@ -274,7 +338,7 @@ async fn event_start_then_run_event_function_reaches_client() {
     use crate::actor::Character;
     use crate::data::ClientHandle;
     use crate::event::{
-        dispatch_event_event, translate_lua_commands_into_outbox, EventOutbox, EventSession,
+        EventOutbox, EventSession, dispatch_event_event, translate_lua_commands_into_outbox,
     };
     use crate::lua::command::{LuaCommand, LuaCommandArg};
     use crate::runtime::actor_registry::{ActorHandle, ActorKindTag, ActorRegistry};
@@ -282,12 +346,20 @@ async fn event_start_then_run_event_function_reaches_client() {
 
     let world = Arc::new(WorldManager::new());
     let registry = Arc::new(ActorRegistry::new());
-    let db = Arc::new(crate::database::Database::open(tempdb()).await.expect("db stub"));
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
 
     // One Player actor with a client handle attached.
     registry
         .insert(ActorHandle::new(
-            1, ActorKindTag::Player, 0, 42, Character::new(1),
+            1,
+            ActorKindTag::Player,
+            0,
+            42,
+            Character::new(1),
         ))
         .await;
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(16);
@@ -298,9 +370,9 @@ async fn event_start_then_run_event_function_reaches_client() {
         let handle = registry.get(1).await.unwrap();
         let mut chara = handle.character.write().await;
         let mut ob = EventOutbox::new();
-        chara.event_session.start_event(
-            1, 99, "quest_man0l0", 2, vec![], &mut ob,
-        );
+        chara
+            .event_session
+            .start_event(1, 99, "quest_man0l0", 2, vec![], &mut ob);
     }
 
     // 2. Lua script dispatches RunEventFunction + EndEvent.
@@ -333,7 +405,10 @@ async fn event_start_then_run_event_function_reaches_client() {
         dispatch_event_event(&e, &registry, &world, &db, None).await;
     }
 
-    let first = rx.recv().await.expect("run_event_function should queue bytes");
+    let first = rx
+        .recv()
+        .await
+        .expect("run_event_function should queue bytes");
     assert!(!first.is_empty());
     let second = rx.recv().await.expect("end_event should queue bytes");
     assert!(!second.is_empty());
@@ -349,19 +424,30 @@ async fn event_start_then_run_event_function_reaches_client() {
 
 #[tokio::test]
 async fn actor_added_fans_spawn_bundle_to_nearby_players() {
-    use crate::runtime::dispatcher::dispatch_area_event;
     use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use crate::runtime::dispatcher::dispatch_area_event;
+    use crate::zone::Zone;
     use crate::zone::area::{ActorKind, StoredActor};
     use crate::zone::navmesh::StubNavmeshLoader;
     use crate::zone::outbox::AreaEvent;
-    use crate::zone::Zone;
     use tokio::sync::mpsc;
 
     let world = Arc::new(WorldManager::new());
     let registry = Arc::new(ActorRegistry::new());
 
     let zone = Zone::new(
-        100, "test", 1, "/Area/Zone/Test", 0, 0, 0, false, false, false, false, false,
+        100,
+        "test",
+        1,
+        "/Area/Zone/Test",
+        0,
+        0,
+        0,
+        false,
+        false,
+        false,
+        false,
+        false,
         Some(&StubNavmeshLoader),
     );
     world.register_zone(zone).await;
@@ -394,12 +480,20 @@ async fn actor_added_fans_spawn_bundle_to_nearby_players() {
     }
     registry
         .insert(ActorHandle::new(
-            1, ActorKindTag::Player, 100, 11, Character::new(1),
+            1,
+            ActorKindTag::Player,
+            100,
+            11,
+            Character::new(1),
         ))
         .await;
     registry
         .insert(ActorHandle::new(
-            2, ActorKindTag::Npc, 100, 0, Character::new(2),
+            2,
+            ActorKindTag::Npc,
+            100,
+            0,
+            Character::new(2),
         ))
         .await;
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(32);
@@ -407,7 +501,10 @@ async fn actor_added_fans_spawn_bundle_to_nearby_players() {
 
     let zone_arc = world.zone(100).await.unwrap();
     dispatch_area_event(
-        &AreaEvent::ActorAdded { area_id: 100, actor_id: 2 },
+        &AreaEvent::ActorAdded {
+            area_id: 100,
+            actor_id: 2,
+        },
         &registry,
         &world,
         &zone_arc,
@@ -428,7 +525,18 @@ async fn hate_add_event_updates_attacker_hate_container() {
     let registry = Arc::new(ActorRegistry::new());
 
     let zone = Zone::new(
-        100, "test", 1, "/Area/Zone/Test", 0, 0, 0, false, false, false, false, false,
+        100,
+        "test",
+        1,
+        "/Area/Zone/Test",
+        0,
+        0,
+        0,
+        false,
+        false,
+        false,
+        false,
+        false,
         Some(&StubNavmeshLoader),
     );
     world.register_zone(zone).await;

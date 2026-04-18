@@ -21,35 +21,67 @@ use crate::data::InventoryItem;
 pub enum InventoryEvent {
     /// `Database.CreateItem` already happened on the DB side; this records
     /// the row-level `characters_inventory` insert.
-    DbAdd { owner_actor_id: u32, item: InventoryItem, item_package: u16, slot: u16 },
+    DbAdd {
+        owner_actor_id: u32,
+        item: InventoryItem,
+        item_package: u16,
+        slot: u16,
+    },
     /// `Database.RemoveItem`.
-    DbRemove { owner_actor_id: u32, server_item_id: u64 },
+    DbRemove {
+        owner_actor_id: u32,
+        server_item_id: u64,
+    },
     /// `Database.SetQuantity`.
     DbQuantity { server_item_id: u64, quantity: i32 },
     /// `Database.UpdateItemPositions` — batched after a realign.
     DbPositions { updates: Vec<InventoryItem> },
     /// `Database.EquipItem`.
-    DbEquip { owner_actor_id: u32, equip_slot: u16, unique_item_id: u64 },
+    DbEquip {
+        owner_actor_id: u32,
+        equip_slot: u16,
+        unique_item_id: u64,
+    },
     /// `Database.UnequipItem`.
-    DbUnequip { owner_actor_id: u32, equip_slot: u16 },
+    DbUnequip {
+        owner_actor_id: u32,
+        equip_slot: u16,
+    },
 
     /// `InventoryBeginChangePacket`.
     PacketBeginChange { owner_actor_id: u32 },
     /// `InventoryEndChangePacket`.
     PacketEndChange { owner_actor_id: u32 },
     /// `InventorySetBeginPacket`.
-    PacketSetBegin { owner_actor_id: u32, capacity: u16, code: u16 },
+    PacketSetBegin {
+        owner_actor_id: u32,
+        capacity: u16,
+        code: u16,
+    },
     /// `InventorySetEndPacket`.
     PacketSetEnd { owner_actor_id: u32 },
     /// Batched items → one of InventoryListX01/08/16/32/64 (the game loop
     /// picks the right opcode by length).
-    PacketItems { owner_actor_id: u32, items: Vec<InventoryItem> },
+    PacketItems {
+        owner_actor_id: u32,
+        items: Vec<InventoryItem>,
+    },
     /// Batched slot indices → one of InventoryRemoveX01/08/16/32/64.
-    PacketRemoveSlots { owner_actor_id: u32, slots: Vec<u16> },
+    PacketRemoveSlots {
+        owner_actor_id: u32,
+        slots: Vec<u16>,
+    },
     /// Equipment update. Caller chooses between full resend and single-slot.
-    PacketLinkedSingle { owner_actor_id: u32, position: u16, item: Option<InventoryItem> },
+    PacketLinkedSingle {
+        owner_actor_id: u32,
+        position: u16,
+        item: Option<InventoryItem>,
+    },
     /// Full linked-item resend; the sink splits into LinkedItemListX01/08/16/32/64.
-    PacketLinkedMany { owner_actor_id: u32, items: Vec<(u16, InventoryItem)> },
+    PacketLinkedMany {
+        owner_actor_id: u32,
+        items: Vec<(u16, InventoryItem)>,
+    },
 }
 
 /// Collector. Mutation methods on ItemPackage take `&mut InventoryOutbox` and
@@ -84,8 +116,12 @@ impl InventoryOutbox {
     /// (`PacketBeginChange` / `PacketEndChange`). Mirrors the C# sugar
     /// around `SendUpdate`.
     pub fn with_change_bracket<F: FnOnce(&mut Self)>(&mut self, owner: u32, f: F) {
-        self.push(InventoryEvent::PacketBeginChange { owner_actor_id: owner });
+        self.push(InventoryEvent::PacketBeginChange {
+            owner_actor_id: owner,
+        });
         f(self);
-        self.push(InventoryEvent::PacketEndChange { owner_actor_id: owner });
+        self.push(InventoryEvent::PacketEndChange {
+            owner_actor_id: owner,
+        });
     }
 }

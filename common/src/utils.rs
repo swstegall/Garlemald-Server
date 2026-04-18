@@ -166,8 +166,7 @@ pub fn bool_array_to_binary_stream(array: &[bool]) -> Vec<u8> {
 }
 
 pub fn to_string_base63(number: i32) -> String {
-    const LOOKUP: &[u8] =
-        b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const LOOKUP: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
     let len = LOOKUP.len() as i32;
     let second = LOOKUP[(number / len) as usize] as char;
     let first = LOOKUP[(number % len) as usize] as char;

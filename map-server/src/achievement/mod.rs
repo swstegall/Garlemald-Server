@@ -25,8 +25,8 @@ pub const COMPLETED_ACHIEVEMENTS_BITS: usize = 0x240 * 8;
 #[cfg(test)]
 mod integration_tests {
     use super::*;
-    use crate::actor::player::PlayerHelperState;
     use crate::actor::Character;
+    use crate::actor::player::PlayerHelperState;
     use crate::data::ClientHandle;
     use crate::runtime::actor_registry::{ActorHandle, ActorKindTag, ActorRegistry};
     use crate::world_manager::WorldManager;
@@ -58,7 +58,8 @@ mod integration_tests {
 
         let mut helper = PlayerHelperState::default();
         let mut outbox = AchievementOutbox::new();
-        let earned = helper.earn_achievement(1, /* id */ 42, /* points */ 10, &mut outbox);
+        let earned =
+            helper.earn_achievement(1, /* id */ 42, /* points */ 10, &mut outbox);
         assert!(earned);
         assert!(helper.has_achievement(42));
         assert_eq!(helper.achievement_points, 10);

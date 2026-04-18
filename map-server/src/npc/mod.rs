@@ -31,4 +31,4 @@ pub use npc::{EventConditionMap, Npc};
 pub use npc_work::{HATE_TYPE_ENGAGED, HATE_TYPE_ENGAGED_PARTY, HATE_TYPE_NONE, NpcWork};
 pub use pet::Pet;
 pub use retainer::Retainer;
-pub use spawner::{spawn_all_actors, spawn_from_location, SpawnContext};
+pub use spawner::{SpawnContext, spawn_all_actors, spawn_from_location};

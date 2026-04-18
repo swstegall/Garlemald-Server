@@ -49,14 +49,32 @@ impl UserData for LuaActor {
         methods.add_method("GetZoneID", |_, this, _: ()| Ok(this.zone_id));
         methods.add_method("GetState", |_, this, _: ()| Ok(this.state));
         methods.add_method("GetPos", |_, this, _: ()| {
-            Ok((this.pos.0, this.pos.1, this.pos.2, this.rotation, this.zone_id))
+            Ok((
+                this.pos.0,
+                this.pos.1,
+                this.pos.2,
+                this.rotation,
+                this.zone_id,
+            ))
         });
         methods.add_method("ChangeState", |_, this, state: u16| {
-            push(&this.queue, LuaCommand::ChangeState { actor_id: this.actor_id, main_state: state });
+            push(
+                &this.queue,
+                LuaCommand::ChangeState {
+                    actor_id: this.actor_id,
+                    main_state: state,
+                },
+            );
             Ok(())
         });
         methods.add_method("PlayAnimation", |_, this, animation_id: u32| {
-            push(&this.queue, LuaCommand::PlayAnimation { actor_id: this.actor_id, animation_id });
+            push(
+                &this.queue,
+                LuaCommand::PlayAnimation {
+                    actor_id: this.actor_id,
+                    animation_id,
+                },
+            );
             Ok(())
         });
         methods.add_method(
@@ -64,7 +82,12 @@ impl UserData for LuaActor {
             |_, this, (message_type, sender, text): (u8, String, String)| {
                 push(
                     &this.queue,
-                    LuaCommand::SendMessage { actor_id: this.actor_id, message_type, sender, text },
+                    LuaCommand::SendMessage {
+                        actor_id: this.actor_id,
+                        message_type,
+                        sender,
+                        text,
+                    },
                 );
                 Ok(())
             },
@@ -72,7 +95,11 @@ impl UserData for LuaActor {
         methods.add_method("GraphicChange", |_, this, (slot, graphic): (u8, u32)| {
             push(
                 &this.queue,
-                LuaCommand::GraphicChange { actor_id: this.actor_id, slot, graphic_id: graphic },
+                LuaCommand::GraphicChange {
+                    actor_id: this.actor_id,
+                    slot,
+                    graphic_id: graphic,
+                },
             );
             Ok(())
         });
@@ -107,7 +134,9 @@ pub struct LuaNpc {
 impl UserData for LuaNpc {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("GetName", |_, this, _: ()| Ok(this.base.name.clone()));
-        methods.add_method("GetUniqueId", |_, this, _: ()| Ok(this.base.unique_id.clone()));
+        methods.add_method("GetUniqueId", |_, this, _: ()| {
+            Ok(this.base.unique_id.clone())
+        });
         methods.add_method("GetActorClassId", |_, this, _: ()| Ok(this.actor_class_id));
         methods.add_method("GetZoneID", |_, this, _: ()| Ok(this.base.zone_id));
         methods.add_method("SetQuestGraphic", |_, this, graphic: u8| {
@@ -122,7 +151,13 @@ impl UserData for LuaNpc {
             Ok(())
         });
         methods.add_method("GetPos", |_, this, _: ()| {
-            Ok((this.base.pos.0, this.base.pos.1, this.base.pos.2, this.base.rotation, this.base.zone_id))
+            Ok((
+                this.base.pos.0,
+                this.base.pos.1,
+                this.base.pos.2,
+                this.base.rotation,
+                this.base.zone_id,
+            ))
         });
     }
 }
@@ -199,8 +234,7 @@ impl From<&crate::actor::Player> for PlayerSnapshot {
             .collect();
         let completed_quests: Vec<u32> =
             p.helpers.quest_journal.completed.iter().copied().collect();
-        let unlocked_aetherytes: Vec<u32> =
-            p.helpers.unlocked_aetherytes.iter().copied().collect();
+        let unlocked_aetherytes: Vec<u32> = p.helpers.unlocked_aetherytes.iter().copied().collect();
         let traits: Vec<u16> = p.helpers.traits.iter().map(|t| t.id).collect();
         let inventory: Vec<(u32, i32)> = p
             .helpers
@@ -288,7 +322,9 @@ impl UserData for LuaPlayer {
                 this.snapshot.current_class
             })
         });
-        methods.add_method("GetHighestLevel", |_, this, _: ()| Ok(this.snapshot.current_level));
+        methods.add_method("GetHighestLevel", |_, this, _: ()| {
+            Ok(this.snapshot.current_level)
+        });
         methods.add_method("ConvertClassIdToJobId", |_, _, class_id: u8| {
             // Direct port of Player.ConvertClassIdToJobId — classes get their
             // corresponding jobs; everything else is the identity.
@@ -313,28 +349,54 @@ impl UserData for LuaPlayer {
         methods.add_method("GetTP", |_, this, _: ()| Ok(this.snapshot.tp));
 
         methods.add_method("IsDiscipleOfWar", |_, this, _: ()| {
-            Ok(LuaPlayer::is_class_range(this.snapshot.current_class, 2..=8))
+            Ok(LuaPlayer::is_class_range(
+                this.snapshot.current_class,
+                2..=8,
+            ))
         });
         methods.add_method("IsDiscipleOfMagic", |_, this, _: ()| {
-            Ok(LuaPlayer::is_class_range(this.snapshot.current_class, 22..=23))
+            Ok(LuaPlayer::is_class_range(
+                this.snapshot.current_class,
+                22..=23,
+            ))
         });
         methods.add_method("IsDiscipleOfHand", |_, this, _: ()| {
-            Ok(LuaPlayer::is_class_range(this.snapshot.current_class, 29..=36))
+            Ok(LuaPlayer::is_class_range(
+                this.snapshot.current_class,
+                29..=36,
+            ))
         });
         methods.add_method("IsDiscipleOfLand", |_, this, _: ()| {
-            Ok(LuaPlayer::is_class_range(this.snapshot.current_class, 39..=41))
+            Ok(LuaPlayer::is_class_range(
+                this.snapshot.current_class,
+                39..=41,
+            ))
         });
 
         // --- Location / money ------------------------------------------------
-        methods.add_method("GetCurrentGil", |_, this, _: ()| Ok(this.snapshot.current_gil));
-        methods.add_method("GetInitialTown", |_, this, _: ()| Ok(this.snapshot.initial_town));
+        methods.add_method("GetCurrentGil", |_, this, _: ()| {
+            Ok(this.snapshot.current_gil)
+        });
+        methods.add_method("GetInitialTown", |_, this, _: ()| {
+            Ok(this.snapshot.initial_town)
+        });
         methods.add_method("GetHomePoint", |_, this, _: ()| Ok(this.snapshot.homepoint));
-        methods.add_method("GetHomePointInn", |_, this, _: ()| Ok(this.snapshot.homepoint_inn));
+        methods.add_method("GetHomePointInn", |_, this, _: ()| {
+            Ok(this.snapshot.homepoint_inn)
+        });
         methods.add_method("SetHomePoint", |_, this, homepoint: u32| {
-            push(&this.queue, LuaCommand::SetHomePoint { player_id: this.snapshot.actor_id, homepoint });
+            push(
+                &this.queue,
+                LuaCommand::SetHomePoint {
+                    player_id: this.snapshot.actor_id,
+                    homepoint,
+                },
+            );
             Ok(())
         });
-        methods.add_method("GetMountState", |_, this, _: ()| Ok(this.snapshot.mount_state));
+        methods.add_method("GetMountState", |_, this, _: ()| {
+            Ok(this.snapshot.mount_state)
+        });
 
         // --- Play time -------------------------------------------------------
         methods.add_method("GetPlayTime", |_, this, _do_update: Option<bool>| {
@@ -344,19 +406,32 @@ impl UserData for LuaPlayer {
         // --- Status flags ----------------------------------------------------
         methods.add_method("IsEngaged", |_, this, _: ()| Ok(this.snapshot.is_engaged));
         methods.add_method("IsTrading", |_, this, _: ()| Ok(this.snapshot.is_trading));
-        methods.add_method("IsTradeAccepted", |_, this, _: ()| Ok(this.snapshot.is_trade_accepted));
-        methods.add_method("IsPartyLeader", |_, this, _: ()| Ok(this.snapshot.is_party_leader));
+        methods.add_method("IsTradeAccepted", |_, this, _: ()| {
+            Ok(this.snapshot.is_trade_accepted)
+        });
+        methods.add_method("IsPartyLeader", |_, this, _: ()| {
+            Ok(this.snapshot.is_party_leader)
+        });
         methods.add_method("IsGM", |_, this, _: ()| Ok(this.snapshot.is_gm));
 
         // --- Identity helpers (aetheryte, traits, items) --------------------
         methods.add_method("HasAetheryteNodeUnlocked", |_, this, id: u32| {
             Ok(this.snapshot.unlocked_aetherytes.contains(&id))
         });
-        methods.add_method("HasTrait", |_, this, id: u16| Ok(this.snapshot.traits.contains(&id)));
-        methods.add_method("HasItem", |_, this, (catalog_id, min_quantity): (u32, Option<i32>)| {
-            let min = min_quantity.unwrap_or(1);
-            Ok(this.snapshot.inventory.iter().any(|(id, q)| *id == catalog_id && *q >= min))
+        methods.add_method("HasTrait", |_, this, id: u16| {
+            Ok(this.snapshot.traits.contains(&id))
         });
+        methods.add_method(
+            "HasItem",
+            |_, this, (catalog_id, min_quantity): (u32, Option<i32>)| {
+                let min = min_quantity.unwrap_or(1);
+                Ok(this
+                    .snapshot
+                    .inventory
+                    .iter()
+                    .any(|(id, q)| *id == catalog_id && *q >= min))
+            },
+        );
 
         // --- Quests ----------------------------------------------------------
         methods.add_method("HasQuest", |_, this, id: u32| {
@@ -374,15 +449,33 @@ impl UserData for LuaPlayer {
             Ok(16i32 - this.snapshot.active_quests.len() as i32)
         });
         methods.add_method("AddQuest", |_, this, id: u32| {
-            push(&this.queue, LuaCommand::AddQuest { player_id: this.snapshot.actor_id, quest_id: id });
+            push(
+                &this.queue,
+                LuaCommand::AddQuest {
+                    player_id: this.snapshot.actor_id,
+                    quest_id: id,
+                },
+            );
             Ok(())
         });
         methods.add_method("CompleteQuest", |_, this, id: u32| {
-            push(&this.queue, LuaCommand::CompleteQuest { player_id: this.snapshot.actor_id, quest_id: id });
+            push(
+                &this.queue,
+                LuaCommand::CompleteQuest {
+                    player_id: this.snapshot.actor_id,
+                    quest_id: id,
+                },
+            );
             Ok(())
         });
         methods.add_method("AbandonQuest", |_, this, id: u32| {
-            push(&this.queue, LuaCommand::AbandonQuest { player_id: this.snapshot.actor_id, quest_id: id });
+            push(
+                &this.queue,
+                LuaCommand::AbandonQuest {
+                    player_id: this.snapshot.actor_id,
+                    quest_id: id,
+                },
+            );
             Ok(())
         });
 
@@ -437,7 +530,11 @@ impl UserData for LuaPlayer {
         methods.add_method("AddExp", |_, this, (class_id, exp): (u8, i32)| {
             push(
                 &this.queue,
-                LuaCommand::AddExp { actor_id: this.snapshot.actor_id, class_id, exp },
+                LuaCommand::AddExp {
+                    actor_id: this.snapshot.actor_id,
+                    class_id,
+                    exp,
+                },
             );
             Ok(())
         });
@@ -466,7 +563,9 @@ impl UserData for LuaPlayer {
 
         methods.add_method(
             "SendGameMessage",
-            |_, this, (_sender_actor, text_id, log_type, _rest): (
+            |_,
+             this,
+             (_sender_actor, text_id, log_type, _rest): (
                 Value,
                 u32,
                 Option<u8>,
@@ -611,7 +710,9 @@ impl UserData for LuaPlayer {
         methods.add_method("AddTradeItem", |_, _this, _: mlua::MultiValue| Ok(()));
         methods.add_method("RemoveTradeItem", |_, _this, _: mlua::MultiValue| Ok(()));
         methods.add_method("ClearTradeItems", |_, _this, _: ()| Ok(()));
-        methods.add_method("FinishTradeTransaction", |_, _this, _: mlua::MultiValue| Ok(()));
+        methods.add_method("FinishTradeTransaction", |_, _this, _: mlua::MultiValue| {
+            Ok(())
+        });
 
         // --- Retainer -------------------------------------------------------
         methods.add_method("DespawnMyRetainer", |_, _this, _: ()| Ok(()));
@@ -630,16 +731,16 @@ impl UserData for LuaPlayer {
         methods.add_method("RemoveFromCurrentPartyAndCleanup", |_, _this, _: ()| Ok(()));
 
         // --- Movement -------------------------------------------------------
-        methods.add_method(
-            "ChangeState",
-            |_, this, state: u16| {
-                push(
-                    &this.queue,
-                    LuaCommand::ChangeState { actor_id: this.snapshot.actor_id, main_state: state },
-                );
-                Ok(())
-            },
-        );
+        methods.add_method("ChangeState", |_, this, state: u16| {
+            push(
+                &this.queue,
+                LuaCommand::ChangeState {
+                    actor_id: this.snapshot.actor_id,
+                    main_state: state,
+                },
+            );
+            Ok(())
+        });
         methods.add_method(
             "Warp",
             |_, this, (zone_id, x, y, z, rot): (u32, f32, f32, f32, Option<f32>)| {
@@ -728,9 +829,15 @@ pub struct LuaZone {
 impl UserData for LuaZone {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("GetZoneID", |_, this, _: ()| Ok(this.snapshot.zone_id));
-        methods.add_method("GetZoneName", |_, this, _: ()| Ok(this.snapshot.zone_name.clone()));
-        methods.add_method("GetPlayers", |_, this, _: ()| Ok(this.snapshot.player_ids.clone()));
-        methods.add_method("GetMonsters", |_, this, _: ()| Ok(this.snapshot.monster_ids.clone()));
+        methods.add_method("GetZoneName", |_, this, _: ()| {
+            Ok(this.snapshot.zone_name.clone())
+        });
+        methods.add_method("GetPlayers", |_, this, _: ()| {
+            Ok(this.snapshot.player_ids.clone())
+        });
+        methods.add_method("GetMonsters", |_, this, _: ()| {
+            Ok(this.snapshot.monster_ids.clone())
+        });
         methods.add_method("GetAllies", |_, _this, _: ()| Ok(Vec::<u32>::new()));
         methods.add_method(
             "SpawnActor",
@@ -752,7 +859,10 @@ impl UserData for LuaZone {
         methods.add_method("DespawnActor", |_, this, actor_id: u32| {
             push(
                 &this.queue,
-                LuaCommand::DespawnActor { zone_id: this.snapshot.zone_id, actor_id },
+                LuaCommand::DespawnActor {
+                    zone_id: this.snapshot.zone_id,
+                    actor_id,
+                },
             );
             Ok(())
         });

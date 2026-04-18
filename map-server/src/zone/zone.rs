@@ -103,7 +103,9 @@ impl Zone {
     }
 
     pub fn get_private_area_mut(&mut self, name: &str, level: u32) -> Option<&mut PrivateArea> {
-        self.private_areas.get_mut(name).and_then(|m| m.get_mut(&level))
+        self.private_areas
+            .get_mut(name)
+            .and_then(|m| m.get_mut(&level))
     }
 
     // -----------------------------------------------------------------
@@ -172,7 +174,9 @@ impl Zone {
     pub fn sweep_finished_content(&mut self, outbox: &mut AreaOutbox) {
         let names: Vec<String> = self.content_areas.keys().cloned().collect();
         for name in names {
-            let Some(list) = self.content_areas.get_mut(&name) else { continue };
+            let Some(list) = self.content_areas.get_mut(&name) else {
+                continue;
+            };
             let mut i = 0;
             while i < list.len() {
                 if list[i].should_destroy() {
@@ -263,7 +267,10 @@ impl Zone {
     // Navmesh hand-off
     // -----------------------------------------------------------------
 
-    pub fn navmesh_provider<'a>(&'a self, loader: &'a dyn NavmeshLoader) -> Box<dyn NavmeshProvider> {
+    pub fn navmesh_provider<'a>(
+        &'a self,
+        loader: &'a dyn NavmeshLoader,
+    ) -> Box<dyn NavmeshProvider> {
         let Some(handle) = self.navmesh.as_ref() else {
             return Box::new(crate::battle::path_find::StraightLineNavmesh);
         };
@@ -295,7 +302,8 @@ impl Zone {
 
 impl ActorArena for Zone {
     fn get(&self, actor_id: u32) -> Option<ActorView> {
-        self.find_actor_in_zone(actor_id).map(|a| stored_to_view(a, self.core.actor_id))
+        self.find_actor_in_zone(actor_id)
+            .map(|a| stored_to_view(a, self.core.actor_id))
     }
 
     fn actors_around(&self, center: u32, radius: f32) -> Vec<ActorView> {
@@ -348,7 +356,18 @@ mod tests {
 
     fn mk_zone() -> Zone {
         Zone::new(
-            100, "r1f1", 1, "/Area/Zone/R1F1", 0, 0, 0, false, false, false, false, false,
+            100,
+            "r1f1",
+            1,
+            "/Area/Zone/R1F1",
+            0,
+            0,
+            0,
+            false,
+            false,
+            false,
+            false,
+            false,
             Some(&StubNavmeshLoader),
         )
     }
@@ -357,8 +376,20 @@ mod tests {
     fn add_private_area_keyed_by_name_and_level() {
         let mut zone = mk_zone();
         let pa = PrivateArea::new(
-            100, "r1f1", 1, 200, "/Area/Zone/R1F1/Private", "office", 1,
-            0, 0, 0, false, false, false, false,
+            100,
+            "r1f1",
+            1,
+            200,
+            "/Area/Zone/R1F1/Private",
+            "office",
+            1,
+            0,
+            0,
+            0,
+            false,
+            false,
+            false,
+            false,
         );
         zone.add_private_area(pa);
         assert!(zone.get_private_area("office", 1).is_some());
@@ -369,15 +400,43 @@ mod tests {
     fn add_spawn_location_routes_to_private_area() {
         let mut zone = mk_zone();
         zone.add_private_area(PrivateArea::new(
-            100, "r1f1", 1, 200, "/Area/Zone/R1F1/Private", "office", 1,
-            0, 0, 0, false, false, false, false,
+            100,
+            "r1f1",
+            1,
+            200,
+            "/Area/Zone/R1F1/Private",
+            "office",
+            1,
+            0,
+            0,
+            0,
+            false,
+            false,
+            false,
+            false,
         ));
         zone.add_spawn_location(SpawnLocation::new(
-            1001, "aetheryte", 100, "office", 1, 0.0, 0.0, 0.0, 0.0, 0, 0,
+            1001,
+            "aetheryte",
+            100,
+            "office",
+            1,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0,
+            0,
         ))
         .unwrap();
         assert_eq!(zone.spawn_locations.len(), 0);
-        assert_eq!(zone.get_private_area("office", 1).unwrap().spawn_locations.len(), 1);
+        assert_eq!(
+            zone.get_private_area("office", 1)
+                .unwrap()
+                .spawn_locations
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -385,7 +444,17 @@ mod tests {
         let mut zone = mk_zone();
         let err = zone
             .add_spawn_location(SpawnLocation::new(
-                1001, "ghost", 100, "does_not_exist", 1, 0.0, 0.0, 0.0, 0.0, 0, 0,
+                1001,
+                "ghost",
+                100,
+                "does_not_exist",
+                1,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0,
+                0,
             ))
             .unwrap_err();
         assert!(err.contains("does_not_exist"));
@@ -395,8 +464,20 @@ mod tests {
     fn find_actor_searches_across_private_areas() {
         let mut zone = mk_zone();
         let mut pa = PrivateArea::new(
-            100, "r1f1", 1, 200, "/Area/Zone/R1F1/Private", "office", 1,
-            0, 0, 0, false, false, false, false,
+            100,
+            "r1f1",
+            1,
+            200,
+            "/Area/Zone/R1F1/Private",
+            "office",
+            1,
+            0,
+            0,
+            0,
+            false,
+            false,
+            false,
+            false,
         );
         let mut ob = AreaOutbox::new();
         pa.core.add_actor(
@@ -420,10 +501,7 @@ mod tests {
         let idx = zone.create_content_area("/Area/Content/Guildleve1", "gl1", 0, 42, &mut ob);
         assert_eq!(idx, 0);
         assert_eq!(zone.content_areas.get("gl1").unwrap().len(), 1);
-        assert!(matches!(
-            ob.events[0],
-            AreaEvent::ContentAreaCreated { .. }
-        ));
+        assert!(matches!(ob.events[0], AreaEvent::ContentAreaCreated { .. }));
     }
 
     #[test]
@@ -437,10 +515,11 @@ mod tests {
         zone.content_areas.get_mut("gl1").unwrap()[0].mark_finished();
         zone.sweep_finished_content(&mut ob);
         assert!(!zone.content_areas.contains_key("gl1"));
-        assert!(ob
-            .events
-            .iter()
-            .any(|e| matches!(e, AreaEvent::ContentAreaDeleted { .. })));
+        assert!(
+            ob.events
+                .iter()
+                .any(|e| matches!(e, AreaEvent::ContentAreaDeleted { .. }))
+        );
     }
 
     #[test]
@@ -542,11 +621,33 @@ mod tests {
     fn all_spawn_locations_iterates_root_and_private() {
         let mut zone = mk_zone();
         zone.add_private_area(PrivateArea::new(
-            100, "r1f1", 1, 200, "/Area/Zone/R1F1/Private", "office", 1,
-            0, 0, 0, false, false, false, false,
+            100,
+            "r1f1",
+            1,
+            200,
+            "/Area/Zone/R1F1/Private",
+            "office",
+            1,
+            0,
+            0,
+            0,
+            false,
+            false,
+            false,
+            false,
         ));
         zone.add_spawn_location(SpawnLocation::new(
-            1001, "aetheryte", 100, "", 0, 0.0, 0.0, 0.0, 0.0, 0, 0,
+            1001,
+            "aetheryte",
+            100,
+            "",
+            0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0,
+            0,
         ))
         .unwrap();
         zone.add_spawn_location(SpawnLocation::new(

@@ -30,10 +30,7 @@ pub enum AchievementEvent {
         progress_flags: u32,
     },
     /// Equip / clear the player's current title (0x019D).
-    SetPlayerTitle {
-        player_actor_id: u32,
-        title_id: u32,
-    },
+    SetPlayerTitle { player_actor_id: u32, title_id: u32 },
 }
 
 #[derive(Debug, Default)]

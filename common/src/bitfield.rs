@@ -11,7 +11,11 @@ pub fn pack_u32(fields: &[(u32, u8)]) -> u32 {
     let mut offset: u32 = 0;
     for &(value, length) in fields {
         let length = length as u32;
-        let mask = if length >= 32 { u32::MAX } else { (1u32 << length) - 1 };
+        let mask = if length >= 32 {
+            u32::MAX
+        } else {
+            (1u32 << length) - 1
+        };
         r |= (value & mask) << offset;
         offset += length;
     }
@@ -23,7 +27,11 @@ pub fn pack_u64(fields: &[(u64, u8)]) -> u64 {
     let mut offset: u32 = 0;
     for &(value, length) in fields {
         let length = length as u32;
-        let mask = if length >= 64 { u64::MAX } else { (1u64 << length) - 1 };
+        let mask = if length >= 64 {
+            u64::MAX
+        } else {
+            (1u64 << length) - 1
+        };
         r |= (value & mask) << offset;
         offset += length;
     }

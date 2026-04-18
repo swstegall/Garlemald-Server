@@ -7,9 +7,15 @@
 #[derive(Debug, Clone)]
 pub enum AreaEvent {
     /// An actor joined this area (AddActorToZone).
-    ActorAdded { area_id: u32, actor_id: u32 },
+    ActorAdded {
+        area_id: u32,
+        actor_id: u32,
+    },
     /// An actor left this area (RemoveActorFromZone).
-    ActorRemoved { area_id: u32, actor_id: u32 },
+    ActorRemoved {
+        area_id: u32,
+        actor_id: u32,
+    },
     /// Actor crossed a grid cell boundary — spawn/despawn packets may be
     /// needed for players whose visibility set changed.
     ActorMoved {
@@ -42,8 +48,15 @@ pub enum AreaEvent {
 
     /// `CreateDirector` fired — game loop instantiates a Director Lua
     /// context with the given classpath.
-    DirectorCreated { area_id: u32, director_id: u32, class_path: String },
-    DirectorDeleted { area_id: u32, director_id: u32 },
+    DirectorCreated {
+        area_id: u32,
+        director_id: u32,
+        class_path: String,
+    },
+    DirectorDeleted {
+        area_id: u32,
+        director_id: u32,
+    },
 
     /// Content area created / destroyed (PrivateAreaContent lifecycle).
     ContentAreaCreated {
@@ -52,10 +65,19 @@ pub enum AreaEvent {
         private_area_type: u32,
         starter_actor_id: u32,
     },
-    ContentAreaDeleted { parent_area_id: u32, area_name: String, private_area_type: u32 },
+    ContentAreaDeleted {
+        parent_area_id: u32,
+        area_name: String,
+        private_area_type: u32,
+    },
 
     /// An actor spawned from a SpawnLocation seed.
-    SpawnActor { area_id: u32, actor_id: u32, class_id: u32, unique_id: String },
+    SpawnActor {
+        area_id: u32,
+        actor_id: u32,
+        class_id: u32,
+        unique_id: String,
+    },
 }
 
 #[derive(Debug, Default)]

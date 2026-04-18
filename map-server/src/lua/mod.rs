@@ -20,8 +20,8 @@
 
 pub mod catalogs;
 pub mod command;
-pub mod gm_command;
 pub mod globals;
+pub mod gm_command;
 pub mod paths;
 pub mod scheduler;
 pub mod userdata;
@@ -109,11 +109,7 @@ impl LuaEngine {
         Ok((lua, queue))
     }
 
-    fn reinstall_queue_globals(
-        &self,
-        lua: &Lua,
-        queue: Arc<Mutex<CommandQueue>>,
-    ) -> Result<()> {
+    fn reinstall_queue_globals(&self, lua: &Lua, queue: Arc<Mutex<CommandQueue>>) -> Result<()> {
         // Re-register functions whose closures capture the queue, so every
         // call has a fresh command bucket. Read-only catalogs already in the
         // VM are preserved (their closures capture `catalogs` by Arc clone).
@@ -134,14 +130,17 @@ impl LuaEngine {
     ) -> Result<LuaCallResult> {
         let (lua, queue) = self.load_script(script_path)?;
         let globals = lua.globals();
-        let f: Function = globals
-            .get(function_name)
-            .map_err(|e| anyhow::anyhow!("{function_name} not in {}: {e}", script_path.display()))?;
+        let f: Function = globals.get(function_name).map_err(|e| {
+            anyhow::anyhow!("{function_name} not in {}: {e}", script_path.display())
+        })?;
         let result: Value = f
             .call::<Value>(args)
             .map_err(|e| anyhow::anyhow!("{function_name}: {e}"))?;
         let commands = CommandQueue::drain(&queue);
-        Ok(LuaCallResult { value: result, commands })
+        Ok(LuaCallResult {
+            value: result,
+            commands,
+        })
     }
 
     /// NPC-specific helper: try the unique-override script first, then fall
@@ -212,7 +211,11 @@ impl LuaEngine {
 
     /// Notify the scheduler that `player_id` just received an event update.
     pub fn fire_player_event(&self, player_id: u32, args: MultiValue) -> bool {
-        let Some(parked) = self.scheduler.lock().ok().and_then(|mut s| s.take_event(player_id))
+        let Some(parked) = self
+            .scheduler
+            .lock()
+            .ok()
+            .and_then(|mut s| s.take_event(player_id))
         else {
             return false;
         };
@@ -267,7 +270,11 @@ mod tests {
     #[test]
     fn simple_script_runs_and_returns() {
         let root = tmpdir();
-        std::fs::write(root.join("simple.lua"), "function add(a, b) return a + b end").unwrap();
+        std::fs::write(
+            root.join("simple.lua"),
+            "function add(a, b) return a + b end",
+        )
+        .unwrap();
         let engine = LuaEngine::new(&root);
         let lua_val = {
             let (lua, _q) = engine.load_script(&root.join("simple.lua")).unwrap();

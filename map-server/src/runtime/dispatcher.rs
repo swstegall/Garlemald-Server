@@ -185,8 +185,7 @@ pub async fn dispatch_battle_event(
             owner_actor_id,
             animation,
         } => {
-            let sub =
-                tx::actor_battle::build_command_result_x00(*owner_actor_id, *animation, 0);
+            let sub = tx::actor_battle::build_command_result_x00(*owner_actor_id, *animation, 0);
             broadcast_around_actor(world, registry, zone, *owner_actor_id, sub.to_bytes()).await;
         }
         BattleEvent::CastStart { owner_actor_id, .. }
@@ -194,7 +193,11 @@ pub async fn dispatch_battle_event(
         | BattleEvent::CastInterrupted { owner_actor_id, .. } => {
             tracing::debug!(owner = owner_actor_id, "battle: cast-bar (TODO)");
         }
-        BattleEvent::HateAdd { owner_actor_id, target_actor_id, amount } => {
+        BattleEvent::HateAdd {
+            owner_actor_id,
+            target_actor_id,
+            amount,
+        } => {
             // Apply to the character's hate container so the next controller
             // tick reflects it.
             if let Some(handle) = registry.get(*owner_actor_id).await {
@@ -202,7 +205,10 @@ pub async fn dispatch_battle_event(
                 chara.hate.update_hate(*target_actor_id, *amount);
             }
         }
-        BattleEvent::HateClear { owner_actor_id, target_actor_id } => {
+        BattleEvent::HateClear {
+            owner_actor_id,
+            target_actor_id,
+        } => {
             if let Some(handle) = registry.get(*owner_actor_id).await {
                 let mut chara = handle.character.write().await;
                 chara.hate.clear_hate(*target_actor_id);
@@ -215,8 +221,15 @@ pub async fn dispatch_battle_event(
         BattleEvent::LuaCall { function_name, .. } => {
             tracing::debug!(fn_name = function_name, "battle: LuaCall (TODO)");
         }
-        BattleEvent::WorldMasterText { owner_actor_id, text_id } => {
-            tracing::debug!(owner = owner_actor_id, text = text_id, "battle: WorldMasterText");
+        BattleEvent::WorldMasterText {
+            owner_actor_id,
+            text_id,
+        } => {
+            tracing::debug!(
+                owner = owner_actor_id,
+                text = text_id,
+                "battle: WorldMasterText"
+            );
         }
     }
 }
@@ -282,8 +295,7 @@ pub async fn dispatch_area_event(
             payload,
             ..
         } => {
-            broadcast_around_actor(world, registry, zone, *source_actor_id, payload.clone())
-                .await;
+            broadcast_around_actor(world, registry, zone, *source_actor_id, payload.clone()).await;
         }
         AreaEvent::WeatherChange {
             area_id,
@@ -292,8 +304,7 @@ pub async fn dispatch_area_event(
             target_actor_id,
             zone_wide,
         } => {
-            let payload =
-                tx::build_set_weather(*area_id, *weather_id, *transition_time).to_bytes();
+            let payload = tx::build_set_weather(*area_id, *weather_id, *transition_time).to_bytes();
             if let (Some(aid), false) = (target_actor_id, zone_wide) {
                 if let Some(handle) = registry.get(*aid).await
                     && let Some(client) = world.client(handle.session_id).await
@@ -321,7 +332,10 @@ pub async fn dispatch_area_event(
             // zone-in flow).
             spawn_bundle_fanout(world, registry, zone, *area_id, *actor_id).await;
         }
-        AreaEvent::ActorRemoved { area_id: _, actor_id } => {
+        AreaEvent::ActorRemoved {
+            area_id: _,
+            actor_id,
+        } => {
             // Broadcast RemoveActor to nearby players. The grid has
             // already dropped the projection; we reach around it via
             // broadcast_around_actor's 50-yalm neighbour set using the

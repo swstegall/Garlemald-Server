@@ -53,7 +53,10 @@ impl CoroutineScheduler {
     }
 
     pub fn park_signal(&mut self, signal: impl Into<String>, coroutine: ParkedCoroutine) {
-        self.sleeping_on_signal.entry(signal.into()).or_default().push(coroutine);
+        self.sleeping_on_signal
+            .entry(signal.into())
+            .or_default()
+            .push(coroutine);
     }
 
     pub fn park_event(&mut self, player_id: u32, coroutine: ParkedCoroutine) {
@@ -66,8 +69,9 @@ impl CoroutineScheduler {
     /// them so the caller can `Thread::resume()` on each.
     pub fn drain_due_time(&mut self) -> Vec<ParkedCoroutine> {
         let now = common::utils::millis_unix_timestamp();
-        let (due, pending): (Vec<_>, Vec<_>) =
-            std::mem::take(&mut self.sleeping_on_time).into_iter().partition(|(t, _)| *t <= now);
+        let (due, pending): (Vec<_>, Vec<_>) = std::mem::take(&mut self.sleeping_on_time)
+            .into_iter()
+            .partition(|(t, _)| *t <= now);
         self.sleeping_on_time = pending;
         due.into_iter().map(|(_, c)| c).collect()
     }
@@ -119,7 +123,9 @@ pub fn classify_yield(value: &Value) -> YieldDirective {
             let tag: Option<String> = tbl.get(1).ok();
             match tag.as_deref() {
                 Some("_WAIT_TIME") => YieldDirective::WaitTime(tbl.get::<f32>(2).unwrap_or(0.0)),
-                Some("_WAIT_SIGNAL") => YieldDirective::WaitSignal(tbl.get::<String>(2).unwrap_or_default()),
+                Some("_WAIT_SIGNAL") => {
+                    YieldDirective::WaitSignal(tbl.get::<String>(2).unwrap_or_default())
+                }
                 Some("_WAIT_EVENT") => YieldDirective::WaitEvent(tbl.get::<u32>(2).unwrap_or(0)),
                 _ => YieldDirective::Other,
             }
@@ -141,7 +147,9 @@ pub fn value_to_command_arg(value: &Value) -> LuaCommandArg {
         Value::Boolean(b) => LuaCommandArg::Bool(*b),
         Value::Integer(i) => LuaCommandArg::Int(*i),
         Value::Number(n) => LuaCommandArg::Float(*n),
-        Value::String(s) => LuaCommandArg::String(s.to_str().map(|c| c.to_string()).unwrap_or_default()),
+        Value::String(s) => {
+            LuaCommandArg::String(s.to_str().map(|c| c.to_string()).unwrap_or_default())
+        }
         _ => LuaCommandArg::Nil,
     }
 }

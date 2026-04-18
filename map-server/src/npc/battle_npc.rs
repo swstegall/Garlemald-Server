@@ -156,7 +156,10 @@ impl BattleNpc {
             actor_class,
             unique_id,
             area_id,
-            x, y, z, rotation,
+            x,
+            y,
+            z,
+            rotation,
             actor_state,
             animation_id,
             custom_display_name,
@@ -309,11 +312,7 @@ impl BattleNpc {
     }
 }
 
-fn merge_modifier_map(
-    pool: &ModifierMap,
-    genus: &ModifierMap,
-    spawn: &ModifierMap,
-) -> ModifierMap {
+fn merge_modifier_map(pool: &ModifierMap, genus: &ModifierMap, spawn: &ModifierMap) -> ModifierMap {
     let mut out = pool.clone();
     for (k, v) in genus.iter() {
         out.set_raw(k, v);
@@ -334,17 +333,13 @@ mod tests {
 
     #[test]
     fn new_battle_npc_seeds_hate_container() {
-        let bnpc = BattleNpc::new(
-            7, &class(), "dodo_7", 100, 10.0, 0.0, 10.0, 0.0, 0, 0, None,
-        );
+        let bnpc = BattleNpc::new(7, &class(), "dodo_7", 100, 10.0, 0.0, 10.0, 0.0, 0, 0, None);
         assert_eq!(bnpc.npc.character.hate.owner_actor_id, bnpc.actor_id());
     }
 
     #[test]
     fn force_respawn_restores_position_and_hp() {
-        let mut bnpc = BattleNpc::new(
-            7, &class(), "dodo_7", 100, 10.0, 0.0, 10.0, 0.0, 0, 0, None,
-        );
+        let mut bnpc = BattleNpc::new(7, &class(), "dodo_7", 100, 10.0, 0.0, 10.0, 0.0, 0, 0, None);
         bnpc.npc.character.chara.max_hp = 500;
         bnpc.npc.character.chara.hp = 0;
         bnpc.npc.character.base.position_x = 200.0;
@@ -356,27 +351,32 @@ mod tests {
         assert_eq!(bnpc.npc.character.chara.hp, 500);
         assert_eq!(bnpc.npc.character.base.position_x, 10.0);
         assert!(bnpc.npc.character.hate.is_empty());
-        assert!(outbox.events.iter().any(|e| matches!(e, BattleEvent::Spawn { .. })));
+        assert!(
+            outbox
+                .events
+                .iter()
+                .any(|e| matches!(e, BattleEvent::Spawn { .. }))
+        );
     }
 
     #[test]
     fn die_pushes_event_and_zeros_hp() {
-        let mut bnpc = BattleNpc::new(
-            7, &class(), "dodo_7", 100, 10.0, 0.0, 10.0, 0.0, 0, 0, None,
-        );
+        let mut bnpc = BattleNpc::new(7, &class(), "dodo_7", 100, 10.0, 0.0, 10.0, 0.0, 0, 0, None);
         bnpc.npc.character.chara.hp = 500;
         let mut ob = BattleOutbox::new();
         bnpc.die(&mut ob);
         assert_eq!(bnpc.npc.character.chara.hp, 0);
-        assert!(ob.events.iter().any(|e| matches!(e, BattleEvent::Die { .. })));
+        assert!(
+            ob.events
+                .iter()
+                .any(|e| matches!(e, BattleEvent::Die { .. }))
+        );
     }
 
     #[test]
     fn merge_modifier_layers_stacks_with_spawn_winning() {
         use crate::actor::modifier::Modifier;
-        let mut bnpc = BattleNpc::new(
-            7, &class(), "dodo_7", 100, 0.0, 0.0, 0.0, 0.0, 0, 0, None,
-        );
+        let mut bnpc = BattleNpc::new(7, &class(), "dodo_7", 100, 0.0, 0.0, 0.0, 0.0, 0, 0, None);
         bnpc.pool_mods.set(Modifier::Defense, 10.0);
         bnpc.genus_mods.set(Modifier::Defense, 20.0);
         bnpc.spawn_mods.set(Modifier::Defense, 30.0);
@@ -388,9 +388,7 @@ mod tests {
 
     #[test]
     fn on_attack_records_last_attacker() {
-        let mut bnpc = BattleNpc::new(
-            7, &class(), "dodo_7", 100, 0.0, 0.0, 0.0, 0.0, 0, 0, None,
-        );
+        let mut bnpc = BattleNpc::new(7, &class(), "dodo_7", 100, 0.0, 0.0, 0.0, 0.0, 0, 0, None);
         assert!(bnpc.on_attack(42));
         assert_eq!(bnpc.last_attacker_actor_id, 42);
         assert!(bnpc.npc.character.hate.has_hate_for(42));
@@ -398,9 +396,7 @@ mod tests {
 
     #[test]
     fn mob_mod_set_and_get() {
-        let mut bnpc = BattleNpc::new(
-            7, &class(), "dodo_7", 100, 0.0, 0.0, 0.0, 0.0, 0, 0, None,
-        );
+        let mut bnpc = BattleNpc::new(7, &class(), "dodo_7", 100, 0.0, 0.0, 0.0, 0.0, 0, 0, None);
         bnpc.set_mob_mod(MobModifier::SightRange, 30);
         assert_eq!(bnpc.get_mob_mod(MobModifier::SightRange), 30);
         assert_eq!(bnpc.get_mob_mod(MobModifier::SoundRange), 0);

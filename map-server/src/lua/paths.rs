@@ -49,7 +49,8 @@ impl PathResolver {
     }
 
     pub fn gm_command(&self, cmd: &str) -> PathBuf {
-        self.root.join(format!("commands/gm/{}.lua", cmd.to_lowercase()))
+        self.root
+            .join(format!("commands/gm/{}.lua", cmd.to_lowercase()))
     }
 
     pub fn battle_command(&self, folder: &str, command: &str) -> PathBuf {

@@ -22,7 +22,9 @@ pub mod private_area;
 pub mod spawn_location;
 pub mod zone;
 
-pub use area::{Area, AreaCore, AreaKind, ActorKind, StoredActor, BOUNDING_GRID_SIZE, AREA_MIN, AREA_MAX};
+pub use area::{
+    AREA_MAX, AREA_MIN, ActorKind, Area, AreaCore, AreaKind, BOUNDING_GRID_SIZE, StoredActor,
+};
 pub use navmesh::{CoordTransform, NavmeshHandle, NavmeshLoader, StubNavmeshLoader};
 pub use outbox::{AreaEvent, AreaOutbox};
 pub use private_area::{PrivateArea, PrivateAreaContent};

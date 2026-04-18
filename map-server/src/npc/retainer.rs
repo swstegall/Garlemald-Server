@@ -6,9 +6,7 @@
 
 use std::collections::HashMap;
 
-use crate::inventory::{
-    ItemPackage, PKG_BAZAAR, PKG_CURRENCY_CRYSTALS, PKG_NORMAL,
-};
+use crate::inventory::{ItemPackage, PKG_BAZAAR, PKG_CURRENCY_CRYSTALS, PKG_NORMAL};
 
 use super::actor_class::ActorClass;
 use super::npc::Npc;
@@ -42,8 +40,13 @@ impl Retainer {
             actor_class,
             "myretainer",
             area_id,
-            x, y, z, rotation,
-            0, 0, None,
+            x,
+            y,
+            z,
+            rotation,
+            0,
+            0,
+            None,
         );
         // Retail uses `_rtnre{actorId:x7}` as the actor name.
         npc.character.base.actor_name = format!("_rtnre{:07x}", npc.actor_id());
@@ -87,7 +90,14 @@ mod tests {
     #[test]
     fn retainer_has_three_item_packages() {
         let class = ActorClass::new(
-            9_999_999, "/Chara/Npc/Retainer/RetainerDefault", 0, 0, "", 0, 0, 0,
+            9_999_999,
+            "/Chara/Npc/Retainer/RetainerDefault",
+            0,
+            0,
+            "",
+            0,
+            0,
+            0,
         );
         let r = Retainer::new(100, &class, 42, 200, 0.0, 0.0, 0.0, 0.0);
         assert_eq!(r.item_packages.len(), 3);

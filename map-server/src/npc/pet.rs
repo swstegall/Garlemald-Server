@@ -39,7 +39,10 @@ impl Pet {
             0,
             None,
         );
-        Self { battle_npc, master_actor_id }
+        Self {
+            battle_npc,
+            master_actor_id,
+        }
     }
 
     pub fn actor_id(&self) -> u32 {

@@ -239,7 +239,9 @@ impl Controller {
         if owner.is_engaged {
             self.do_combat_tick(now_ms, owner)
         } else if let Some(target_id) = self.try_aggro(now_ms, owner, arena) {
-            ControllerDecision::Engage { target_actor_id: target_id }
+            ControllerDecision::Engage {
+                target_actor_id: target_id,
+            }
         } else if self.battle.is_moving_to_spawn || self.battle.roam_delay_seconds > 0 {
             self.do_roam_tick(now_ms, owner)
         } else {
@@ -295,7 +297,11 @@ impl Controller {
             return false;
         }
         // Level diff check unless IgnoreLevelDifference is set.
-        if !self.battle.detection_type.contains(DetectionType::IGNORE_LEVEL_DIFFERENCE) {
+        if !self
+            .battle
+            .detection_type
+            .contains(DetectionType::IGNORE_LEVEL_DIFFERENCE)
+        {
             let lvl_diff = (self.battle.level - owner_target_level(target)).abs();
             if lvl_diff > AGGRO_LEVEL_CAP {
                 return false;
@@ -319,7 +325,8 @@ impl Controller {
 
         let detect_type = self.battle.detection_type;
         let has_stealth = self.target_view_has_stealth(target);
-        let is_facing = Self::is_facing(owner.actor.position, owner.actor.rotation, target.position);
+        let is_facing =
+            Self::is_facing(owner.actor.position, owner.actor.rotation, target.position);
 
         if detect_type.contains(DetectionType::SIGHT)
             && !has_stealth
@@ -475,7 +482,12 @@ mod tests {
         }
     }
 
-    fn owner_view(alive: bool, engaged: bool, most_hated: Option<u32>, current: Option<u32>) -> ControllerOwnerView {
+    fn owner_view(
+        alive: bool,
+        engaged: bool,
+        most_hated: Option<u32>,
+        current: Option<u32>,
+    ) -> ControllerOwnerView {
         ControllerOwnerView {
             actor: view(1, 0.0, 0.0, 2, alive),
             is_engaged: engaged,
@@ -530,7 +542,12 @@ mod tests {
             owner_view(true, /* engaged */ true, Some(20), Some(10)),
             &arena,
         );
-        assert_eq!(out, ControllerDecision::ChangeTarget { target_actor_id: Some(20) });
+        assert_eq!(
+            out,
+            ControllerDecision::ChangeTarget {
+                target_actor_id: Some(20)
+            }
+        );
     }
 
     #[test]

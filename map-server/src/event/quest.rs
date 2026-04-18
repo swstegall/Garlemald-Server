@@ -222,8 +222,16 @@ mod tests {
         let mut ob = EventOutbox::new();
         q.set_flag(3, true, &mut ob);
         assert!(q.flag(3));
-        assert!(ob.events.iter().any(|e| matches!(e, EventEvent::QuestSaveToDb { .. })));
-        assert!(ob.events.iter().any(|e| matches!(e, EventEvent::QuestCheckCompletion { .. })));
+        assert!(
+            ob.events
+                .iter()
+                .any(|e| matches!(e, EventEvent::QuestSaveToDb { .. }))
+        );
+        assert!(
+            ob.events
+                .iter()
+                .any(|e| matches!(e, EventEvent::QuestCheckCompletion { .. }))
+        );
     }
 
     #[test]
@@ -241,10 +249,15 @@ mod tests {
         let mut ob = EventOutbox::new();
         q.next_phase(3, &mut ob);
         assert_eq!(q.phase(), 3);
-        let found = ob.events.iter().any(|e| matches!(
-            e,
-            EventEvent::QuestGameMessage { text_id: TEXT_NEXT_PHASE, .. }
-        ));
+        let found = ob.events.iter().any(|e| {
+            matches!(
+                e,
+                EventEvent::QuestGameMessage {
+                    text_id: TEXT_NEXT_PHASE,
+                    ..
+                }
+            )
+        });
         assert!(found);
     }
 
@@ -253,10 +266,17 @@ mod tests {
         let q = new_quest();
         let mut ob = EventOutbox::new();
         q.abandon(&mut ob);
-        assert!(ob.events.iter().any(|e| matches!(e, EventEvent::QuestAbandonHook { .. })));
+        assert!(
+            ob.events
+                .iter()
+                .any(|e| matches!(e, EventEvent::QuestAbandonHook { .. }))
+        );
         assert!(ob.events.iter().any(|e| matches!(
             e,
-            EventEvent::QuestGameMessage { text_id: TEXT_ABANDON, .. }
+            EventEvent::QuestGameMessage {
+                text_id: TEXT_ABANDON,
+                ..
+            }
         )));
     }
 }

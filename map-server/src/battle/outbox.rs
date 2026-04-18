@@ -14,11 +14,19 @@ pub enum BattleEvent {
     // ---- State-machine lifecycle ----------------------------------------
     /// Pushed when AIContainer.Engage succeeds — owner's main state becomes
     /// ACTIVE and `owner.target` is set.
-    Engage { owner_actor_id: u32, target_actor_id: u32 },
-    Disengage { owner_actor_id: u32 },
+    Engage {
+        owner_actor_id: u32,
+        target_actor_id: u32,
+    },
+    Disengage {
+        owner_actor_id: u32,
+    },
     /// Target-change packet when the focus actor switches without leaving
     /// combat.
-    TargetChange { owner_actor_id: u32, new_target_actor_id: Option<u32> },
+    TargetChange {
+        owner_actor_id: u32,
+        new_target_actor_id: Option<u32>,
+    },
 
     // ---- Action resolution ----------------------------------------------
     /// `owner.DoBattleAction(skillHandler, battleAnimation, results)` —
@@ -31,15 +39,35 @@ pub enum BattleEvent {
     },
     /// `owner.PlayAnimation(animation)` — smaller pre-action animation, no
     /// CommandResults.
-    PlayAnimation { owner_actor_id: u32, animation: u32 },
+    PlayAnimation {
+        owner_actor_id: u32,
+        animation: u32,
+    },
     /// Cast-bar notification.
-    CastStart { owner_actor_id: u32, command_id: u16, cast_time_ms: u32 },
-    CastComplete { owner_actor_id: u32, command_id: u16 },
-    CastInterrupted { owner_actor_id: u32, command_id: u16 },
+    CastStart {
+        owner_actor_id: u32,
+        command_id: u16,
+        cast_time_ms: u32,
+    },
+    CastComplete {
+        owner_actor_id: u32,
+        command_id: u16,
+    },
+    CastInterrupted {
+        owner_actor_id: u32,
+        command_id: u16,
+    },
 
     // ---- Hate / enmity --------------------------------------------------
-    HateAdd { owner_actor_id: u32, target_actor_id: u32, amount: i32 },
-    HateClear { owner_actor_id: u32, target_actor_id: Option<u32> },
+    HateAdd {
+        owner_actor_id: u32,
+        target_actor_id: u32,
+        amount: i32,
+    },
+    HateClear {
+        owner_actor_id: u32,
+        target_actor_id: Option<u32>,
+    },
 
     // ---- Target finding (for area queries) ------------------------------
     /// AoE query placeholder — the game loop populates a target list by
@@ -52,12 +80,20 @@ pub enum BattleEvent {
     },
 
     // ---- Lifecycle ------------------------------------------------------
-    Die { owner_actor_id: u32 },
-    Despawn { owner_actor_id: u32 },
-    Spawn { owner_actor_id: u32 },
+    Die {
+        owner_actor_id: u32,
+    },
+    Despawn {
+        owner_actor_id: u32,
+    },
+    Spawn {
+        owner_actor_id: u32,
+    },
     /// `Character.RecalculateStats` — stat-mod changes due to traits,
     /// equipment, or status effects.
-    RecalcStats { owner_actor_id: u32 },
+    RecalcStats {
+        owner_actor_id: u32,
+    },
 
     // ---- Lua hooks ------------------------------------------------------
     /// `LuaEngine.CallLuaBattleCommandFunction(caster, command, fn, …)` or
@@ -71,7 +107,10 @@ pub enum BattleEvent {
     },
 
     // ---- Debug / text ---------------------------------------------------
-    WorldMasterText { owner_actor_id: u32, text_id: u16 },
+    WorldMasterText {
+        owner_actor_id: u32,
+        text_id: u16,
+    },
 }
 
 #[derive(Debug, Default)]

@@ -242,7 +242,11 @@ pub fn handle_stoneskin(defender_mods: &mut ModifierMap, action: &mut CommandRes
 // Rate functions — return 0..=100.
 // ---------------------------------------------------------------------------
 
-pub fn get_hit_rate(attacker: &CombatView<'_>, defender: &CombatView<'_>, skill: Option<&BattleCommand>) -> f64 {
+pub fn get_hit_rate(
+    attacker: &CombatView<'_>,
+    defender: &CombatView<'_>,
+    skill: Option<&BattleCommand>,
+) -> f64 {
     let mut hit_rate = 80.0;
     let hit_buff = attacker.get_mod(Modifier::RawHitRate);
     let evade_buff = defender.get_mod(Modifier::RawEvadeRate);
@@ -254,9 +258,7 @@ pub fn get_hit_rate(attacker: &CombatView<'_>, defender: &CombatView<'_>, skill:
 
 pub fn get_parry_rate(defender: &CombatView<'_>, action: &CommandResult) -> f64 {
     // Shield prevents parry; can't parry from the rear.
-    if defender.get_mod(Modifier::CanBlock) != 0.0
-        || action.param == HitDirection::REAR.bits()
-    {
+    if defender.get_mod(Modifier::CanBlock) != 0.0 || action.param == HitDirection::REAR.bits() {
         return 0.0;
     }
     let mut parry = 10.0;
@@ -264,7 +266,11 @@ pub fn get_parry_rate(defender: &CombatView<'_>, action: &CommandResult) -> f64 
     parry + defender.get_mod(Modifier::RawParryRate)
 }
 
-pub fn get_crit_rate(attacker: &CombatView<'_>, action: &CommandResult, skill: Option<&BattleCommand>) -> f64 {
+pub fn get_crit_rate(
+    attacker: &CombatView<'_>,
+    action: &CommandResult,
+    skill: Option<&BattleCommand>,
+) -> f64 {
     if action.action_type == ActionType::Status {
         return 0.0;
     }
@@ -298,9 +304,7 @@ pub fn get_block_rate(
     action: &CommandResult,
 ) -> f64 {
     // Need a shield, can't block from rear.
-    if defender.get_mod(Modifier::CanBlock) == 0.0
-        || action.param == HitDirection::REAR.bits()
-    {
+    if defender.get_mod(Modifier::CanBlock) == 0.0 || action.param == HitDirection::REAR.bits() {
         return 0.0;
     }
     let dlvl = (defender.level - attacker.level) as f64;
@@ -517,7 +521,10 @@ pub fn finish_action_physical(
     if !try_miss(attacker, defender, skill.as_deref(), action, rng) {
         handle_stoneskin(defender_mods, action);
 
-        if !try_crit(attacker, defender, skill.as_deref(), action, rng) && !try_block(defender, action, rng) && !try_parry(action, rng) {
+        if !try_crit(attacker, defender, skill.as_deref(), action, rng)
+            && !try_block(defender, action, rng)
+            && !try_parry(action, rng)
+        {
             action.hit_type = HitType::Hit;
         }
     }
@@ -612,11 +619,7 @@ pub fn finish_action_heal(
 
 /// Try to apply a status as a side effect of a command. Returns `true` if
 /// the status should be added by the caller — we just report the roll.
-pub fn try_status(
-    action: &CommandResult,
-    skill: &BattleCommand,
-    rng: &mut dyn Rng,
-) -> bool {
+pub fn try_status(action: &CommandResult, skill: &BattleCommand, rng: &mut dyn Rng) -> bool {
     if skill.status_id == 0 {
         return false;
     }
@@ -628,7 +631,11 @@ pub fn try_status(
     rng.next_f64() < skill.status_chance as f64
 }
 
-pub fn finish_action_status(skill: &BattleCommand, action: &mut CommandResult, results: &mut CommandResultContainer) {
+pub fn finish_action_status(
+    skill: &BattleCommand,
+    action: &mut CommandResult,
+    results: &mut CommandResultContainer,
+) {
     set_hit_effect_status(skill, action);
     results.add_action(action.clone());
 }
@@ -659,7 +666,11 @@ pub fn attack_calculate_base_damage(rng: &mut dyn Rng) -> i32 {
     (rng.next_f64() * 10.0) as i32 * 10
 }
 
-pub fn attack_calculate_damage(_attacker: &CombatView<'_>, _defender: &CombatView<'_>, rng: &mut dyn Rng) -> i32 {
+pub fn attack_calculate_damage(
+    _attacker: &CombatView<'_>,
+    _defender: &CombatView<'_>,
+    rng: &mut dyn Rng,
+) -> i32 {
     attack_calculate_base_damage(rng)
 }
 
@@ -674,7 +685,10 @@ pub fn get_base_exp(player_level: i16, mob_level: i16, party_member_count: usize
     if dlvl <= -20 {
         return 0;
     }
-    let base_level = player_level.min(mob_level).max(1).min(BASE_EXP.len() as i16) as usize;
+    let base_level = player_level
+        .min(mob_level)
+        .max(1)
+        .min(BASE_EXP.len() as i16) as usize;
     let base_exp = BASE_EXP[base_level - 1] as f64;
 
     let mut dlvl_modifier = 1.0;
@@ -731,7 +745,12 @@ mod tests {
         ModifierMap::default()
     }
 
-    fn stub_view<'a>(level: i16, max_hp: i16, mods: &'a ModifierMap, actor_id: u32) -> CombatView<'a> {
+    fn stub_view<'a>(
+        level: i16,
+        max_hp: i16,
+        mods: &'a ModifierMap,
+        actor_id: u32,
+    ) -> CombatView<'a> {
         CombatView {
             actor_id,
             level,

@@ -170,12 +170,21 @@ impl StatusEffect {
 
     /// Set end time, with stance-sentinel handling.
     pub fn set_end_time(&mut self, end_unix_s: u32) {
-        self.end_time = if self.is_stance() { STANCE_END_TIME } else { end_unix_s };
+        self.end_time = if self.is_stance() {
+            STANCE_END_TIME
+        } else {
+            end_unix_s
+        };
     }
 
     /// Refresh the end time based on the stored duration, and emit a
     /// `PacketSetStatusTime` for the slot (if the effect is visible).
-    pub fn refresh_time(&mut self, now_ms: u64, slot_index: Option<u16>, outbox: &mut StatusOutbox) {
+    pub fn refresh_time(
+        &mut self,
+        now_ms: u64,
+        slot_index: Option<u16>,
+        outbox: &mut StatusOutbox,
+    ) {
         let now_s = (now_ms / 1000) as u32;
         self.set_end_time(now_s.saturating_add(self.duration));
         if let Some(i) = slot_index {
@@ -189,7 +198,11 @@ impl StatusEffect {
 
     /// Value the client expects in `statusShownTime[i]`. Stances send u32::MAX.
     pub fn wire_end_time(&self) -> u32 {
-        if self.is_stance() { STANCE_END_TIME } else { self.end_time }
+        if self.is_stance() {
+            STANCE_END_TIME
+        } else {
+            self.end_time
+        }
     }
 
     /// Return `true` if this effect has ticked or expired and the container
@@ -197,9 +210,7 @@ impl StatusEffect {
     /// detected by the container (when `wire_end_time() != STANCE_END_TIME`
     /// and `now_s >= end_time`).
     pub fn update(&mut self, now_ms: u64, outbox: &mut StatusOutbox) -> bool {
-        if self.tick_ms != 0
-            && now_ms.saturating_sub(self.last_tick_ms) >= self.tick_ms as u64
-        {
+        if self.tick_ms != 0 && now_ms.saturating_sub(self.last_tick_ms) >= self.tick_ms as u64 {
             self.last_tick_ms = now_ms;
             outbox.push(StatusEvent::LuaCall {
                 owner_actor_id: self.owner_actor_id,
@@ -274,7 +285,10 @@ impl StatusEffectContainer {
     }
 
     pub fn get_by_flag(&self, flag: StatusEffectFlags) -> Vec<&StatusEffect> {
-        self.effects.values().filter(|e| e.flags.intersects(flag)).collect()
+        self.effects
+            .values()
+            .filter(|e| e.flags.intersects(flag))
+            .collect()
     }
 
     pub fn has_by_flag(&self, flag: StatusEffectFlags) -> bool {
@@ -375,12 +389,10 @@ impl StatusEffectContainer {
                 StatusEffectOverwrite::None => false,
                 StatusEffectOverwrite::Always => true,
                 StatusEffectOverwrite::GreaterOnly => {
-                    existing.duration < effect.duration
-                        || existing.magnitude < effect.magnitude
+                    existing.duration < effect.duration || existing.magnitude < effect.magnitude
                 }
                 StatusEffectOverwrite::GreaterOrEqualTo => {
-                    existing.duration <= effect.duration
-                        || existing.magnitude <= effect.magnitude
+                    existing.duration <= effect.duration || existing.magnitude <= effect.magnitude
                 }
             }
         } else {
@@ -436,7 +448,12 @@ impl StatusEffectContainer {
         if !effect.hidden {
             let short_id = effect.status_id();
             let slot_index = prior_slot
-                .or_else(|| self.status.iter().position(|&s| s == short_id).map(|i| i as u16))
+                .or_else(|| {
+                    self.status
+                        .iter()
+                        .position(|&s| s == short_id)
+                        .map(|i| i as u16)
+                })
                 .or_else(|| self.status.iter().position(|&s| s == 0).map(|i| i as u16));
 
             if let Some(idx) = slot_index {
@@ -479,7 +496,11 @@ impl StatusEffectContainer {
         let short_id = effect.status_id();
         let hidden = effect.hidden;
         if !hidden
-            && let Some(idx) = self.status.iter().position(|&s| s == short_id).map(|i| i as u16)
+            && let Some(idx) = self
+                .status
+                .iter()
+                .position(|&s| s == short_id)
+                .map(|i| i as u16)
         {
             self.set_status_at_index(idx, 0, outbox);
             self.set_time_at_index(idx, 0, outbox);
@@ -544,7 +565,12 @@ impl StatusEffectContainer {
         let now_s = (now_ms / 1000) as u32;
         new_effect.set_end_time(now_s.saturating_add(new_effect.duration));
 
-        if let Some(idx) = self.status.iter().position(|&s| s == old_short).map(|i| i as u16) {
+        if let Some(idx) = self
+            .status
+            .iter()
+            .position(|&s| s == old_short)
+            .map(|i| i as u16)
+        {
             // The C# writes 0 first, then the new id — reproduce that so
             // the client replays the slot change. The intermediate packet
             // appears in the outbox stream.
@@ -631,7 +657,10 @@ mod tests {
     use crate::status::ids::{STATUS_POISON, STATUS_RAMPART, STATUS_STUN};
 
     fn mk(id: u32, duration: u32) -> StatusEffect {
-        StatusEffect::new(/* owner */ 0, id, /* mag */ 1.0, /* tick_ms */ 0, duration, 0, /* now_ms */ 0)
+        StatusEffect::new(
+            /* owner */ 0, id, /* mag */ 1.0, /* tick_ms */ 0, duration, 0,
+            /* now_ms */ 0,
+        )
     }
 
     #[test]
@@ -639,7 +668,8 @@ mod tests {
         let mut c = StatusEffectContainer::new(42);
         let mut ob = StatusOutbox::new();
 
-        let applied = c.add_status_effect(mk(STATUS_POISON, 30), 42, 0, DEFAULT_GAIN_TEXT_ID, &mut ob);
+        let applied =
+            c.add_status_effect(mk(STATUS_POISON, 30), 42, 0, DEFAULT_GAIN_TEXT_ID, &mut ob);
         assert!(applied);
         assert!(c.has(STATUS_POISON));
         assert_eq!(c.len(), 1);
@@ -714,10 +744,26 @@ mod tests {
 
         c.update(REGEN_TICK_MS, &mods, &mut ob);
         let events = ob.drain();
-        assert!(events.iter().any(|e| matches!(e, StatusEvent::HpTick { delta: -4, .. })));
-        assert!(events.iter().any(|e| matches!(e, StatusEvent::HpTick { delta: 25, .. })));
-        assert!(events.iter().any(|e| matches!(e, StatusEvent::MpTick { delta: 10, .. })));
-        assert!(events.iter().any(|e| matches!(e, StatusEvent::TpTick { delta: 100, .. })));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StatusEvent::HpTick { delta: -4, .. }))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StatusEvent::HpTick { delta: 25, .. }))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StatusEvent::MpTick { delta: 10, .. }))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StatusEvent::TpTick { delta: 100, .. }))
+        );
     }
 
     #[test]
@@ -727,7 +773,10 @@ mod tests {
         let mut eff = mk(STATUS_RAMPART, 10);
         eff.flags = StatusEffectFlags::STANCE;
         c.add_status_effect(eff, 1, 0, DEFAULT_GAIN_TEXT_ID, &mut ob);
-        assert_eq!(c.get(STATUS_RAMPART).unwrap().wire_end_time(), STANCE_END_TIME);
+        assert_eq!(
+            c.get(STATUS_RAMPART).unwrap().wire_end_time(),
+            STANCE_END_TIME
+        );
         // Stance effects never expire through the update path.
         let mods = ModifierMap::default();
         c.update(1_000_000_000, &mods, &mut ob);

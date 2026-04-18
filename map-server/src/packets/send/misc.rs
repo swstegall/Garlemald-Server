@@ -61,8 +61,10 @@ pub struct GameMessageOptions {
 /// 0x01FD GameMessagePacket (default).
 pub fn build_game_message(source_actor_id: u32, opts: GameMessageOptions) -> SubPacket {
     let mut body = Vec::<u8>::with_capacity(0x40 + opts.lua_params.len() * 8);
-    body.write_u32::<LittleEndian>(opts.receiver_actor_id).unwrap();
-    body.write_u32::<LittleEndian>(opts.sender_actor_id).unwrap();
+    body.write_u32::<LittleEndian>(opts.receiver_actor_id)
+        .unwrap();
+    body.write_u32::<LittleEndian>(opts.sender_actor_id)
+        .unwrap();
     body.write_u16::<LittleEndian>(opts.text_id).unwrap();
     body.write_u8(opts.log).unwrap();
     body.write_u8(0).unwrap();
@@ -147,4 +149,3 @@ pub fn build_send_message_public(
     write_padded_ascii(&mut body, message, 0x200);
     SubPacket::new_with_flag(false, OP_SEND_MESSAGE_PUBLIC, source_actor_id, body)
 }
-

@@ -83,8 +83,13 @@ pub enum SocialEvent {
     },
 
     // ---- Recruitment --------------------------------------------------
-    RecruitingStarted { actor_id: u32, success: bool },
-    RecruitingEnded { actor_id: u32 },
+    RecruitingStarted {
+        actor_id: u32,
+        success: bool,
+    },
+    RecruitingEnded {
+        actor_id: u32,
+    },
     RecruiterStateQueried {
         actor_id: u32,
         is_recruiter: bool,
@@ -101,17 +106,34 @@ pub enum SocialEvent {
     },
 
     // ---- Support desk --------------------------------------------------
-    FaqListRequested { actor_id: u32, faqs: Vec<String> },
-    FaqBodyRequested { actor_id: u32, body: String },
-    SupportIssueListRequested { actor_id: u32, issues: Vec<String> },
-    GmTicketStartQueried { actor_id: u32, is_active: bool },
+    FaqListRequested {
+        actor_id: u32,
+        faqs: Vec<String>,
+    },
+    FaqBodyRequested {
+        actor_id: u32,
+        body: String,
+    },
+    SupportIssueListRequested {
+        actor_id: u32,
+        issues: Vec<String>,
+    },
+    GmTicketStartQueried {
+        actor_id: u32,
+        is_active: bool,
+    },
     GmTicketResponseQueried {
         actor_id: u32,
         title: String,
         body: String,
     },
-    GmTicketSent { actor_id: u32, accepted: bool },
-    GmTicketEnded { actor_id: u32 },
+    GmTicketSent {
+        actor_id: u32,
+        accepted: bool,
+    },
+    GmTicketEnded {
+        actor_id: u32,
+    },
 }
 
 #[derive(Debug, Default)]

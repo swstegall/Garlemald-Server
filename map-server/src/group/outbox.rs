@@ -36,7 +36,10 @@ pub enum GroupEvent {
     },
     /// Leader changed — client needs a fresh work-values sync so the
     /// UI marker moves.
-    LeaderChanged { group_id: u64, new_leader_actor_id: u32 },
+    LeaderChanged {
+        group_id: u64,
+        new_leader_actor_id: u32,
+    },
     /// Sync the group's work-struct values. Used on `_init` and after
     /// significant state changes (director id, host id, trade command).
     SynchWorkValues { group_id: u64, kind: GroupKind },

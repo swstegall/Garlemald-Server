@@ -26,7 +26,9 @@ pub fn install_globals(
     {
         let queue = queue.clone();
         let f = lua.create_function(move |_, _: ()| {
-            Ok(LuaWorldManager { queue: queue.clone() })
+            Ok(LuaWorldManager {
+                queue: queue.clone(),
+            })
         })?;
         globals.set("GetWorldManager", f)?;
     }
@@ -35,7 +37,9 @@ pub fn install_globals(
     {
         let queue = queue.clone();
         let f = lua.create_function(move |_, _: ()| {
-            Ok(LuaWorldManager { queue: queue.clone() })
+            Ok(LuaWorldManager {
+                queue: queue.clone(),
+            })
         })?;
         globals.set("GetLuaInstance", f)?;
     }
@@ -66,9 +70,8 @@ pub fn install_globals(
         let f = lua.create_function(move |_, id: u32| {
             let s = cats.static_actors.read().ok();
             Ok(s.and_then(|map| {
-                map.iter().find_map(|(name, actor_id)| {
-                    (*actor_id == id).then(|| name.clone())
-                })
+                map.iter()
+                    .find_map(|(name, actor_id)| (*actor_id == id).then(|| name.clone()))
             }))
         })?;
         globals.set("GetStaticActorById", f)?;
@@ -79,16 +82,18 @@ pub fn install_globals(
         let cats = catalogs.clone();
         let f = lua.create_function(move |_, id: u32| {
             let items = cats.items.read().ok();
-            Ok(items.and_then(|m| m.get(&id).map(|item| LuaItemData {
-                id: item.id,
-                name: item.name.clone(),
-                stack_size: item.stack_size,
-                item_level: item.item_level,
-                equip_level: item.equip_level,
-                price: item.price,
-                icon: item.icon,
-                rarity: item.rarity,
-            })))
+            Ok(items.and_then(|m| {
+                m.get(&id).map(|item| LuaItemData {
+                    id: item.id,
+                    name: item.name.clone(),
+                    stack_size: item.stack_size,
+                    item_level: item.item_level,
+                    equip_level: item.equip_level,
+                    price: item.price,
+                    icon: item.icon,
+                    rarity: item.rarity,
+                })
+            }))
         })?;
         globals.set("GetItemGamedata", f)?;
     }
@@ -97,7 +102,12 @@ pub fn install_globals(
     {
         let cats = catalogs.clone();
         let f = lua.create_function(move |lua, id: u32| -> mlua::Result<Value> {
-            let Some(gd) = cats.guildleves.read().ok().and_then(|m| m.get(&id).cloned()) else {
+            let Some(gd) = cats
+                .guildleves
+                .read()
+                .ok()
+                .and_then(|m| m.get(&id).cloned())
+            else {
                 return Ok(Value::Nil);
             };
             let t = lua.create_table()?;

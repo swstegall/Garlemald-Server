@@ -27,7 +27,10 @@ pub struct BasePacketHeader {
 impl BasePacketHeader {
     pub fn read(buf: &[u8]) -> Result<Self, PacketError> {
         if buf.len() < BASEPACKET_SIZE {
-            return Err(PacketError::TooSmall { needed: BASEPACKET_SIZE, have: buf.len() });
+            return Err(PacketError::TooSmall {
+                needed: BASEPACKET_SIZE,
+                have: buf.len(),
+            });
         }
         let mut c = Cursor::new(buf);
         Ok(Self {
@@ -60,7 +63,10 @@ pub struct BasePacket {
 impl BasePacket {
     pub fn from_bytes(bytes: &[u8]) -> Result<BasePacket, PacketError> {
         if bytes.len() < BASEPACKET_SIZE {
-            return Err(PacketError::TooSmall { needed: BASEPACKET_SIZE, have: bytes.len() });
+            return Err(PacketError::TooSmall {
+                needed: BASEPACKET_SIZE,
+                have: bytes.len(),
+            });
         }
         let header = BasePacketHeader::read(&bytes[..BASEPACKET_SIZE])?;
 
@@ -183,7 +189,10 @@ impl BasePacket {
         is_authed: bool,
         is_compressed: bool,
     ) -> Result<BasePacket, PacketError> {
-        let body_size: usize = subpackets.iter().map(|s| s.header.subpacket_size as usize).sum();
+        let body_size: usize = subpackets
+            .iter()
+            .map(|s| s.header.subpacket_size as usize)
+            .sum();
 
         let mut data = vec![0u8; body_size];
         let mut offset = 0;
@@ -219,7 +228,11 @@ impl BasePacket {
         is_authed: bool,
         is_compressed: bool,
     ) -> Result<BasePacket, PacketError> {
-        BasePacket::create_from_subpackets(std::slice::from_ref(subpacket), is_authed, is_compressed)
+        BasePacket::create_from_subpackets(
+            std::slice::from_ref(subpacket),
+            is_authed,
+            is_compressed,
+        )
     }
 
     pub fn create_from_data(
@@ -227,7 +240,11 @@ impl BasePacket {
         is_authed: bool,
         is_compressed: bool,
     ) -> Result<BasePacket, PacketError> {
-        let data = if is_compressed { compress_data(data)? } else { data.to_vec() };
+        let data = if is_compressed {
+            compress_data(data)?
+        } else {
+            data.to_vec()
+        };
 
         let header = BasePacketHeader {
             is_authenticated: is_authed as u8,
@@ -261,7 +278,11 @@ impl BasePacket {
                 });
             }
 
-            blowfish.encipher(&mut self.data, offset + SUBPACKET_SIZE, size - SUBPACKET_SIZE)?;
+            blowfish.encipher(
+                &mut self.data,
+                offset + SUBPACKET_SIZE,
+                size - SUBPACKET_SIZE,
+            )?;
             offset += size;
         }
         Ok(())
@@ -285,7 +306,11 @@ impl BasePacket {
                 });
             }
 
-            blowfish.decipher(&mut self.data, offset + SUBPACKET_SIZE, size - SUBPACKET_SIZE)?;
+            blowfish.decipher(
+                &mut self.data,
+                offset + SUBPACKET_SIZE,
+                size - SUBPACKET_SIZE,
+            )?;
             offset += size;
         }
         Ok(())

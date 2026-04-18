@@ -20,8 +20,8 @@ pub mod recruitment;
 pub mod support;
 
 pub use chat::{
-    message_type_from_u32, ChatKind, CHAT_LS, CHAT_PARTY, CHAT_SAY, CHAT_SHOUT, CHAT_SYSTEM,
-    CHAT_SYSTEM_ERROR, CHAT_TELL, CHAT_YELL,
+    CHAT_LS, CHAT_PARTY, CHAT_SAY, CHAT_SHOUT, CHAT_SYSTEM, CHAT_SYSTEM_ERROR, CHAT_TELL,
+    CHAT_YELL, ChatKind, message_type_from_u32,
 };
 pub use dispatcher::dispatch_social_event;
 pub use friendlist::{BlacklistEntry, FriendlistEntry};
@@ -56,7 +56,18 @@ mod integration_tests {
         let world = Arc::new(WorldManager::new());
         let registry = Arc::new(ActorRegistry::new());
         let zone = Zone::new(
-            100, "test", 1, "/Area/Zone/Test", 0, 0, 0, false, false, false, false, false,
+            100,
+            "test",
+            1,
+            "/Area/Zone/Test",
+            0,
+            0,
+            0,
+            false,
+            false,
+            false,
+            false,
+            false,
             Some(&StubNavmeshLoader),
         );
         world.register_zone(zone).await;

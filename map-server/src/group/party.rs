@@ -166,10 +166,11 @@ mod tests {
         let p = Party::new(1, 0xA000_0001, &mut ob);
         assert_eq!(p.leader(), 0xA000_0001);
         assert_eq!(p.member_count(), 1);
-        assert!(ob
-            .events
-            .iter()
-            .any(|e| matches!(e, GroupEvent::GroupCreated { .. })));
+        assert!(
+            ob.events
+                .iter()
+                .any(|e| matches!(e, GroupEvent::GroupCreated { .. }))
+        );
     }
 
     #[test]
@@ -191,10 +192,11 @@ mod tests {
         let mut p = Party::new(1, 100, &mut ob);
         ob.drain();
         p.remove_member(100, &mut ob);
-        assert!(ob
-            .events
-            .iter()
-            .any(|e| matches!(e, GroupEvent::PartyEmptied { .. })));
+        assert!(
+            ob.events
+                .iter()
+                .any(|e| matches!(e, GroupEvent::PartyEmptied { .. }))
+        );
     }
 
     #[test]

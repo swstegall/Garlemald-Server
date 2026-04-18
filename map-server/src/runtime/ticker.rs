@@ -122,7 +122,9 @@ impl GameTicker {
             {
                 let zone_read = zone.read().await;
                 let mut chara = handle.character.write().await;
-                chara.ai_container.update(now_ms, owner_view, &*zone_read, &mut battle_outbox);
+                chara
+                    .ai_container
+                    .update(now_ms, owner_view, &*zone_read, &mut battle_outbox);
             }
 
             for e in status_outbox.drain() {
@@ -176,8 +178,16 @@ fn build_owner_view(chara: &Character, actor_id: u32, zone_id: u32) -> Controlle
         },
         is_engaged,
         is_spawned: true,
-        is_following_path: chara.ai_container.path_find.as_ref().is_some_and(|p| p.is_following_path()),
-        at_path_end: chara.ai_container.path_find.as_ref().is_none_or(|p| !p.is_following_path()),
+        is_following_path: chara
+            .ai_container
+            .path_find
+            .as_ref()
+            .is_some_and(|p| p.is_following_path()),
+        at_path_end: chara
+            .ai_container
+            .path_find
+            .as_ref()
+            .is_none_or(|p| !p.is_following_path()),
         most_hated_actor_id: most_hated,
         current_target_actor_id: current_target,
         has_prevent_movement: false,
@@ -219,22 +229,34 @@ mod tests {
     use common::Vector3;
 
     fn tempdb() -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("garlemald-ticker-{nanos}.db"))
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("garlemald-ticker-{nanos}-{seq}.db"))
     }
 
     async fn setup_one_zone_one_actor() -> (GameTicker, Arc<RwLock<Zone>>) {
         let world = Arc::new(WorldManager::new());
         let registry = Arc::new(ActorRegistry::new());
-        let db = Arc::new(
-            Database::open(tempdb()).await.expect("database stub"),
-        );
+        let db = Arc::new(Database::open(tempdb()).await.expect("database stub"));
 
         let mut zone = Zone::new(
-            100, "test", 1, "/Area/Zone/Test", 0, 0, 0, false, false, false, false, false,
+            100,
+            "test",
+            1,
+            "/Area/Zone/Test",
+            0,
+            0,
+            0,
+            false,
+            false,
+            false,
+            false,
+            false,
             Some(&StubNavmeshLoader),
         );
         let mut ob = AreaOutbox::new();
@@ -253,9 +275,18 @@ mod tests {
         let mut character = Character::new(1);
         character.chara.hp = 1000;
         character.chara.max_hp = 1000;
-        character.chara.mods.set(crate::actor::modifier::Modifier::Regen, 5.0);
+        character
+            .chara
+            .mods
+            .set(crate::actor::modifier::Modifier::Regen, 5.0);
         registry
-            .insert(ActorHandle::new(1, ActorKindTag::BattleNpc, 100, 0, character))
+            .insert(ActorHandle::new(
+                1,
+                ActorKindTag::BattleNpc,
+                100,
+                0,
+                character,
+            ))
             .await;
 
         let ticker = GameTicker::new(TickerConfig::default(), world.clone(), registry, db);
@@ -283,6 +314,9 @@ mod tests {
         ticker.tick_once(5_000).await;
 
         let hp_after = handle.character.read().await.chara.hp;
-        assert!(hp_after > 500, "regen should have bumped hp, got {hp_after}");
+        assert!(
+            hp_after > 500,
+            "regen should have bumped hp, got {hp_after}"
+        );
     }
 }

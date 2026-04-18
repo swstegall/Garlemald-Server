@@ -123,7 +123,12 @@ async fn spawn_one(
             None,
         );
         let id = bnpc.actor_id();
-        (id, bnpc.npc.character, ActorKindTag::BattleNpc, ActorKind::BattleNpc)
+        (
+            id,
+            bnpc.npc.character,
+            ActorKindTag::BattleNpc,
+            ActorKind::BattleNpc,
+        )
     } else {
         let npc = Npc::new(
             actor_number,
@@ -184,7 +189,16 @@ pub async fn spawn_from_location(
     let zone_arc = ctx.world.zone(zone_id).await?;
     let class = ctx.actor_classes.get(&seed.class_id)?;
     let is_battle = ctx.battle_class_ids.contains(&seed.class_id);
-    spawn_one(ctx, &zone_arc, zone_id, actor_number, class, seed, is_battle).await
+    spawn_one(
+        ctx,
+        &zone_arc,
+        zone_id,
+        actor_number,
+        class,
+        seed,
+        is_battle,
+    )
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -196,12 +210,23 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    use crate::zone::navmesh::StubNavmeshLoader;
     use crate::zone::Zone;
+    use crate::zone::navmesh::StubNavmeshLoader;
 
     fn mk_zone(id: u32) -> Zone {
         Zone::new(
-            id, "test", 1, "/Area/Zone/Test", 0, 0, 0, false, false, false, false, false,
+            id,
+            "test",
+            1,
+            "/Area/Zone/Test",
+            0,
+            0,
+            0,
+            false,
+            false,
+            false,
+            false,
+            false,
             Some(&StubNavmeshLoader),
         )
     }
@@ -220,8 +245,10 @@ mod tests {
         let registry = ActorRegistry::new();
 
         let mut zone = mk_zone(100);
-        zone.add_spawn_location(seed(10_001, "greeter", 5.0, 0.0)).unwrap();
-        zone.add_spawn_location(seed(20_002, "dodo", 10.0, 10.0)).unwrap();
+        zone.add_spawn_location(seed(10_001, "greeter", 5.0, 0.0))
+            .unwrap();
+        zone.add_spawn_location(seed(20_002, "dodo", 10.0, 10.0))
+            .unwrap();
         world.register_zone(zone).await;
 
         let mut classes = HashMap::new();
@@ -281,7 +308,8 @@ mod tests {
         let world = WorldManager::new();
         let registry = ActorRegistry::new();
         let mut zone = mk_zone(100);
-        zone.add_spawn_location(seed(99, "ghost", 0.0, 0.0)).unwrap();
+        zone.add_spawn_location(seed(99, "ghost", 0.0, 0.0))
+            .unwrap();
         world.register_zone(zone).await;
 
         let classes: HashMap<u32, ActorClass> = HashMap::new();

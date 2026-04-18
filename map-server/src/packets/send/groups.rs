@@ -76,7 +76,15 @@ pub fn build_group_members_x08(
     members: &[GroupMember],
     list_offset: &mut usize,
 ) -> SubPacket {
-    build_group_members_n(source_actor_id, group_id, members, list_offset, 8, OP_GROUP_MEMBERS_X08, 0x1B8)
+    build_group_members_n(
+        source_actor_id,
+        group_id,
+        members,
+        list_offset,
+        8,
+        OP_GROUP_MEMBERS_X08,
+        0x1B8,
+    )
 }
 
 pub fn build_group_members_x16(
@@ -85,7 +93,15 @@ pub fn build_group_members_x16(
     members: &[GroupMember],
     list_offset: &mut usize,
 ) -> SubPacket {
-    build_group_members_n(source_actor_id, group_id, members, list_offset, 16, OP_GROUP_MEMBERS_X16, 0x330)
+    build_group_members_n(
+        source_actor_id,
+        group_id,
+        members,
+        list_offset,
+        16,
+        OP_GROUP_MEMBERS_X16,
+        0x330,
+    )
 }
 
 pub fn build_group_members_x32(
@@ -94,7 +110,15 @@ pub fn build_group_members_x32(
     members: &[GroupMember],
     list_offset: &mut usize,
 ) -> SubPacket {
-    build_group_members_n(source_actor_id, group_id, members, list_offset, 32, OP_GROUP_MEMBERS_X32, 0x630)
+    build_group_members_n(
+        source_actor_id,
+        group_id,
+        members,
+        list_offset,
+        32,
+        OP_GROUP_MEMBERS_X32,
+        0x630,
+    )
 }
 
 pub fn build_group_members_x64(
@@ -103,7 +127,15 @@ pub fn build_group_members_x64(
     members: &[GroupMember],
     list_offset: &mut usize,
 ) -> SubPacket {
-    build_group_members_n(source_actor_id, group_id, members, list_offset, 64, OP_GROUP_MEMBERS_X64, 0xC30)
+    build_group_members_n(
+        source_actor_id,
+        group_id,
+        members,
+        list_offset,
+        64,
+        OP_GROUP_MEMBERS_X64,
+        0xC30,
+    )
 }
 
 fn build_group_members_n(
@@ -137,7 +169,15 @@ pub fn build_content_members_x08(
     members: &[GroupMember],
     list_offset: &mut usize,
 ) -> SubPacket {
-    build_group_members_n(source_actor_id, group_id, members, list_offset, 8, OP_CONTENT_MEMBERS_X08, 0x1B8)
+    build_group_members_n(
+        source_actor_id,
+        group_id,
+        members,
+        list_offset,
+        8,
+        OP_CONTENT_MEMBERS_X08,
+        0x1B8,
+    )
 }
 pub fn build_content_members_x16(
     source_actor_id: u32,
@@ -145,7 +185,15 @@ pub fn build_content_members_x16(
     members: &[GroupMember],
     list_offset: &mut usize,
 ) -> SubPacket {
-    build_group_members_n(source_actor_id, group_id, members, list_offset, 16, OP_CONTENT_MEMBERS_X16, 0xF0)
+    build_group_members_n(
+        source_actor_id,
+        group_id,
+        members,
+        list_offset,
+        16,
+        OP_CONTENT_MEMBERS_X16,
+        0xF0,
+    )
 }
 pub fn build_content_members_x32(
     source_actor_id: u32,
@@ -153,7 +201,15 @@ pub fn build_content_members_x32(
     members: &[GroupMember],
     list_offset: &mut usize,
 ) -> SubPacket {
-    build_group_members_n(source_actor_id, group_id, members, list_offset, 32, OP_CONTENT_MEMBERS_X32, 0x1B0)
+    build_group_members_n(
+        source_actor_id,
+        group_id,
+        members,
+        list_offset,
+        32,
+        OP_CONTENT_MEMBERS_X32,
+        0x1B0,
+    )
 }
 pub fn build_content_members_x64(
     source_actor_id: u32,
@@ -161,7 +217,15 @@ pub fn build_content_members_x64(
     members: &[GroupMember],
     list_offset: &mut usize,
 ) -> SubPacket {
-    build_group_members_n(source_actor_id, group_id, members, list_offset, 64, OP_CONTENT_MEMBERS_X64, 0x330)
+    build_group_members_n(
+        source_actor_id,
+        group_id,
+        members,
+        list_offset,
+        64,
+        OP_CONTENT_MEMBERS_X64,
+        0x330,
+    )
 }
 
 /// 0x0188 CreateNamedGroup — announce a new group by name.
@@ -188,7 +252,8 @@ pub fn build_create_named_group_multiple(
 ) -> SubPacket {
     let mut data = body(0x228);
     let mut c = Cursor::new(&mut data[..]);
-    c.write_u16::<LittleEndian>(linkshells.len() as u16).unwrap();
+    c.write_u16::<LittleEndian>(linkshells.len() as u16)
+        .unwrap();
     c.write_u16::<LittleEndian>(0).unwrap();
     for (gid, name, gtype) in linkshells {
         c.write_u64::<LittleEndian>(*gid).unwrap();
@@ -206,7 +271,11 @@ pub fn build_delete_group(source_actor_id: u32, group_id: u64) -> SubPacket {
 }
 
 /// 0x017A SynchGroupWorkValuesPacket — raw work-value blob (Phase-4 placeholder).
-pub fn build_synch_group_work_values(source_actor_id: u32, group_id: u64, work_blob: &[u8]) -> SubPacket {
+pub fn build_synch_group_work_values(
+    source_actor_id: u32,
+    group_id: u64,
+    work_blob: &[u8],
+) -> SubPacket {
     let mut data = body(0xB0);
     let mut c = Cursor::new(&mut data[..]);
     c.write_u64::<LittleEndian>(group_id).unwrap();

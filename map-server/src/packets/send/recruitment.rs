@@ -48,10 +48,7 @@ pub fn build_recruiter_state(
 }
 
 /// 0x01C8 CurrentRecruitmentDetails.
-pub fn build_current_recruitment_details(
-    actor_id: u32,
-    details: &RecruitmentDetails,
-) -> SubPacket {
+pub fn build_current_recruitment_details(actor_id: u32, details: &RecruitmentDetails) -> SubPacket {
     let mut data = body(0x218);
     let mut c = Cursor::new(&mut data[..]);
     c.write_u64::<LittleEndian>(details.recruiter_id).unwrap();

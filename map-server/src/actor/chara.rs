@@ -223,18 +223,18 @@ impl Character {
     /// stored under the AttackRange modifier.
     pub fn get_attack_range(&self) -> f32 {
         let raw = self.chara.mods.get(Modifier::AttackRange);
-        if raw > 0.0 {
-            raw as f32
-        } else {
-            3.0
-        }
+        if raw > 0.0 { raw as f32 } else { 3.0 }
     }
 
     /// Attack delay in milliseconds, derived from the `Delay` modifier.
     /// Matches the C# clamp: a `Delay` of 0 means "use the weapon default".
     pub fn get_attack_delay_ms(&self) -> u32 {
         let delay = self.chara.mods.get(Modifier::Delay);
-        if delay > 0.0 { (delay * 1000.0) as u32 } else { 2500 }
+        if delay > 0.0 {
+            (delay * 1000.0) as u32
+        } else {
+            2500
+        }
     }
 
     /// Movement speed in units/sec. The C# stores it as a raw float; we

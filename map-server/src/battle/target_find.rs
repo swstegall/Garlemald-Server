@@ -368,16 +368,27 @@ impl TargetFind {
         }
 
         // Pure self-only with no AoE — can't splash bystanders.
-        if self.valid_target == ValidTarget::SELF && self.aoe_type == TargetFindAOEType::None && !is_self {
+        if self.valid_target == ValidTarget::SELF
+            && self.aoe_type == TargetFindAOEType::None
+            && !is_self
+        {
             return false;
         }
 
         // MainTargetParty flags.
-        let in_main_party = self.main_target.party_id != 0 && target.party_id == self.main_target.party_id;
-        if !self.valid_target.intersects(ValidTarget::MAIN_TARGET_PARTY) && in_main_party && !is_self {
+        let in_main_party =
+            self.main_target.party_id != 0 && target.party_id == self.main_target.party_id;
+        if !self.valid_target.intersects(ValidTarget::MAIN_TARGET_PARTY)
+            && in_main_party
+            && !is_self
+        {
             return false;
         }
-        if self.valid_target.intersects(ValidTarget::MAIN_TARGET_PARTY_ONLY) && !in_main_party {
+        if self
+            .valid_target
+            .intersects(ValidTarget::MAIN_TARGET_PARTY_ONLY)
+            && !in_main_party
+        {
             return false;
         }
 
@@ -503,7 +514,12 @@ mod tests {
             0.0,
             0.0,
         );
-        tf.find_within_area(*a.get(&2).unwrap(), ValidTarget::ENEMY, TargetFindAOETarget::Self_, &a);
+        tf.find_within_area(
+            *a.get(&2).unwrap(),
+            ValidTarget::ENEMY,
+            TargetFindAOETarget::Self_,
+            &a,
+        );
         let ids: Vec<u32> = tf.targets().iter().map(|v| v.actor_id).collect();
         assert!(ids.contains(&2));
         assert!(ids.contains(&3));
@@ -540,7 +556,12 @@ mod tests {
         );
         // Owner facing rotation=0 (positive-z in our coord system)
         // so target at z=+15 is in front; z=-5 is behind.
-        tf.find_within_area(*a.get(&4).unwrap(), ValidTarget::ENEMY, TargetFindAOETarget::Self_, &a);
+        tf.find_within_area(
+            *a.get(&4).unwrap(),
+            ValidTarget::ENEMY,
+            TargetFindAOETarget::Self_,
+            &a,
+        );
         let ids: Vec<u32> = tf.targets().iter().map(|v| v.actor_id).collect();
         // Target 4 is at z=15 which is outside the 10-yalm circle; shouldn't match.
         assert!(!ids.contains(&5)); // behind

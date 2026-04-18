@@ -104,7 +104,13 @@ fn arg_to_lua_param(arg: &LuaCommandArg) -> LuaParam {
         // it happens — preserve that.
         LuaCommandArg::Float(f) => LuaParam::String(f.to_string()),
         LuaCommandArg::String(s) => LuaParam::String(s.clone()),
-        LuaCommandArg::Bool(b) => if *b { LuaParam::True } else { LuaParam::False },
+        LuaCommandArg::Bool(b) => {
+            if *b {
+                LuaParam::True
+            } else {
+                LuaParam::False
+            }
+        }
         LuaCommandArg::Nil => LuaParam::Nil,
         LuaCommandArg::ActorId(id) => LuaParam::Actor(*id),
     }

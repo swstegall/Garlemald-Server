@@ -15,7 +15,8 @@ pub fn build_ping_response(actor_id: u32) -> SubPacket {
     let mut data = vec![0u8; 8];
     let mut c = Cursor::new(&mut data[..]);
     c.write_u32::<LittleEndian>(actor_id).unwrap();
-    c.write_u32::<LittleEndian>(utils::unix_timestamp()).unwrap();
+    c.write_u32::<LittleEndian>(utils::unix_timestamp())
+        .unwrap();
     SubPacket::new_with_flag(false, OP_PONG, 0, data)
 }
 

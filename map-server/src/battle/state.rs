@@ -224,7 +224,11 @@ impl BattleState {
         Self {
             kind: BattleStateKind::Inactive,
             body: BattleStateBody::Inactive {
-                end_ms: if duration_ms == 0 { 0 } else { now_ms + duration_ms },
+                end_ms: if duration_ms == 0 {
+                    0
+                } else {
+                    now_ms + duration_ms
+                },
             },
             owner_actor_id: owner,
             target_actor_id: 0,

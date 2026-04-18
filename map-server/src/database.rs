@@ -11,8 +11,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use rusqlite::{OptionalExtension, named_params};
 use common::db::ConnCallExt;
+use rusqlite::{OptionalExtension, named_params};
 use tokio_rusqlite::Connection;
 
 use crate::data::{InventoryItem, ItemData, ItemTag, SeamlessBoundary, ZoneEntrance};
@@ -81,7 +81,8 @@ impl Database {
     pub async fn load_zones(&self, server_ip: &str, server_port: u16) -> Result<Vec<ZoneRow>> {
         tracing::debug!(server_ip, server_port, "db: load_zones");
         let server_ip = server_ip.to_owned();
-        let rows = self.conn
+        let rows = self
+            .conn
             .call_db(move |c| {
                 let mut stmt = c.prepare(
                     r"SELECT id, zoneName, regionId, classPath,
@@ -120,7 +121,8 @@ impl Database {
     }
 
     pub async fn load_private_areas(&self) -> Result<Vec<PrivateAreaRow>> {
-        let rows = self.conn
+        let rows = self
+            .conn
             .call_db(|c| {
                 let mut stmt = c.prepare(
                     r"SELECT id, parentZoneId, privateAreaName, privateAreaType,
@@ -149,7 +151,8 @@ impl Database {
     }
 
     pub async fn load_zone_entrances(&self) -> Result<HashMap<u32, ZoneEntrance>> {
-        let rows = self.conn
+        let rows = self
+            .conn
             .call_db(|c| {
                 let mut stmt = c.prepare(
                     r"SELECT id, zoneId, spawnType, spawnX, spawnY, spawnZ, spawnRotation,
@@ -183,7 +186,8 @@ impl Database {
 
     pub async fn load_actor_classes(&self) -> Result<HashMap<u32, crate::npc::ActorClass>> {
         tracing::debug!("db: load_actor_classes");
-        let rows = self.conn
+        let rows = self
+            .conn
             .call_db(|c| {
                 let mut stmt = c.prepare(
                     r"SELECT ac.id, ac.classPath, ac.displayNameId, ac.propertyFlags,
@@ -217,7 +221,8 @@ impl Database {
     }
 
     pub async fn load_npc_spawn_locations(&self) -> Result<Vec<crate::zone::SpawnLocation>> {
-        let rows = self.conn
+        let rows = self
+            .conn
             .call_db(|c| {
                 let mut stmt = c.prepare(
                     r"SELECT actorClassId, uniqueId, zoneId,
@@ -250,7 +255,8 @@ impl Database {
     }
 
     pub async fn load_seamless_boundaries(&self) -> Result<HashMap<u32, Vec<SeamlessBoundary>>> {
-        let rows = self.conn
+        let rows = self
+            .conn
             .call_db(|c| {
                 let mut stmt = c.prepare(
                     r"SELECT id, regionId, zoneId1, zoneId2,
@@ -321,7 +327,8 @@ impl Database {
     // =======================================================================
 
     pub async fn get_item_gamedata(&self) -> Result<HashMap<u32, ItemData>> {
-        let rows = self.conn
+        let rows = self
+            .conn
             .call_db(|c| {
                 let mut stmt = c.prepare(
                     r"SELECT i.catalogID, i.name, i.singular, i.plural, i.icon, i.rarity,
@@ -366,7 +373,8 @@ impl Database {
     }
 
     pub async fn get_guildleve_gamedata(&self) -> Result<HashMap<u32, GuildleveGamedata>> {
-        let rows = self.conn
+        let rows = self
+            .conn
             .call_db(|c| {
                 let mut stmt = c.prepare(
                     r"SELECT id, zoneId, name, difficulty, leveType, rewardExp, rewardGil
@@ -396,7 +404,8 @@ impl Database {
     }
 
     pub async fn load_global_status_effect_list(&self) -> Result<HashMap<u32, StatusEffectDef>> {
-        let rows = self.conn
+        let rows = self
+            .conn
             .call_db(|c| {
                 let mut stmt = c.prepare(
                     r"SELECT id, name, flags, overwrite, tickMs, hidden, silentOnGain,
@@ -432,7 +441,8 @@ impl Database {
     pub async fn load_global_battle_command_list(
         &self,
     ) -> Result<(HashMap<u16, BattleCommand>, HashMap<(u8, i16), Vec<u16>>)> {
-        let rows = self.conn
+        let rows = self
+            .conn
             .call_db(|c| {
                 let mut stmt = c.prepare(
                     r#"SELECT id, name, classJob, lvl, requirements, mainTarget,
@@ -507,7 +517,10 @@ impl Database {
         let mut dict = HashMap::with_capacity(rows.len());
         let mut by_level: HashMap<(u8, i16), Vec<u16>> = HashMap::new();
         for bc in rows {
-            by_level.entry((bc.job, bc.level as i16)).or_default().push(bc.id);
+            by_level
+                .entry((bc.job, bc.level as i16))
+                .or_default()
+                .push(bc.id);
             dict.insert(bc.id, bc);
         }
         Ok((dict, by_level))
@@ -516,7 +529,8 @@ impl Database {
     pub async fn load_global_battle_trait_list(
         &self,
     ) -> Result<(HashMap<u16, BattleTrait>, HashMap<u8, Vec<u16>>)> {
-        let rows = self.conn
+        let rows = self
+            .conn
             .call_db(|c| {
                 let mut stmt = c.prepare(
                     "SELECT id, name, classJob, lvl, modifier, bonus FROM server_battle_traits",
@@ -552,7 +566,8 @@ impl Database {
 
     pub async fn load_player_character(&self, chara_id: u32) -> Result<Option<LoadedPlayer>> {
         tracing::debug!(chara_id, "db: load_player_character");
-        let basic = self.conn
+        let basic = self
+            .conn
             .call_db(move |c| {
                 let v = c
                     .query_row(
@@ -610,10 +625,19 @@ impl Database {
             player.current_zone_id = player.destination_zone_id;
         }
 
-        player.class_levels = self.load_class_levels_and_exp(chara_id).await.unwrap_or_default();
+        player.class_levels = self
+            .load_class_levels_and_exp(chara_id)
+            .await
+            .unwrap_or_default();
         player.parameter_save = self.load_parameter_save(chara_id).await.unwrap_or_default();
-        player.appearance = self.load_appearance_full(chara_id).await.unwrap_or_default();
-        player.status_effects = self.load_character_status_effects(chara_id).await.unwrap_or_default();
+        player.appearance = self
+            .load_appearance_full(chara_id)
+            .await
+            .unwrap_or_default();
+        player.status_effects = self
+            .load_character_status_effects(chara_id)
+            .await
+            .unwrap_or_default();
         player.chocobo = self.load_chocobo(chara_id).await.unwrap_or_default();
         player.timers = self.load_timers(chara_id).await.unwrap_or_default();
         player.hotbar = self
@@ -621,8 +645,14 @@ impl Database {
             .await
             .unwrap_or_default();
         player.quest_scenario = self.load_quest_scenario(chara_id).await.unwrap_or_default();
-        player.guildleves_local = self.load_guildleves_local(chara_id).await.unwrap_or_default();
-        player.guildleves_regional = self.load_guildleves_regional(chara_id).await.unwrap_or_default();
+        player.guildleves_local = self
+            .load_guildleves_local(chara_id)
+            .await
+            .unwrap_or_default();
+        player.guildleves_regional = self
+            .load_guildleves_regional(chara_id)
+            .await
+            .unwrap_or_default();
         player.npc_linkshells = self.load_npc_linkshells(chara_id).await.unwrap_or_default();
 
         for (target, ty) in [
@@ -633,7 +663,10 @@ impl Database {
             (&mut player.inventory_meldrequest, 4),
             (&mut player.inventory_loot, 5),
         ] {
-            *target = self.get_item_package(chara_id, ty).await.unwrap_or_default();
+            *target = self
+                .get_item_package(chara_id, ty)
+                .await
+                .unwrap_or_default();
         }
 
         player.equipment = self
@@ -697,7 +730,8 @@ impl Database {
     }
 
     async fn load_parameter_save(&self, chara_id: u32) -> Result<CharaParameterSave> {
-        let v = self.conn
+        let v = self
+            .conn
             .call_db(move |c| {
                 let v = c
                     .query_row(
@@ -722,7 +756,8 @@ impl Database {
     }
 
     async fn load_appearance_full(&self, chara_id: u32) -> Result<AppearanceFull> {
-        let v = self.conn
+        let v = self
+            .conn
             .call_db(move |c| {
                 let v = c
                     .query_row(
@@ -778,11 +813,9 @@ impl Database {
         Ok(v.unwrap_or_default())
     }
 
-    async fn load_character_status_effects(
-        &self,
-        chara_id: u32,
-    ) -> Result<Vec<StatusEffectEntry>> {
-        let rows = self.conn
+    async fn load_character_status_effects(&self, chara_id: u32) -> Result<Vec<StatusEffectEntry>> {
+        let rows = self
+            .conn
             .call_db(move |c| {
                 let mut stmt = c.prepare(
                     r"SELECT statusId, duration, magnitude, tick, tier, extra
@@ -807,7 +840,8 @@ impl Database {
     }
 
     async fn load_chocobo(&self, chara_id: u32) -> Result<ChocoboData> {
-        let v = self.conn
+        let v = self
+            .conn
             .call_db(move |c| {
                 let v = c
                     .query_row(
@@ -833,7 +867,8 @@ impl Database {
     async fn load_timers(&self, chara_id: u32) -> Result<[u32; 20]> {
         let cols = TIMER_COLUMNS.join(", ");
         let sql = format!("SELECT {cols} FROM characters_timers WHERE characterId = :cid");
-        let v = self.conn
+        let v = self
+            .conn
             .call_db(move |c| {
                 let v = c
                     .query_row(&sql, named_params! { ":cid": chara_id }, |r| {
@@ -851,7 +886,8 @@ impl Database {
     }
 
     async fn load_quest_scenario(&self, chara_id: u32) -> Result<Vec<QuestScenarioEntry>> {
-        let rows = self.conn
+        let rows = self
+            .conn
             .call_db(move |c| {
                 let mut stmt = c.prepare(
                     r"SELECT slot, questId, questData, questFlags, currentPhase
@@ -878,7 +914,8 @@ impl Database {
     }
 
     async fn load_guildleves_local(&self, chara_id: u32) -> Result<Vec<GuildleveLocalEntry>> {
-        let rows = self.conn
+        let rows = self
+            .conn
             .call_db(move |c| {
                 let mut stmt = c.prepare(
                     r"SELECT slot, questId, abandoned, completed
@@ -900,11 +937,9 @@ impl Database {
         Ok(rows)
     }
 
-    async fn load_guildleves_regional(
-        &self,
-        chara_id: u32,
-    ) -> Result<Vec<GuildleveRegionalEntry>> {
-        let rows = self.conn
+    async fn load_guildleves_regional(&self, chara_id: u32) -> Result<Vec<GuildleveRegionalEntry>> {
+        let rows = self
+            .conn
             .call_db(move |c| {
                 let mut stmt = c.prepare(
                     r"SELECT slot, guildleveId, abandoned, completed
@@ -927,7 +962,8 @@ impl Database {
     }
 
     async fn load_npc_linkshells(&self, chara_id: u32) -> Result<Vec<NpcLinkshellEntry>> {
-        let rows = self.conn
+        let rows = self
+            .conn
             .call_db(move |c| {
                 let mut stmt = c.prepare(
                     r"SELECT npcLinkshellId, isCalling, isExtra
@@ -1216,7 +1252,8 @@ impl Database {
     }
 
     pub async fn is_quest_completed(&self, chara_id: u32, quest_id: u32) -> Result<bool> {
-        let found = self.conn
+        let found = self
+            .conn
             .call_db(move |c| {
                 let v: Option<u32> = c
                     .query_row(
@@ -1237,7 +1274,8 @@ impl Database {
     // =======================================================================
 
     pub async fn get_equipment(&self, chara_id: u32, class_id: u16) -> Result<Vec<EquipmentSlot>> {
-        let rows = self.conn
+        let rows = self
+            .conn
             .call_db(move |c| {
                 let mut stmt = c.prepare(
                     r"SELECT equipSlot, itemId FROM characters_inventory_equipment
@@ -1245,12 +1283,15 @@ impl Database {
                       ORDER BY equipSlot",
                 )?;
                 let rows: Vec<EquipmentSlot> = stmt
-                    .query_map(named_params! { ":cid": chara_id, ":class": class_id }, |r| {
-                        Ok(EquipmentSlot {
-                            equip_slot: r.get::<_, u16>(0).unwrap_or_default(),
-                            item_id: r.get::<_, u64>(1).unwrap_or_default(),
-                        })
-                    })?
+                    .query_map(
+                        named_params! { ":cid": chara_id, ":class": class_id },
+                        |r| {
+                            Ok(EquipmentSlot {
+                                equip_slot: r.get::<_, u16>(0).unwrap_or_default(),
+                                item_id: r.get::<_, u64>(1).unwrap_or_default(),
+                            })
+                        },
+                    )?
                     .collect::<rusqlite::Result<_>>()?;
                 Ok(rows)
             })
@@ -1351,7 +1392,8 @@ impl Database {
     }
 
     pub async fn load_hotbar(&self, chara_id: u32, class_id: u8) -> Result<Vec<HotbarEntry>> {
-        let rows = self.conn
+        let rows = self
+            .conn
             .call_db(move |c| {
                 let mut stmt = c.prepare(
                     r"SELECT hotbarSlot, commandId, recastTime
@@ -1360,13 +1402,16 @@ impl Database {
                       ORDER BY hotbarSlot",
                 )?;
                 let rows: Vec<HotbarEntry> = stmt
-                    .query_map(named_params! { ":cid": chara_id, ":class": class_id }, |r| {
-                        Ok(HotbarEntry {
-                            hotbar_slot: r.get::<_, u16>(0).unwrap_or_default(),
-                            command_id: r.get::<_, u32>(1).unwrap_or_default(),
-                            recast_time: r.get::<_, u32>(2).unwrap_or_default(),
-                        })
-                    })?
+                    .query_map(
+                        named_params! { ":cid": chara_id, ":class": class_id },
+                        |r| {
+                            Ok(HotbarEntry {
+                                hotbar_slot: r.get::<_, u16>(0).unwrap_or_default(),
+                                command_id: r.get::<_, u32>(1).unwrap_or_default(),
+                                recast_time: r.get::<_, u32>(2).unwrap_or_default(),
+                            })
+                        },
+                    )?
                     .collect::<rusqlite::Result<_>>()?;
                 Ok(rows)
             })
@@ -1375,7 +1420,8 @@ impl Database {
     }
 
     pub async fn find_first_command_slot(&self, chara_id: u32, class_id: u8) -> Result<u16> {
-        let slots = self.conn
+        let slots = self
+            .conn
             .call_db(move |c| {
                 let mut stmt = c.prepare(
                     r"SELECT hotbarSlot FROM characters_hotbar
@@ -1463,7 +1509,8 @@ impl Database {
         modifiers: Option<&ItemModifiers>,
     ) -> Result<InventoryItem> {
         let modifiers = modifiers.cloned();
-        let item = self.conn
+        let item = self
+            .conn
             .call_db(move |c| {
                 c.execute(
                     r"INSERT INTO server_items (itemId, quantity, quality)
@@ -1549,9 +1596,7 @@ impl Database {
                         "UPDATE characters_inventory SET slot = :slot WHERE serverItemId = :iid",
                     )?;
                     for (slot, iid) in updates {
-                        stmt.execute(
-                            named_params! { ":slot": slot, ":iid": iid as i64 },
-                        )?;
+                        stmt.execute(named_params! { ":slot": slot, ":iid": iid as i64 })?;
                     }
                 }
                 tx.commit()?;
@@ -1623,7 +1668,8 @@ impl Database {
     // =======================================================================
 
     pub async fn get_latest_achievements(&self, chara_id: u32) -> Result<[u32; 5]> {
-        let rows = self.conn
+        let rows = self
+            .conn
             .call_db(move |c| {
                 let mut stmt = c.prepare(
                     r"SELECT ca.achievementId
@@ -1648,7 +1694,8 @@ impl Database {
     }
 
     pub async fn get_achievements(&self, chara_id: u32) -> Result<Vec<u32>> {
-        let rows = self.conn
+        let rows = self
+            .conn
             .call_db(move |c| {
                 let mut stmt = c.prepare(
                     r"SELECT ga.packetOffsetId
@@ -1671,7 +1718,8 @@ impl Database {
         chara_id: u32,
         achievement_id: u32,
     ) -> Result<(u32, u32)> {
-        let v = self.conn
+        let v = self
+            .conn
             .call_db(move |c| {
                 let v = c
                     .query_row(
@@ -1698,7 +1746,8 @@ impl Database {
         ls_crest: u16,
     ) -> Result<bool> {
         let ls_name = ls_name.to_owned();
-        let ok = self.conn
+        let ok = self
+            .conn
             .call_db(move |c| {
                 let r = c.execute(
                     r"INSERT INTO server_linkshells (name, master, crest)
@@ -1762,7 +1811,8 @@ impl Database {
 
     pub async fn is_ticket_open(&self, player_name: &str) -> Result<bool> {
         let player_name = player_name.to_owned();
-        let v = self.conn
+        let v = self
+            .conn
             .call_db(move |c| {
                 let v: Option<i64> = c
                     .query_row(
@@ -1792,7 +1842,8 @@ impl Database {
     }
 
     pub async fn get_faq_names(&self, lang_code: u32) -> Result<Vec<String>> {
-        let rows = self.conn
+        let rows = self
+            .conn
             .call_db(move |c| {
                 let mut stmt = c.prepare(
                     "SELECT title FROM supportdesk_faqs WHERE languageCode = :l ORDER BY slot",
@@ -1807,7 +1858,8 @@ impl Database {
     }
 
     pub async fn get_faq_body(&self, slot: u32, lang_code: u32) -> Result<String> {
-        let v = self.conn
+        let v = self
+            .conn
             .call_db(move |c| {
                 let v = c
                     .query_row(
@@ -1823,7 +1875,8 @@ impl Database {
     }
 
     pub async fn get_issues(&self, _lang_code: u32) -> Result<Vec<String>> {
-        let rows = self.conn
+        let rows = self
+            .conn
             .call_db(|c| {
                 let mut stmt = c.prepare("SELECT title FROM supportdesk_issues ORDER BY slot")?;
                 let rows: Vec<String> = stmt
@@ -1955,7 +2008,8 @@ impl Database {
         retainer_index: i32,
     ) -> Result<Option<(u32, String, u32)>> {
         let offset = (retainer_index - 1).max(0);
-        let v = self.conn
+        let v = self
+            .conn
             .call_db(move |c| {
                 let v = c
                     .query_row(

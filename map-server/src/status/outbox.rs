@@ -11,9 +11,17 @@ pub enum StatusEvent {
 
     /// `SetActorStatusPacket.BuildPacket(owner, index, statusId)` — write a
     /// 16-bit status id to a specific slot in `charaWork.status[]`.
-    PacketSetStatus { owner_actor_id: u32, slot_index: u16, status_id: u16 },
+    PacketSetStatus {
+        owner_actor_id: u32,
+        slot_index: u16,
+        status_id: u16,
+    },
     /// The corresponding end-time update in `charaWork.statusShownTime[]`.
-    PacketSetStatusTime { owner_actor_id: u32, slot_index: u16, expires_at: u32 },
+    PacketSetStatusTime {
+        owner_actor_id: u32,
+        slot_index: u16,
+        expires_at: u32,
+    },
     /// Container calls `owner.RecalculateStats()` — signal the game loop to
     /// recompute modifier-derived stats.
     RecalcStats { owner_actor_id: u32 },

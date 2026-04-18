@@ -154,8 +154,26 @@ Only required for full gameplay (zones, NPCs, items, etc.):
     [Server Setup step 2](#2-static-actor-data).
 
 Garlemald's SQLite schema is embedded at `common/sql/schema.sql` and
-applied automatically on first run. You do **not** need to import Project
-Meteor's SQL dumps.
+applied automatically on first run. Every `*.sql` file Project Meteor
+shipped under `Data/sql/` has already been ported to SQLite and bundled
+under `common/sql/seed/` as numbered migrations (`001_*.sql` ...), so
+`gamedata_items`, `gamedata_actor_class`, `server_zones`,
+`server_battle_commands`, `server_battlenpc_*`, etc. are populated
+automatically on first boot. You do **not** need to import anything by
+hand.
+
+If you pull a newer `project-meteor-mirror` and want Garlemald to pick
+up added seed rows, re-run the converter and rebuild:
+
+```bash
+./scripts/convert-meteor-sql.py     # regenerates common/sql/seed/
+cargo build --workspace --release
+```
+
+The converter is idempotent. On the next boot, any new migration files
+are applied inside their own transaction and recorded in the
+`schema_migrations` table so existing rows / live user accounts are
+never touched.
 
 ## Building from source
 
@@ -194,14 +212,22 @@ MinGW-w64 on `PATH`.
 
 ### 1. Database
 
-Nothing to configure. The first time any of the three binaries boots
+Nothing to configure. The first time any of the four binaries boots
 against a non-existent SQLite path, `common/sql/schema.sql` is applied
-automatically. The default path is `./data/garlemald.db`; override it in
-`configs/*.toml` or via `--db-path`.
+automatically, followed by every bundled seed migration under
+`common/sql/seed/`. The default path is `./data/garlemald.db`; override
+it in `configs/*.toml` or via `--db-path`.
 
 The schema seeds a single world row in `servers` (`id=1`, `Fernehalwes`,
 `127.0.0.1:54992`) so that lobby -> world handoff works out of the box
-for a localhost rig.
+for a localhost rig. The seed pass then fills `gamedata_items`,
+`gamedata_actor_*`, `server_zones`, `server_battle_commands`,
+`server_battlenpc_*`, and their friends from the Project Meteor dumps.
+
+A `schema_migrations` tracking table records which seed files have been
+applied; existing databases pick up only new migrations on upgrade,
+leaving user rows (`users`, `sessions`, `characters*`, `reserved_names`)
+untouched.
 
 ### 2. Static actor data
 
@@ -454,7 +480,9 @@ garlemald-server/
 |   |-- world.toml
 |   `-- map.toml
 |-- common/                shared crate (packet / crypto / db / logging)
-|   `-- sql/schema.sql     SQLite schema, applied on first run
+|   |-- build.rs           gzips every seed file at compile time
+|   |-- sql/schema.sql     SQLite schema, applied on first run
+|   `-- sql/seed/          ported Meteor SQL dumps (one migration per file)
 |-- web-server/            binary crate (login / signup HTTP forms)
 |-- lobby-server/          binary crate
 |-- world-server/          binary crate
@@ -474,11 +502,12 @@ garlemald-server/
 - **"Your session has expired, please login again."** No matching row
   in `sessions` for the token the client sent. Sign in again through
   the launcher — the web server will mint a fresh row.
-- **Map server logs `zones loaded zones=0`.** The `server_zones` table
-  is empty. Either import Project Meteor's zone seed
-  (`sqlite3 ./data/garlemald.db < ../project-meteor-mirror/Data/sql/server_zones.sql`
-  after porting it to SQLite syntax), or accept that the map server
-  will bind but serve no zones until the table is populated.
+- **Map server logs `zones loaded zones=0`.** Shouldn't happen out of
+  the box — the bundled `033_server_zones.sql` migration seeds 111
+  rows on first boot. If an older database was carried forward before
+  the migration runner existed, delete `./data/` and reboot, or run
+  `sqlite3 ./data/garlemald.db "DELETE FROM schema_migrations"` then
+  boot again to force the seed pass to re-apply.
 - **Build error `linker cc not found`.** Install Xcode CLI tools
   (`xcode-select --install`) on macOS, `build-essential` on
   Debian / Ubuntu, or MSVC Build Tools on Windows.

@@ -16,7 +16,21 @@ pub struct BattleTrait {
 }
 
 impl BattleTrait {
-    pub fn new(id: u16, name: impl Into<String>, job: u8, level: u8, modifier: u32, bonus: i32) -> Self {
-        Self { id, name: name.into(), job, level, modifier, bonus }
+    pub fn new(
+        id: u16,
+        name: impl Into<String>,
+        job: u8,
+        level: u8,
+        modifier: u32,
+        bonus: i32,
+    ) -> Self {
+        Self {
+            id,
+            name: name.into(),
+            job,
+            level,
+            modifier,
+            bonus,
+        }
     }
 }

@@ -62,7 +62,10 @@ pub async fn dispatch_director_event(
         DirectorEvent::MainCoroutine { director_id } => {
             tracing::debug!(director = director_id, "director main() (Lua hook pending)");
         }
-        DirectorEvent::EventStarted { director_id, player_actor_id } => {
+        DirectorEvent::EventStarted {
+            director_id,
+            player_actor_id,
+        } => {
             tracing::debug!(
                 director = director_id,
                 player = ?player_actor_id,
@@ -91,9 +94,7 @@ pub async fn dispatch_director_event(
                     None => continue,
                 };
                 // Music swap based on location bucket.
-                if let Some(music_id) =
-                    super::guildleve::GuildleveLocationMusic::pick(*location)
-                {
+                if let Some(music_id) = super::guildleve::GuildleveLocationMusic::pick(*location) {
                     let sub = tx::build_set_music(handle.session_id, music_id, 0);
                     client.send_bytes(sub.to_bytes()).await;
                 }
@@ -198,8 +199,16 @@ pub async fn dispatch_director_event(
                 let _ = director_id;
             }
         }
-        DirectorEvent::GuildleveAimUpdated { director_id, index, value }
-        | DirectorEvent::GuildleveUiUpdated { director_id, index, value } => {
+        DirectorEvent::GuildleveAimUpdated {
+            director_id,
+            index,
+            value,
+        }
+        | DirectorEvent::GuildleveUiUpdated {
+            director_id,
+            index,
+            value,
+        } => {
             tracing::debug!(
                 director = director_id,
                 index,
@@ -207,7 +216,13 @@ pub async fn dispatch_director_event(
                 "guildleve property update (ActorProperty packet pending)",
             );
         }
-        DirectorEvent::GuildleveMarkerUpdated { director_id, index, x, y, z } => {
+        DirectorEvent::GuildleveMarkerUpdated {
+            director_id,
+            index,
+            x,
+            y,
+            z,
+        } => {
             tracing::debug!(
                 director = director_id,
                 index,

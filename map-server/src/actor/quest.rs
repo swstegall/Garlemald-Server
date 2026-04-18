@@ -116,11 +116,17 @@ impl QuestJournal {
     }
 
     pub fn get(&self, quest_id: u32) -> Option<&Quest> {
-        self.slots.iter().flatten().find(|q| q.quest_id() == quest_id)
+        self.slots
+            .iter()
+            .flatten()
+            .find(|q| q.quest_id() == quest_id)
     }
 
     pub fn get_mut(&mut self, quest_id: u32) -> Option<&mut Quest> {
-        self.slots.iter_mut().flatten().find(|q| q.quest_id() == quest_id)
+        self.slots
+            .iter_mut()
+            .flatten()
+            .find(|q| q.quest_id() == quest_id)
     }
 
     pub fn add(&mut self, quest: Quest) -> Option<usize> {

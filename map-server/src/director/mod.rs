@@ -24,9 +24,9 @@ pub mod outbox;
 pub use director::{Director, DirectorKind};
 pub use dispatcher::dispatch_director_event;
 pub use guildleve::{
-    guildleve_start_animation, guildleve_script_for_plate, GuildleveDirector, GuildleveLocationMusic,
     GL_TEXT_ABANDON, GL_TEXT_COMPLETE, GL_TEXT_REWARD_EXP, GL_TEXT_REWARD_GIL, GL_TEXT_START,
-    GL_TEXT_TIME_LIMIT,
+    GL_TEXT_TIME_LIMIT, GuildleveDirector, GuildleveLocationMusic, guildleve_script_for_plate,
+    guildleve_start_animation,
 };
 pub use guildleve_work::GuildleveWork;
 pub use outbox::{DirectorEvent, DirectorOutbox};
@@ -43,8 +43,19 @@ mod integration_tests {
 
     fn new_area() -> AreaCore {
         AreaCore::new(
-            100, "FieldCoastline", 103, "/Area/Zone/Coastline", 0, 0, 0,
-            false, false, false, false, false, AreaKind::Zone,
+            100,
+            "FieldCoastline",
+            103,
+            "/Area/Zone/Coastline",
+            0,
+            0,
+            0,
+            false,
+            false,
+            false,
+            false,
+            false,
+            AreaKind::Zone,
         )
     }
 
@@ -59,9 +70,8 @@ mod integration_tests {
     #[test]
     fn area_creates_guildleve_director_with_routed_script() {
         let mut area = new_area();
-        let id = area.create_guildleve_director(
-            123_456, 3, 0xA000_0001, 20_024, 1, 600, [5, 0, 0, 0],
-        );
+        let id =
+            area.create_guildleve_director(123_456, 3, 0xA000_0001, 20_024, 1, 600, [5, 0, 0, 0]);
         let gl = area.guildleve_director(id).expect("present");
         assert_eq!(
             gl.base.director_script_path,
@@ -73,9 +83,8 @@ mod integration_tests {
     #[test]
     fn full_guildleve_lifecycle_end_to_end() {
         let mut area = new_area();
-        let id = area.create_guildleve_director(
-            123_456, 3, 0xA000_0001, 20_024, 1, 600, [5, 0, 0, 0],
-        );
+        let id =
+            area.create_guildleve_director(123_456, 3, 0xA000_0001, 20_024, 1, 600, [5, 0, 0, 0]);
 
         // Start + add player + start the leve itself.
         let mut outbox = DirectorOutbox::new();
@@ -86,7 +95,8 @@ mod integration_tests {
                 true,
                 &mut outbox,
             );
-            gl.base.add_member(0xA000_0001, /* player */ true, &mut outbox);
+            gl.base
+                .add_member(0xA000_0001, /* player */ true, &mut outbox);
             gl.start_guildleve(1_000, &mut outbox);
         }
         outbox.drain();
@@ -121,12 +131,18 @@ mod integration_tests {
             gl.base.end(&mut ob3);
         }
         let end_events = ob3.drain();
-        assert!(end_events
-            .iter()
-            .any(|e| matches!(e, DirectorEvent::GuildleveEnded { was_completed: true, .. })));
-        assert!(end_events
-            .iter()
-            .any(|e| matches!(e, DirectorEvent::DirectorEnded { .. })));
+        assert!(end_events.iter().any(|e| matches!(
+            e,
+            DirectorEvent::GuildleveEnded {
+                was_completed: true,
+                ..
+            }
+        )));
+        assert!(
+            end_events
+                .iter()
+                .any(|e| matches!(e, DirectorEvent::DirectorEnded { .. }))
+        );
 
         helper.remove_director(id, &mut ob2, 0xA000_0001);
         assert!(helper.guildleve_director().is_none());
@@ -138,9 +154,8 @@ mod integration_tests {
     #[test]
     fn guildleve_abandon_tears_director_down() {
         let mut area = new_area();
-        let id = area.create_guildleve_director(
-            999_999, 1, 0xA000_0001, 20_021, 2, 300, [3, 0, 0, 0],
-        );
+        let id =
+            area.create_guildleve_director(999_999, 1, 0xA000_0001, 20_021, 2, 300, [3, 0, 0, 0]);
         let mut ob = DirectorOutbox::new();
         {
             let gl = area.guildleve_director_mut(id).unwrap();
@@ -151,11 +166,15 @@ mod integration_tests {
             gl.abandon_guildleve(1_100, &mut ob);
         }
         let events = ob.drain();
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, DirectorEvent::GuildleveAbandoned { .. })));
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, DirectorEvent::DirectorEnded { .. })));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, DirectorEvent::GuildleveAbandoned { .. }))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, DirectorEvent::DirectorEnded { .. }))
+        );
     }
 }

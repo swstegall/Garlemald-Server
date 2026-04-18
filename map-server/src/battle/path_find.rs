@@ -41,14 +41,26 @@ impl std::ops::BitOr for PathFindFlags {
 /// (`StraightLineNavmesh`) returns a single waypoint equal to the
 /// destination.
 pub trait NavmeshProvider {
-    fn get_path(&self, start: Vector3, end: Vector3, step_size: f32, max_points: usize) -> Vec<Vector3>;
+    fn get_path(
+        &self,
+        start: Vector3,
+        end: Vector3,
+        step_size: f32,
+        max_points: usize,
+    ) -> Vec<Vector3>;
 }
 
 /// Fallback "navmesh" — straight-line, no obstacle avoidance.
 pub struct StraightLineNavmesh;
 
 impl NavmeshProvider for StraightLineNavmesh {
-    fn get_path(&self, start: Vector3, end: Vector3, step_size: f32, max_points: usize) -> Vec<Vector3> {
+    fn get_path(
+        &self,
+        start: Vector3,
+        end: Vector3,
+        step_size: f32,
+        max_points: usize,
+    ) -> Vec<Vector3> {
         let dx = end.x - start.x;
         let dy = end.y - start.y;
         let dz = end.z - start.z;

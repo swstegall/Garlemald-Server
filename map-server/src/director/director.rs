@@ -147,11 +147,7 @@ impl Director {
     ) {
         if let Some(cp) = class_path {
             self.class_path = cp.clone();
-            self.class_name = cp
-                .rsplit('/')
-                .next()
-                .unwrap_or(&cp)
-                .to_string();
+            self.class_name = cp.rsplit('/').next().unwrap_or(&cp).to_string();
         }
         self.generate_actor_name(&format!("field{:05}", self.zone_id));
         self.is_created = true;
@@ -214,12 +210,7 @@ impl Director {
 
     /// Remove an actor. If no players remain and we're not already
     /// deleting, triggers an `end()` sweep.
-    pub fn remove_member(
-        &mut self,
-        actor_id: u32,
-        is_player: bool,
-        outbox: &mut DirectorOutbox,
-    ) {
+    pub fn remove_member(&mut self, actor_id: u32, is_player: bool, outbox: &mut DirectorOutbox) {
         let existed = self.members.remove(&actor_id);
         if is_player {
             self.player_members.remove(&actor_id);
@@ -298,8 +289,7 @@ fn abbreviate_zone_name(name: &str) -> String {
 /// `Utils.ToStringBase63` port. Uses the custom alphabet in the C# source
 /// (0-9, a-z, A-Z, `_`). Returns an ASCII string.
 pub fn to_base63(mut n: u32) -> String {
-    const ALPHABET: &[u8; 63] =
-        b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_";
+    const ALPHABET: &[u8; 63] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_";
     if n == 0 {
         return "0".to_string();
     }
@@ -327,11 +317,7 @@ mod tests {
     fn start_emits_started_and_main_events() {
         let mut d = Director::new(1, 100, "Weather/Default", false);
         let mut ob = DirectorOutbox::new();
-        d.start(
-            Some("/Area/Director/Weather/Default".into()),
-            true,
-            &mut ob,
-        );
+        d.start(Some("/Area/Director/Weather/Default".into()), true, &mut ob);
         assert!(d.is_created());
         let events = ob.drain();
         assert!(matches!(events[0], DirectorEvent::DirectorStarted { .. }));
@@ -351,9 +337,11 @@ mod tests {
         d.remove_member(0xA000_0001, true, &mut ob);
         assert!(d.is_deleted());
         let events = ob.drain();
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, DirectorEvent::DirectorEnded { .. })));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, DirectorEvent::DirectorEnded { .. }))
+        );
     }
 
     #[test]

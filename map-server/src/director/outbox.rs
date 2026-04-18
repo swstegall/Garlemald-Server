@@ -18,10 +18,15 @@ pub enum DirectorEvent {
     },
     /// Director cleanup — broadcast `RemoveActorPacket` to members,
     /// delete the content group, purge from zone registry.
-    DirectorEnded { director_id: u32, zone_id: u32 },
+    DirectorEnded {
+        director_id: u32,
+        zone_id: u32,
+    },
 
     /// `main(director, contentGroup)` coroutine should start.
-    MainCoroutine { director_id: u32 },
+    MainCoroutine {
+        director_id: u32,
+    },
     /// Script-driven `onEventStarted` from the player or director.
     EventStarted {
         director_id: u32,
@@ -59,7 +64,10 @@ pub enum DirectorEvent {
         was_completed: bool,
         completion_time_seconds: u32,
     },
-    GuildleveAbandoned { director_id: u32, guildleve_id: u32 },
+    GuildleveAbandoned {
+        director_id: u32,
+        guildleve_id: u32,
+    },
     /// Property update: `guildleveWork.aimNumNow[i] = value`.
     GuildleveAimUpdated {
         director_id: u32,
@@ -81,7 +89,9 @@ pub enum DirectorEvent {
         z: f32,
     },
     /// Full property resync — used on zone-in or after big state changes.
-    GuildleveSyncAll { director_id: u32 },
+    GuildleveSyncAll {
+        director_id: u32,
+    },
 }
 
 #[derive(Debug, Default)]

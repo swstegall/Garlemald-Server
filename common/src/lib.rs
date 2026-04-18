@@ -13,6 +13,7 @@ pub mod hash_table;
 pub mod logging;
 pub mod luaparam;
 pub mod math;
+pub mod migrations;
 pub mod packet;
 pub mod subpacket;
 pub mod utils;

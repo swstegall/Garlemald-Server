@@ -182,12 +182,8 @@ impl AreaCore {
         has_content_group: bool,
     ) -> u32 {
         let local_id = self.alloc_director_id();
-        let director = crate::director::Director::new(
-            local_id,
-            self.actor_id,
-            script_path,
-            has_content_group,
-        );
+        let director =
+            crate::director::Director::new(local_id, self.actor_id, script_path, has_content_group);
         let id = director.actor_id;
         self.directors.insert(id, director);
         id
@@ -239,10 +235,7 @@ impl AreaCore {
         self.directors.get_mut(&actor_id)
     }
 
-    pub fn guildleve_director(
-        &self,
-        actor_id: u32,
-    ) -> Option<&crate::director::GuildleveDirector> {
+    pub fn guildleve_director(&self, actor_id: u32) -> Option<&crate::director::GuildleveDirector> {
         self.guildleve_directors.get(&actor_id)
     }
 
@@ -318,7 +311,10 @@ impl AreaCore {
         if let Some(prev) = self.actors.insert(actor.actor_id, actor) {
             let prev_cell = prev.grid;
             if prev_cell != cell
-                && let Some(pos) = self.cell(prev_cell).iter().position(|&id| id == actor.actor_id)
+                && let Some(pos) = self
+                    .cell(prev_cell)
+                    .iter()
+                    .position(|&id| id == actor.actor_id)
             {
                 self.cell_mut(prev_cell).remove(pos);
             } else {
@@ -451,7 +447,12 @@ impl AreaCore {
             return Vec::new();
         };
         let radius_cells = ((check_distance / BOUNDING_GRID_SIZE as f32).ceil() as i32).max(0);
-        self.collect_actors_in_cells(center.grid.0, center.grid.1, radius_cells, Some(center_actor_id))
+        self.collect_actors_in_cells(
+            center.grid.0,
+            center.grid.1,
+            radius_cells,
+            Some(center_actor_id),
+        )
     }
 
     /// Filter-specialized range query — same as `actors_around` but only
@@ -609,7 +610,18 @@ mod tests {
 
     fn mk_area() -> Area {
         Area::new(
-            100, "test_zone", 1, "/Area/Zone/TestZone", 0, 0, 0, false, false, false, false, false,
+            100,
+            "test_zone",
+            1,
+            "/Area/Zone/TestZone",
+            0,
+            0,
+            0,
+            false,
+            false,
+            false,
+            false,
+            false,
         )
     }
 
@@ -630,7 +642,8 @@ mod tests {
     fn add_and_remove_actor() {
         let mut area = mk_area();
         let mut ob = AreaOutbox::new();
-        area.core.add_actor(actor(1, 0.0, 0.0, ActorKind::Player), &mut ob);
+        area.core
+            .add_actor(actor(1, 0.0, 0.0, ActorKind::Player), &mut ob);
         assert_eq!(area.core.actor_count(), 1);
         assert!(area.core.contains(1));
         area.core.remove_actor(1, &mut ob);
@@ -644,25 +657,35 @@ mod tests {
     fn update_position_crosses_cell_boundary() {
         let mut area = mk_area();
         let mut ob = AreaOutbox::new();
-        area.core.add_actor(actor(1, 0.0, 0.0, ActorKind::Player), &mut ob);
+        area.core
+            .add_actor(actor(1, 0.0, 0.0, ActorKind::Player), &mut ob);
         ob.drain();
 
         // Move within the same cell — no ActorMoved event.
-        area.core.update_actor_position(1, Vector3::new(10.0, 0.0, 10.0), &mut ob);
+        area.core
+            .update_actor_position(1, Vector3::new(10.0, 0.0, 10.0), &mut ob);
         assert!(ob.events.is_empty());
 
         // Move across a cell boundary.
-        area.core.update_actor_position(1, Vector3::new(60.0, 0.0, 0.0), &mut ob);
-        assert!(ob.events.iter().any(|e| matches!(e, AreaEvent::ActorMoved { .. })));
+        area.core
+            .update_actor_position(1, Vector3::new(60.0, 0.0, 0.0), &mut ob);
+        assert!(
+            ob.events
+                .iter()
+                .any(|e| matches!(e, AreaEvent::ActorMoved { .. }))
+        );
     }
 
     #[test]
     fn actors_around_finds_neighbors_only() {
         let mut area = mk_area();
         let mut ob = AreaOutbox::new();
-        area.core.add_actor(actor(1, 0.0, 0.0, ActorKind::Player), &mut ob);
-        area.core.add_actor(actor(2, 10.0, 0.0, ActorKind::BattleNpc), &mut ob);
-        area.core.add_actor(actor(3, 1000.0, 0.0, ActorKind::BattleNpc), &mut ob);
+        area.core
+            .add_actor(actor(1, 0.0, 0.0, ActorKind::Player), &mut ob);
+        area.core
+            .add_actor(actor(2, 10.0, 0.0, ActorKind::BattleNpc), &mut ob);
+        area.core
+            .add_actor(actor(3, 1000.0, 0.0, ActorKind::BattleNpc), &mut ob);
         ob.drain();
 
         let near = area.core.actors_around(1, 50.0);
@@ -675,12 +698,24 @@ mod tests {
     #[test]
     fn isolation_flag_filters_players() {
         let mut area = Area::new(
-            100, "instance", 1, "/Area/Zone/Instance", 0, 0, 0,
-            /* is_isolated */ true, false, false, false, false,
+            100,
+            "instance",
+            1,
+            "/Area/Zone/Instance",
+            0,
+            0,
+            0,
+            /* is_isolated */ true,
+            false,
+            false,
+            false,
+            false,
         );
         let mut ob = AreaOutbox::new();
-        area.core.add_actor(actor(1, 0.0, 0.0, ActorKind::BattleNpc), &mut ob);
-        area.core.add_actor(actor(2, 10.0, 0.0, ActorKind::Player), &mut ob);
+        area.core
+            .add_actor(actor(1, 0.0, 0.0, ActorKind::BattleNpc), &mut ob);
+        area.core
+            .add_actor(actor(2, 10.0, 0.0, ActorKind::Player), &mut ob);
         ob.drain();
 
         let near = area.core.actors_around(1, 50.0);
@@ -690,7 +725,18 @@ mod tests {
     #[test]
     fn broadcast_suppressed_in_isolated_area() {
         let area = Area::new(
-            100, "instance", 1, "/Area/Zone/Instance", 0, 0, 0, true, false, false, false, false,
+            100,
+            "instance",
+            1,
+            "/Area/Zone/Instance",
+            0,
+            0,
+            0,
+            true,
+            false,
+            false,
+            false,
+            false,
         );
         let mut ob = AreaOutbox::new();
         area.broadcast_around_actor(1, 0x1234, vec![1, 2, 3], &mut ob);
@@ -701,9 +747,12 @@ mod tests {
     fn all_of_kind_filters_correctly() {
         let mut area = mk_area();
         let mut ob = AreaOutbox::new();
-        area.core.add_actor(actor(1, 0.0, 0.0, ActorKind::Player), &mut ob);
-        area.core.add_actor(actor(2, 10.0, 0.0, ActorKind::BattleNpc), &mut ob);
-        area.core.add_actor(actor(3, 20.0, 0.0, ActorKind::BattleNpc), &mut ob);
+        area.core
+            .add_actor(actor(1, 0.0, 0.0, ActorKind::Player), &mut ob);
+        area.core
+            .add_actor(actor(2, 10.0, 0.0, ActorKind::BattleNpc), &mut ob);
+        area.core
+            .add_actor(actor(3, 20.0, 0.0, ActorKind::BattleNpc), &mut ob);
         assert_eq!(area.core.all_players().len(), 1);
         assert_eq!(area.core.all_battle_npcs().len(), 2);
     }
@@ -716,7 +765,11 @@ mod tests {
         assert_eq!(area.core.weather_normal, 5);
         assert!(matches!(
             ob.events[0],
-            AreaEvent::WeatherChange { weather_id: 5, target_actor_id: Some(42), .. }
+            AreaEvent::WeatherChange {
+                weather_id: 5,
+                target_actor_id: Some(42),
+                ..
+            }
         ));
     }
 }

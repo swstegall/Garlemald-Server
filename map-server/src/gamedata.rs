@@ -102,7 +102,10 @@ pub struct CharaBattleSave {
 #[allow(clippy::derivable_impls)]
 impl Default for CharaBattleSave {
     fn default() -> Self {
-        Self { skill_level: [0; 42], skill_point: [0; 42] }
+        Self {
+            skill_level: [0; 42],
+            skill_point: [0; 42],
+        }
     }
 }
 
@@ -418,4 +421,3 @@ pub struct ItemDealingInfo {
     pub dealing_tag: u64,
     pub bazaar_mode: u8,
 }
-

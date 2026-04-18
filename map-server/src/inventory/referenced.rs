@@ -47,7 +47,9 @@ impl ReferencedItemPackage {
     }
 
     pub fn get_at_slot(&self, slot: u16) -> Option<&InventoryItem> {
-        self.reference_list.get(slot as usize).and_then(|o| o.as_ref())
+        self.reference_list
+            .get(slot as usize)
+            .and_then(|o| o.as_ref())
     }
 
     /// Bulk-replace the whole equipment vector (used right after
@@ -58,17 +60,22 @@ impl ReferencedItemPackage {
     }
 
     /// `Set(ushort[], ushort[], ushort)` batched variant.
-    pub fn set_many(
-        &mut self,
-        assignments: &[(u16, InventoryItem)],
-        outbox: &mut InventoryOutbox,
-    ) {
+    pub fn set_many(&mut self, assignments: &[(u16, InventoryItem)], outbox: &mut InventoryOutbox) {
         for (position, item) in assignments {
-            self.set_internal(*position, item.clone(), outbox, /* send_single */ false);
+            self.set_internal(
+                *position,
+                item.clone(),
+                outbox,
+                /* send_single */ false,
+            );
         }
-        outbox.push(InventoryEvent::PacketBeginChange { owner_actor_id: self.owner_actor_id });
+        outbox.push(InventoryEvent::PacketBeginChange {
+            owner_actor_id: self.owner_actor_id,
+        });
         self.send_update(outbox);
-        outbox.push(InventoryEvent::PacketEndChange { owner_actor_id: self.owner_actor_id });
+        outbox.push(InventoryEvent::PacketEndChange {
+            owner_actor_id: self.owner_actor_id,
+        });
     }
 
     /// `Set(ushort position, InventoryItem item)` — equip one item.
@@ -94,20 +101,19 @@ impl ReferencedItemPackage {
         // Mark new source slot dirty so its resend reflects the link flag.
         source_package.mark_dirty(&item);
 
-        outbox.push(InventoryEvent::PacketBeginChange { owner_actor_id: self.owner_actor_id });
+        outbox.push(InventoryEvent::PacketBeginChange {
+            owner_actor_id: self.owner_actor_id,
+        });
         if old_source_code == Some(source_package.code()) {
             source_package.send_update(outbox);
         }
         self.send_single_update(position, outbox);
-        outbox.push(InventoryEvent::PacketEndChange { owner_actor_id: self.owner_actor_id });
+        outbox.push(InventoryEvent::PacketEndChange {
+            owner_actor_id: self.owner_actor_id,
+        });
     }
 
-    pub fn set(
-        &mut self,
-        position: u16,
-        item: InventoryItem,
-        outbox: &mut InventoryOutbox,
-    ) {
+    pub fn set(&mut self, position: u16, item: InventoryItem, outbox: &mut InventoryOutbox) {
         self.set_internal(position, item, outbox, /* send_single */ true);
     }
 
@@ -130,9 +136,13 @@ impl ReferencedItemPackage {
         }
         self.reference_list[position as usize] = Some(item);
         if send_single {
-            outbox.push(InventoryEvent::PacketBeginChange { owner_actor_id: self.owner_actor_id });
+            outbox.push(InventoryEvent::PacketBeginChange {
+                owner_actor_id: self.owner_actor_id,
+            });
             self.send_single_update(position, outbox);
-            outbox.push(InventoryEvent::PacketEndChange { owner_actor_id: self.owner_actor_id });
+            outbox.push(InventoryEvent::PacketEndChange {
+                owner_actor_id: self.owner_actor_id,
+            });
         }
     }
 
@@ -147,9 +157,13 @@ impl ReferencedItemPackage {
             });
         }
         self.reference_list[position as usize] = None;
-        outbox.push(InventoryEvent::PacketBeginChange { owner_actor_id: self.owner_actor_id });
+        outbox.push(InventoryEvent::PacketBeginChange {
+            owner_actor_id: self.owner_actor_id,
+        });
         self.send_single_update(position, outbox);
-        outbox.push(InventoryEvent::PacketEndChange { owner_actor_id: self.owner_actor_id });
+        outbox.push(InventoryEvent::PacketEndChange {
+            owner_actor_id: self.owner_actor_id,
+        });
     }
 
     pub fn clear_all(&mut self, outbox: &mut InventoryOutbox) {
@@ -164,9 +178,13 @@ impl ReferencedItemPackage {
                 self.reference_list[i] = None;
             }
         }
-        outbox.push(InventoryEvent::PacketBeginChange { owner_actor_id: self.owner_actor_id });
+        outbox.push(InventoryEvent::PacketBeginChange {
+            owner_actor_id: self.owner_actor_id,
+        });
         self.send_update(outbox);
-        outbox.push(InventoryEvent::PacketEndChange { owner_actor_id: self.owner_actor_id });
+        outbox.push(InventoryEvent::PacketEndChange {
+            owner_actor_id: self.owner_actor_id,
+        });
     }
 
     pub fn send_single_update(&self, position: u16, outbox: &mut InventoryOutbox) {
@@ -182,7 +200,9 @@ impl ReferencedItemPackage {
             position,
             item,
         });
-        outbox.push(InventoryEvent::PacketSetEnd { owner_actor_id: self.owner_actor_id });
+        outbox.push(InventoryEvent::PacketSetEnd {
+            owner_actor_id: self.owner_actor_id,
+        });
     }
 
     pub fn send_update(&self, outbox: &mut InventoryOutbox) {
@@ -204,7 +224,9 @@ impl ReferencedItemPackage {
                 items,
             });
         }
-        outbox.push(InventoryEvent::PacketSetEnd { owner_actor_id: self.owner_actor_id });
+        outbox.push(InventoryEvent::PacketSetEnd {
+            owner_actor_id: self.owner_actor_id,
+        });
     }
 
     /// Mirror of `SendUpdateAsItemPackage` — used when examining a peer's
@@ -238,7 +260,9 @@ impl ReferencedItemPackage {
                 items,
             });
         }
-        outbox.push(InventoryEvent::PacketSetEnd { owner_actor_id: self.owner_actor_id });
+        outbox.push(InventoryEvent::PacketSetEnd {
+            owner_actor_id: self.owner_actor_id,
+        });
     }
 }
 
@@ -267,8 +291,18 @@ mod tests {
         eq.set(5, mk_item(1001, 42), &mut outbox);
 
         let kinds: Vec<&InventoryEvent> = outbox.events.iter().collect();
-        assert!(matches!(kinds[0], InventoryEvent::DbEquip { equip_slot: 5, unique_item_id: 42, .. }));
-        assert!(matches!(kinds.last(), Some(InventoryEvent::PacketEndChange { .. })));
+        assert!(matches!(
+            kinds[0],
+            InventoryEvent::DbEquip {
+                equip_slot: 5,
+                unique_item_id: 42,
+                ..
+            }
+        ));
+        assert!(matches!(
+            kinds.last(),
+            Some(InventoryEvent::PacketEndChange { .. })
+        ));
         assert_eq!(eq.get_at_slot(5).unwrap().unique_id, 42);
     }
 
@@ -282,7 +316,10 @@ mod tests {
         eq.clear(5, &mut outbox);
 
         assert!(
-            outbox.events.iter().any(|e| matches!(e, InventoryEvent::DbUnequip { equip_slot: 5, .. }))
+            outbox
+                .events
+                .iter()
+                .any(|e| matches!(e, InventoryEvent::DbUnequip { equip_slot: 5, .. }))
         );
         assert!(eq.get_at_slot(5).is_none());
     }
@@ -311,6 +348,11 @@ mod tests {
         eq.toggle_db_write(false);
         let mut outbox = InventoryOutbox::new();
         eq.set(0, mk_item(1001, 1), &mut outbox);
-        assert!(!outbox.events.iter().any(|e| matches!(e, InventoryEvent::DbEquip { .. })));
+        assert!(
+            !outbox
+                .events
+                .iter()
+                .any(|e| matches!(e, InventoryEvent::DbEquip { .. }))
+        );
     }
 }

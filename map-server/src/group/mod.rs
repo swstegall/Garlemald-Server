@@ -26,18 +26,16 @@ pub mod party;
 pub mod relation;
 pub mod types;
 
-pub use dispatcher::{dispatch_group_event, GroupResolver, PartyResolver};
+pub use dispatcher::{GroupResolver, PartyResolver, dispatch_group_event};
 
-pub use content::{new_guildleve_content_group, ContentGroup, GLContentGroup};
+pub use content::{ContentGroup, GLContentGroup, new_guildleve_content_group};
 pub use monster::MonsterParty;
 pub use outbox::{GroupEvent, GroupOutbox};
 pub use party::{Party, PartyWork};
-pub use relation::{
-    RelationGroup, RetainerMeetingRelationGroup, TradeGroup, RELATION_HOST_MARKER,
-};
+pub use relation::{RELATION_HOST_MARKER, RelationGroup, RetainerMeetingRelationGroup, TradeGroup};
 pub use types::{
-    chunk_bucket, ChunkBucket, GroupKind, GroupMemberRef, GroupTypeId, PARTY_MAX_MEMBERS,
-    RELATION_COMMAND_TRADE,
+    ChunkBucket, GroupKind, GroupMemberRef, GroupTypeId, PARTY_MAX_MEMBERS, RELATION_COMMAND_TRADE,
+    chunk_bucket,
 };
 
 // ---------------------------------------------------------------------------
@@ -76,21 +74,32 @@ mod integration_tests {
         leader.clear_party();
         assert!(leader.current_party_id.is_none());
         party.remove_member(0xA000_0002, &mut ob);
-        assert!(ob
-            .events
-            .iter()
-            .any(|e| matches!(e, GroupEvent::PartyEmptied { .. })));
+        assert!(
+            ob.events
+                .iter()
+                .any(|e| matches!(e, GroupEvent::PartyEmptied { .. }))
+        );
     }
 
     #[test]
     fn content_group_ties_to_director_and_player_state() {
         let mut area = AreaCore::new(
-            100, "FieldCoastline", 103, "/Area/Zone/Coastline", 0, 0, 0,
-            false, false, false, false, false, AreaKind::Zone,
+            100,
+            "FieldCoastline",
+            103,
+            "/Area/Zone/Coastline",
+            0,
+            0,
+            0,
+            false,
+            false,
+            false,
+            false,
+            false,
+            AreaKind::Zone,
         );
-        let director_id = area.create_guildleve_director(
-            123_456, 3, 0xA000_0001, 20_024, 1, 600, [5, 0, 0, 0],
-        );
+        let director_id =
+            area.create_guildleve_director(123_456, 3, 0xA000_0001, 20_024, 1, 600, [5, 0, 0, 0]);
         let mut dir_ob = DirectorOutbox::new();
         {
             let gl: &mut GuildleveDirector = area.guildleve_director_mut(director_id).unwrap();
@@ -115,10 +124,11 @@ mod integration_tests {
         }
 
         cg.check_destroy(|_| false, &mut ob);
-        assert!(ob
-            .events
-            .iter()
-            .any(|e| matches!(e, GroupEvent::ContentGroupAutoDelete { .. })));
+        assert!(
+            ob.events
+                .iter()
+                .any(|e| matches!(e, GroupEvent::ContentGroupAutoDelete { .. }))
+        );
     }
 
     #[test]

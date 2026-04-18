@@ -19,4 +19,7 @@ chrono.workspace = true
 rusqlite.workspace = true
 tokio-rusqlite.workspace = true
 
+[build-dependencies]
+flate2 = { workspace = true }
+
 [dev-dependencies]

@@ -36,7 +36,9 @@ impl HandshakePacket {
         let mut c = Cursor::new(data);
         c.seek(SeekFrom::Start(4))?;
         let s = read_null_term_ascii(&mut c, 10);
-        Ok(Self { actor_id: s.trim().parse().unwrap_or(0) })
+        Ok(Self {
+            actor_id: s.trim().parse().unwrap_or(0),
+        })
     }
 }
 
@@ -49,7 +51,9 @@ pub struct PingPacket {
 impl PingPacket {
     pub fn parse(data: &[u8]) -> Result<Self> {
         let mut c = Cursor::new(data);
-        Ok(Self { time: c.read_u32::<LittleEndian>()? })
+        Ok(Self {
+            time: c.read_u32::<LittleEndian>()?,
+        })
     }
 }
 
@@ -63,7 +67,9 @@ impl Handshake0x02Packet {
     pub fn parse(data: &[u8]) -> Result<Self> {
         let mut c = Cursor::new(data);
         c.seek(SeekFrom::Start(0x14))?;
-        Ok(Self { unknown: c.read_u32::<LittleEndian>()? })
+        Ok(Self {
+            unknown: c.read_u32::<LittleEndian>()?,
+        })
     }
 }
 
@@ -79,7 +85,10 @@ pub struct SessionBeginRequest {
 
 impl SessionBeginRequest {
     pub fn parse(sub_source_id: u32, data: &[u8]) -> Result<Self> {
-        Ok(Self { session_id: sub_source_id, is_login: data.first().copied().unwrap_or(0) != 0 })
+        Ok(Self {
+            session_id: sub_source_id,
+            is_login: data.first().copied().unwrap_or(0) != 0,
+        })
     }
 }
 
@@ -139,7 +148,11 @@ impl PartySyncPacket {
         for _ in 0..n {
             member_actor_ids.push(c.read_u32::<LittleEndian>()?);
         }
-        Ok(Self { party_group_id, owner, member_actor_ids })
+        Ok(Self {
+            party_group_id,
+            owner,
+            member_actor_ids,
+        })
     }
 }
 
@@ -153,7 +166,9 @@ pub struct LinkshellResultPacket {
 impl LinkshellResultPacket {
     pub fn parse(data: &[u8]) -> Result<Self> {
         let mut c = Cursor::new(data);
-        Ok(Self { result_code: c.read_i32::<LittleEndian>()? })
+        Ok(Self {
+            result_code: c.read_i32::<LittleEndian>()?,
+        })
     }
 }
 
@@ -166,7 +181,9 @@ pub struct WorldErrorPacket {
 impl WorldErrorPacket {
     pub fn parse(data: &[u8]) -> Result<Self> {
         let mut c = Cursor::new(data);
-        Ok(Self { error_code: c.read_u32::<LittleEndian>()? })
+        Ok(Self {
+            error_code: c.read_u32::<LittleEndian>()?,
+        })
     }
 }
 
@@ -182,7 +199,9 @@ impl LanguageCodePacket {
     pub fn parse(data: &[u8]) -> Result<Self> {
         let mut c = Cursor::new(data);
         let _ = c.read_u32::<LittleEndian>()?;
-        Ok(Self { language_code: c.read_u32::<LittleEndian>()? })
+        Ok(Self {
+            language_code: c.read_u32::<LittleEndian>()?,
+        })
     }
 }
 
@@ -272,7 +291,10 @@ impl CountdownRequestPacket {
         let countdown_length = c.read_u8()?;
         c.seek(SeekFrom::Start(8))?;
         let sync_time = c.read_u64::<LittleEndian>()?;
-        Ok(Self { countdown_length, sync_time })
+        Ok(Self {
+            countdown_length,
+            sync_time,
+        })
     }
 }
 
@@ -316,7 +338,14 @@ impl ChatMessagePacket {
         let pos_rot = c.read_f32::<LittleEndian>()?;
         let log_type = c.read_u32::<LittleEndian>()?;
         let message = read_null_term_ascii(&mut c, 0x200);
-        Ok(Self { pos_x, pos_y, pos_z, pos_rot, log_type, message })
+        Ok(Self {
+            pos_x,
+            pos_y,
+            pos_z,
+            pos_rot,
+            log_type,
+            message,
+        })
     }
 }
 
@@ -412,7 +441,10 @@ impl GroupCreatedPacket {
         let mut c = Cursor::new(data);
         let group_id = c.read_u64::<LittleEndian>()?;
         let work_string = read_null_term_ascii(&mut c, 0x200);
-        Ok(Self { group_id, work_string })
+        Ok(Self {
+            group_id,
+            work_string,
+        })
     }
 }
 
@@ -427,7 +459,9 @@ pub struct AddRemoveSocialPacket {
 impl AddRemoveSocialPacket {
     pub fn parse(data: &[u8]) -> Result<Self> {
         let mut c = Cursor::new(data);
-        Ok(Self { name: read_null_term_ascii(&mut c, 0x20) })
+        Ok(Self {
+            name: read_null_term_ascii(&mut c, 0x20),
+        })
     }
 }
 
@@ -494,7 +528,12 @@ impl GMSupportTicketPacket {
         let ticket_issue_index = c.read_u32::<LittleEndian>()?;
         let ticket_title = read_null_term_ascii(&mut c, 0x80);
         let ticket_body = read_null_term_ascii(&mut c, 0x800);
-        Ok(Self { lang_code, ticket_issue_index, ticket_title, ticket_body })
+        Ok(Self {
+            lang_code,
+            ticket_issue_index,
+            ticket_title,
+            ticket_body,
+        })
     }
 }
 
@@ -505,7 +544,9 @@ pub struct GMTicketIssuesRequestPacket {
 impl GMTicketIssuesRequestPacket {
     pub fn parse(data: &[u8]) -> Result<Self> {
         let mut c = Cursor::new(data);
-        Ok(Self { lang_code: c.read_u32::<LittleEndian>()? })
+        Ok(Self {
+            lang_code: c.read_u32::<LittleEndian>()?,
+        })
     }
 }
 
@@ -520,7 +561,9 @@ pub struct RecruitmentDetailsRequestPacket {
 impl RecruitmentDetailsRequestPacket {
     pub fn parse(data: &[u8]) -> Result<Self> {
         let mut c = Cursor::new(data);
-        Ok(Self { recruitment_id: c.read_u64::<LittleEndian>()? })
+        Ok(Self {
+            recruitment_id: c.read_u64::<LittleEndian>()?,
+        })
     }
 }
 
@@ -628,7 +671,10 @@ impl ParameterDataRequestPacket {
         let mut c = Cursor::new(data);
         let actor_id = c.read_u32::<LittleEndian>()?;
         let param_name = read_null_term_ascii(&mut c, 0x20);
-        Ok(Self { actor_id, param_name })
+        Ok(Self {
+            actor_id,
+            param_name,
+        })
     }
 }
 
@@ -648,6 +694,9 @@ impl GameMessageEnvelope {
         let sender_actor_id = c.read_u32::<LittleEndian>().unwrap_or(0);
         let mut body = Vec::new();
         c.read_to_end(&mut body)?;
-        Ok(Self { sender_actor_id, body })
+        Ok(Self {
+            sender_actor_id,
+            body,
+        })
     }
 }

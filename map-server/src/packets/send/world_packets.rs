@@ -96,7 +96,8 @@ pub fn build_party_leave(session_id: u32, is_disband: bool) -> SubPacket {
     let mut data = body(0x28);
     {
         let mut c = Cursor::new(&mut data[..]);
-        c.write_u16::<LittleEndian>(if is_disband { 1 } else { 0 }).unwrap();
+        c.write_u16::<LittleEndian>(if is_disband { 1 } else { 0 })
+            .unwrap();
     }
     SubPacket::new(OP_WORLD_PARTY_LEAVE, session_id, data)
 }
@@ -140,12 +141,7 @@ pub fn build_group_invite_result(session_id: u32, group_type: u32, result: u32) 
 
 /// `CreateLinkshellPacket` (0x1025). C# writes the 32-byte name from offset 0,
 /// then seeks to 0x20 and writes `(crest u16, master u32)`.
-pub fn build_create_linkshell(
-    session_id: u32,
-    name: &str,
-    crest: u16,
-    master: u32,
-) -> SubPacket {
+pub fn build_create_linkshell(session_id: u32, name: &str, crest: u16, master: u32) -> SubPacket {
     let mut data = body(0x48);
     {
         let mut c = Cursor::new(&mut data[..]);
@@ -242,7 +238,8 @@ pub fn build_linkshell_leave(
     let mut data = body(0x68);
     {
         let mut c = Cursor::new(&mut data[..]);
-        c.write_u16::<LittleEndian>(if is_kicked { 1 } else { 0 }).unwrap();
+        c.write_u16::<LittleEndian>(if is_kicked { 1 } else { 0 })
+            .unwrap();
         if is_kicked && let Some(k) = kicked_name {
             write_padded_ascii(&mut c, k, 0x20);
         }

@@ -20,11 +20,11 @@ pub mod temp;
 pub mod traits;
 pub mod utils;
 
-pub use ai_container::{Action, ActionQueue, AIContainer};
+pub use ai_container::{AIContainer, Action, ActionQueue};
 pub use command::{
     ActorSnapshot, BattleCommand, BattleCommandCastType, BattleCommandPositionBonus,
-    BattleCommandProcRequirement, BattleCommandRequirements, BattleCommandValidUser,
-    CommandResult, CommandResultContainer, CommandType, KnockbackType, TargetValidationError,
+    BattleCommandProcRequirement, BattleCommandRequirements, BattleCommandValidUser, CommandResult,
+    CommandResultContainer, CommandType, KnockbackType, TargetValidationError,
 };
 pub use controller::{
     AllyController, BattleNpcController, Controller, ControllerDecision, ControllerKind,
@@ -35,7 +35,7 @@ pub use hate::{HateContainer, HateEntry};
 pub use outbox::{BattleEvent, BattleOutbox};
 pub use path_find::{MovementSink, NavmeshProvider, PathFind, PathFindFlags, StraightLineNavmesh};
 pub use save::BattleSave;
-pub use state::{BattleState, BattleStateBody, BattleStateKind, StateTickResult, MAX_STATE_STACK};
+pub use state::{BattleState, BattleStateBody, BattleStateKind, MAX_STATE_STACK, StateTickResult};
 pub use target_find::{
     ActorArena, ActorView, TargetFind, TargetFindAOETarget, TargetFindAOEType, ValidTarget,
 };
@@ -96,7 +96,9 @@ mod integration_tests {
         // 1. Player engages a dummy BattleNpc.
         let mut ai = AIContainer::new(1, Some(PlayerController::new_for(1)), None);
         let mut outbox = BattleOutbox::new();
-        let arena: HashMap<u32, ActorView> = [(1, view(1, 0.0, 1)), (2, view(2, 3.0, 2))].into_iter().collect();
+        let arena: HashMap<u32, ActorView> = [(1, view(1, 0.0, 1)), (2, view(2, 3.0, 2))]
+            .into_iter()
+            .collect();
 
         assert!(ai.internal_engage(2, /* now */ 0, /* attack delay */ 2000));
         assert_eq!(ai.current_state().unwrap().kind, BattleStateKind::Attack);
@@ -113,7 +115,10 @@ mod integration_tests {
         cmd.command_type = CommandType::SPELL;
         assert!(ai.internal_cast(2, cmd, 0));
         ai.update(2_000, owner_view(true, Some(2)), &arena, &mut outbox);
-        assert!(!ai.is_current(BattleStateKind::Magic), "cast should have completed");
+        assert!(
+            !ai.is_current(BattleStateKind::Magic),
+            "cast should have completed"
+        );
 
         // 4. BattleUtils resolves a spell hit.
         let atk_mods = ModifierMap::default();

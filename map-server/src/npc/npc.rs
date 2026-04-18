@@ -172,7 +172,17 @@ impl Npc {
         layout_id: u32,
     ) -> Self {
         let mut me = Self::new(
-            actor_number, actor_class, unique_id, area_id, x, y, z, 0.0, 0, 0, None,
+            actor_number,
+            actor_class,
+            unique_id,
+            area_id,
+            x,
+            y,
+            z,
+            0.0,
+            0,
+            0,
+            None,
         );
         me.is_map_obj = true;
         me.layout = region_id;
@@ -303,16 +313,16 @@ mod tests {
             100,
             0b1010,
             "",
-            0, 0, 0,
+            0,
+            0,
+            0,
         )
     }
 
     #[test]
     fn new_npc_builds_composite_actor_id() {
         let c = class();
-        let npc = Npc::new(
-            1, &c, "unique_1", 100, 0.0, 0.0, 0.0, 0.0, 0, 0, None,
-        );
+        let npc = Npc::new(1, &c, "unique_1", 100, 0.0, 0.0, 0.0, 0.0, 0, 0, None);
         // composite = (4<<28) | (100<<19) | 1.
         let expected = (4u32 << 28) | (100u32 << 19) | 1;
         assert_eq!(npc.actor_id(), expected);
@@ -323,18 +333,14 @@ mod tests {
     #[test]
     fn map_object_class_id_triggers_static_flag() {
         let c = ActorClass::new(1_080_078, "/Chara/Npc/MapObj/Static", 0, 0, "", 0, 0, 0);
-        let npc = Npc::new(
-            1, &c, "static_1", 100, 0.0, 0.0, 0.0, 0.0, 0, 0, None,
-        );
+        let npc = Npc::new(1, &c, "static_1", 100, 0.0, 0.0, 0.0, 0.0, 0, 0, None);
         assert!(npc.is_map_object());
     }
 
     #[test]
     fn event_conditions_parse_flat_object() {
         let blob = r#"{"204": "onTalk", "30": "onTrade"}"#;
-        let mut npc = Npc::new(
-            1, &class(), "x", 100, 0.0, 0.0, 0.0, 0.0, 0, 0, None,
-        );
+        let mut npc = Npc::new(1, &class(), "x", 100, 0.0, 0.0, 0.0, 0.0, 0, 0, None);
         npc.load_event_conditions(blob);
         assert_eq!(npc.event_conditions.get("204"), Some(&"onTalk".to_string()));
         assert_eq!(npc.event_conditions.get("30"), Some(&"onTrade".to_string()));
@@ -342,9 +348,7 @@ mod tests {
 
     #[test]
     fn event_conditions_empty_blob_is_noop() {
-        let mut npc = Npc::new(
-            1, &class(), "x", 100, 0.0, 0.0, 0.0, 0.0, 0, 0, None,
-        );
+        let mut npc = Npc::new(1, &class(), "x", 100, 0.0, 0.0, 0.0, 0.0, 0, 0, None);
         npc.load_event_conditions("");
         npc.load_event_conditions("{}");
         assert!(npc.event_conditions.is_empty());
@@ -356,9 +360,7 @@ mod tests {
         c.push_command = 42;
         c.push_command_sub = 7;
         c.push_command_priority = 3;
-        let npc = Npc::new(
-            1, &c, "x", 100, 0.0, 0.0, 0.0, 0.0, 0, 0, None,
-        );
+        let npc = Npc::new(1, &c, "x", 100, 0.0, 0.0, 0.0, 0.0, 0, 0, None);
         assert_eq!(npc.npc_work.push_command, 42);
         assert_eq!(npc.npc_work.push_command_sub, 7);
         assert_eq!(npc.npc_work.push_command_priority, 3);

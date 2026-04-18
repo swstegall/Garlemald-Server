@@ -43,7 +43,12 @@ pub struct Session {
 
 impl Session {
     pub fn new(id: u32) -> Self {
-        Self { id, language_code: 1, is_updates_locked: true, ..Default::default() }
+        Self {
+            id,
+            language_code: 1,
+            is_updates_locked: true,
+            ..Default::default()
+        }
     }
 }
 

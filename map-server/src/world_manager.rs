@@ -23,7 +23,7 @@ use tokio::sync::RwLock;
 
 use common::Vector3;
 
-use crate::data::{check_pos_in_bounds, ClientHandle, SeamlessBoundary, Session, ZoneEntrance};
+use crate::data::{ClientHandle, SeamlessBoundary, Session, ZoneEntrance, check_pos_in_bounds};
 use crate::database::{Database, PrivateAreaRow, ZoneRow};
 use crate::zone::navmesh::StubNavmeshLoader;
 use crate::zone::private_area::PrivateArea;
@@ -109,7 +109,11 @@ impl WorldManager {
         // 4. Seamless boundaries.
         let seamless = db.load_seamless_boundaries().await?;
         let total: usize = seamless.values().map(|v| v.len()).sum();
-        tracing::info!(regions = seamless.len(), boundaries = total, "seamless boundaries loaded");
+        tracing::info!(
+            regions = seamless.len(),
+            boundaries = total,
+            "seamless boundaries loaded"
+        );
         *self.seamless_boundaries.write().await = seamless;
         tracing::info!("world boot-load complete");
         Ok(())
@@ -193,7 +197,10 @@ impl WorldManager {
     /// Register (or replace) a zone. Called once per zone during startup.
     pub async fn register_zone(&self, zone: Zone) {
         let id = zone.core.actor_id;
-        self.zones.write().await.insert(id, Arc::new(RwLock::new(zone)));
+        self.zones
+            .write()
+            .await
+            .insert(id, Arc::new(RwLock::new(zone)));
     }
 
     pub async fn zone(&self, zone_id: u32) -> Option<Arc<RwLock<Zone>>> {
@@ -287,7 +294,9 @@ impl WorldManager {
         // 2. Lock the session for updates + update its zone/dest fields.
         {
             let mut sessions = self.sessions.write().await;
-            let session = sessions.entry(session_id).or_insert_with(|| Session::new(session_id));
+            let session = sessions
+                .entry(session_id)
+                .or_insert_with(|| Session::new(session_id));
             session.is_updates_locked = true;
             let old_zone_id = session.current_zone_id;
             session.current_zone_id = destination_zone_id;
@@ -298,7 +307,8 @@ impl WorldManager {
             session.destination_rot = rotation;
 
             // 3. Detach from old zone's spatial grid if different.
-            if old_zone_id != 0 && old_zone_id != destination_zone_id
+            if old_zone_id != 0
+                && old_zone_id != destination_zone_id
                 && let Some(old_zone) = self.zones.read().await.get(&old_zone_id).cloned()
             {
                 let mut old = old_zone.write().await;
@@ -344,7 +354,10 @@ impl WorldManager {
         // to the new one, clear any merged-secondary-zone reference.
         let old_zone_id = {
             let sessions = self.sessions.read().await;
-            sessions.get(&session_id).map(|s| s.current_zone_id).unwrap_or(0)
+            sessions
+                .get(&session_id)
+                .map(|s| s.current_zone_id)
+                .unwrap_or(0)
         };
         if let Some(old) = self.zone(old_zone_id).await {
             let mut ob = crate::zone::outbox::AreaOutbox::new();
@@ -430,7 +443,9 @@ impl WorldManager {
 
         let bounds = self.seamless_boundaries_for(region_id).await;
         for b in &bounds {
-            if check_pos_in_bounds(position.x, position.z, b.zone1_x1, b.zone1_y1, b.zone1_x2, b.zone1_y2) {
+            if check_pos_in_bounds(
+                position.x, position.z, b.zone1_x1, b.zone1_y1, b.zone1_x2, b.zone1_y2,
+            ) {
                 if current_zone_id == b.zone_id_1 {
                     return SeamlessResult::InsideZoneOne;
                 }
@@ -439,7 +454,9 @@ impl WorldManager {
                     .await;
                 return SeamlessResult::ZoneChanged(b.zone_id_1);
             }
-            if check_pos_in_bounds(position.x, position.z, b.zone2_x1, b.zone2_y1, b.zone2_x2, b.zone2_y2) {
+            if check_pos_in_bounds(
+                position.x, position.z, b.zone2_x1, b.zone2_y1, b.zone2_x2, b.zone2_y2,
+            ) {
                 if current_zone_id == b.zone_id_2 {
                     return SeamlessResult::InsideZoneTwo;
                 }
@@ -448,7 +465,9 @@ impl WorldManager {
                     .await;
                 return SeamlessResult::ZoneChanged(b.zone_id_2);
             }
-            if check_pos_in_bounds(position.x, position.z, b.merge_x1, b.merge_y1, b.merge_x2, b.merge_y2) {
+            if check_pos_in_bounds(
+                position.x, position.z, b.merge_x1, b.merge_y1, b.merge_x2, b.merge_y2,
+            ) {
                 let merged = if current_zone_id == b.zone_id_1 {
                     b.zone_id_2
                 } else {
@@ -481,7 +500,8 @@ impl WorldManager {
         };
         let mut zone = zone_arc.write().await;
         let mut ob = crate::zone::outbox::AreaOutbox::new();
-        zone.core.update_actor_position(actor_id, new_position, &mut ob);
+        zone.core
+            .update_actor_position(actor_id, new_position, &mut ob);
     }
 }
 
@@ -502,7 +522,18 @@ mod tests {
 
     fn mk_zone(id: u32, name: &str, region: u16) -> Zone {
         Zone::new(
-            id, name, region, "/Area/Zone/Test", 0, 0, 0, false, false, false, false, false,
+            id,
+            name,
+            region,
+            "/Area/Zone/Test",
+            0,
+            0,
+            0,
+            false,
+            false,
+            false,
+            false,
+            false,
             Some(&StubNavmeshLoader),
         )
     }
@@ -525,9 +556,18 @@ mod tests {
             region_id: 103,
             zone_id_1: 1,
             zone_id_2: 2,
-            zone1_x1: -10.0, zone1_y1: -10.0, zone1_x2: 10.0, zone1_y2: 10.0,
-            zone2_x1: 100.0, zone2_y1: 100.0, zone2_x2: 110.0, zone2_y2: 110.0,
-            merge_x1: 20.0, merge_y1: 20.0, merge_x2: 30.0, merge_y2: 30.0,
+            zone1_x1: -10.0,
+            zone1_y1: -10.0,
+            zone1_x2: 10.0,
+            zone1_y2: 10.0,
+            zone2_x1: 100.0,
+            zone2_y1: 100.0,
+            zone2_x2: 110.0,
+            zone2_y2: 110.0,
+            merge_x1: 20.0,
+            merge_y1: 20.0,
+            merge_x2: 30.0,
+            merge_y2: 30.0,
         };
         wm.seamless_boundaries
             .write()
@@ -557,9 +597,18 @@ mod tests {
             region_id: 103,
             zone_id_1: 1,
             zone_id_2: 2,
-            zone1_x1: -10.0, zone1_y1: -10.0, zone1_x2: 10.0, zone1_y2: 10.0,
-            zone2_x1: 100.0, zone2_y1: 100.0, zone2_x2: 110.0, zone2_y2: 110.0,
-            merge_x1: 20.0, merge_y1: 20.0, merge_x2: 30.0, merge_y2: 30.0,
+            zone1_x1: -10.0,
+            zone1_y1: -10.0,
+            zone1_x2: 10.0,
+            zone1_y2: 10.0,
+            zone2_x1: 100.0,
+            zone2_y1: 100.0,
+            zone2_x2: 110.0,
+            zone2_y2: 110.0,
+            merge_x1: 20.0,
+            merge_y1: 20.0,
+            merge_x2: 30.0,
+            merge_y2: 30.0,
         };
         wm.seamless_boundaries
             .write()
@@ -592,9 +641,18 @@ mod tests {
             region_id: 103,
             zone_id_1: 1,
             zone_id_2: 2,
-            zone1_x1: -10.0, zone1_y1: -10.0, zone1_x2: 10.0, zone1_y2: 10.0,
-            zone2_x1: 100.0, zone2_y1: 100.0, zone2_x2: 110.0, zone2_y2: 110.0,
-            merge_x1: 20.0, merge_y1: 20.0, merge_x2: 30.0, merge_y2: 30.0,
+            zone1_x1: -10.0,
+            zone1_y1: -10.0,
+            zone1_x2: 10.0,
+            zone1_y2: 10.0,
+            zone2_x1: 100.0,
+            zone2_y1: 100.0,
+            zone2_x2: 110.0,
+            zone2_y2: 110.0,
+            merge_x1: 20.0,
+            merge_y1: 20.0,
+            merge_x2: 30.0,
+            merge_y2: 30.0,
         };
         wm.seamless_boundaries
             .write()

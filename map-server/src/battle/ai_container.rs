@@ -15,9 +15,7 @@
 #![allow(dead_code)]
 
 use super::command::BattleCommand;
-use super::controller::{
-    Controller, ControllerDecision, ControllerKind, ControllerOwnerView,
-};
+use super::controller::{Controller, ControllerDecision, ControllerKind, ControllerOwnerView};
 use super::hate::HateContainer;
 use super::outbox::{BattleEvent, BattleOutbox};
 use super::path_find::PathFind;
@@ -87,7 +85,11 @@ pub struct AIContainer {
 }
 
 impl AIContainer {
-    pub fn new(owner_actor_id: u32, controller: Option<Controller>, path_find: Option<PathFind>) -> Self {
+    pub fn new(
+        owner_actor_id: u32,
+        controller: Option<Controller>,
+        path_find: Option<PathFind>,
+    ) -> Self {
         Self {
             owner_actor_id,
             controller,
@@ -119,7 +121,9 @@ impl AIContainer {
     }
 
     pub fn can_change_state(&self) -> bool {
-        self.current_state().map(|s| s.can_change_state()).unwrap_or(true)
+        self.current_state()
+            .map(|s| s.can_change_state())
+            .unwrap_or(true)
     }
 
     pub fn can_follow_path(&self) -> bool {
@@ -127,11 +131,15 @@ impl AIContainer {
     }
 
     pub fn is_engaged(&self) -> bool {
-        self.current_state().map(|s| s.kind == BattleStateKind::Attack).unwrap_or(false)
+        self.current_state()
+            .map(|s| s.kind == BattleStateKind::Attack)
+            .unwrap_or(false)
     }
 
     pub fn is_dead(&self) -> bool {
-        self.current_state().map(|s| s.kind == BattleStateKind::Death).unwrap_or(false)
+        self.current_state()
+            .map(|s| s.kind == BattleStateKind::Death)
+            .unwrap_or(false)
     }
 
     pub fn is_spawned(&self) -> bool {
@@ -202,12 +210,22 @@ impl AIContainer {
 
     // --- Public Internal* dispatch (mirrors the C#) -----------------------
 
-    pub fn internal_engage(&mut self, target_actor_id: u32, now_ms: u64, attack_delay_ms: u32) -> bool {
+    pub fn internal_engage(
+        &mut self,
+        target_actor_id: u32,
+        now_ms: u64,
+        attack_delay_ms: u32,
+    ) -> bool {
         if self.is_engaged() {
             // Already engaged — a retarget is handled via ChangeTarget.
             return false;
         }
-        let state = BattleState::attack(self.owner_actor_id, target_actor_id, now_ms, attack_delay_ms);
+        let state = BattleState::attack(
+            self.owner_actor_id,
+            target_actor_id,
+            now_ms,
+            attack_delay_ms,
+        );
         self.force_change_state(state)
     }
 
@@ -226,7 +244,12 @@ impl AIContainer {
         self.change_state(state)
     }
 
-    pub fn internal_ability(&mut self, target_actor_id: u32, cmd: BattleCommand, now_ms: u64) -> bool {
+    pub fn internal_ability(
+        &mut self,
+        target_actor_id: u32,
+        cmd: BattleCommand,
+        now_ms: u64,
+    ) -> bool {
         let state = BattleState::ability(self.owner_actor_id, target_actor_id, cmd, now_ms);
         self.change_state(state)
     }
@@ -271,7 +294,11 @@ impl AIContainer {
 
     pub fn internal_despawn(&mut self, now_ms: u64, respawn_ms: u64, outbox: &mut BattleOutbox) {
         self.clear_states();
-        self.force_change_state(BattleState::despawn(self.owner_actor_id, now_ms, respawn_ms));
+        self.force_change_state(BattleState::despawn(
+            self.owner_actor_id,
+            now_ms,
+            respawn_ms,
+        ));
         outbox.push(BattleEvent::Despawn {
             owner_actor_id: self.owner_actor_id,
         });
@@ -336,7 +363,9 @@ impl AIContainer {
                 });
             }
             ControllerDecision::Disengage => {
-                outbox.push(BattleEvent::Disengage { owner_actor_id: owner_id });
+                outbox.push(BattleEvent::Disengage {
+                    owner_actor_id: owner_id,
+                });
             }
             ControllerDecision::MoveTo { position: _ } => {
                 // The game loop picks this up by inspecting the container's
@@ -435,7 +464,11 @@ mod tests {
         let mut ob = BattleOutbox::new();
         ai.internal_disengage(&mut ob);
         assert!(ai.state_stack().is_empty());
-        assert!(ob.events.iter().any(|e| matches!(e, BattleEvent::Disengage { .. })));
+        assert!(
+            ob.events
+                .iter()
+                .any(|e| matches!(e, BattleEvent::Disengage { .. }))
+        );
     }
 
     #[test]
@@ -456,15 +489,31 @@ mod tests {
         let mut ob = BattleOutbox::new();
         ai.internal_die(0, 5000, &mut ob);
         assert_eq!(ai.current_state().unwrap().kind, BattleStateKind::Death);
-        assert!(ob.events.iter().any(|e| matches!(e, BattleEvent::Die { .. })));
+        assert!(
+            ob.events
+                .iter()
+                .any(|e| matches!(e, BattleEvent::Die { .. }))
+        );
     }
 
     #[test]
     fn action_queue_fires_in_order() {
         let mut q = ActionQueue::new();
-        q.push(Action { fire_at_ms: 3000, check_state: false, tag: 2 });
-        q.push(Action { fire_at_ms: 1000, check_state: false, tag: 1 });
-        q.push(Action { fire_at_ms: 5000, check_state: false, tag: 3 });
+        q.push(Action {
+            fire_at_ms: 3000,
+            check_state: false,
+            tag: 2,
+        });
+        q.push(Action {
+            fire_at_ms: 1000,
+            check_state: false,
+            tag: 1,
+        });
+        q.push(Action {
+            fire_at_ms: 5000,
+            check_state: false,
+            tag: 3,
+        });
         let due = q.drain_due(3000);
         assert_eq!(due.iter().map(|a| a.tag).collect::<Vec<_>>(), vec![1, 2]);
         assert_eq!(q.entries.len(), 1);

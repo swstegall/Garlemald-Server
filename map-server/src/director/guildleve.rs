@@ -157,7 +157,12 @@ impl GuildleveDirector {
     }
 
     /// `EndGuildleve(wasCompleted)`.
-    pub fn end_guildleve(&mut self, now_unix_s: u32, was_completed: bool, outbox: &mut DirectorOutbox) {
+    pub fn end_guildleve(
+        &mut self,
+        now_unix_s: u32,
+        was_completed: bool,
+        outbox: &mut DirectorOutbox,
+    ) {
         if self.is_ended {
             return;
         }
@@ -278,12 +283,16 @@ mod tests {
         let mut ob = DirectorOutbox::new();
         gl.start_guildleve(1_000, &mut ob);
         let events = ob.drain();
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, DirectorEvent::GuildleveStarted { .. })));
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, DirectorEvent::GuildleveSyncAll { .. })));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, DirectorEvent::GuildleveStarted { .. }))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, DirectorEvent::GuildleveSyncAll { .. }))
+        );
         assert_eq!(gl.work.start_time, 1_000);
     }
 
@@ -301,9 +310,13 @@ mod tests {
         let events_first = ob.drain();
         gl.end_guildleve(9_000, true, &mut ob);
         assert!(ob.is_empty(), "second end_guildleve is a no-op");
-        assert!(events_first
-            .iter()
-            .any(|e| matches!(e, DirectorEvent::GuildleveEnded { was_completed: true, .. })));
+        assert!(events_first.iter().any(|e| matches!(
+            e,
+            DirectorEvent::GuildleveEnded {
+                was_completed: true,
+                ..
+            }
+        )));
     }
 
     #[test]
@@ -314,12 +327,16 @@ mod tests {
         ob.drain();
         gl.abandon_guildleve(1_200, &mut ob);
         let events = ob.drain();
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, DirectorEvent::GuildleveAbandoned { .. })));
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, DirectorEvent::DirectorEnded { .. })));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, DirectorEvent::GuildleveAbandoned { .. }))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, DirectorEvent::DirectorEnded { .. }))
+        );
         assert!(gl.base.is_deleted());
     }
 

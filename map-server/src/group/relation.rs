@@ -287,9 +287,10 @@ mod tests {
         let mut r = RelationGroup::new(42, 1, 2, 0, 0, &mut ob);
         ob.drain();
         r.delete(&mut ob);
-        assert!(ob
-            .events
-            .iter()
-            .any(|e| matches!(e, GroupEvent::GroupDeleted { .. })));
+        assert!(
+            ob.events
+                .iter()
+                .any(|e| matches!(e, GroupEvent::GroupDeleted { .. }))
+        );
     }
 }

@@ -508,7 +508,11 @@ impl Player {
 
     /// Gil catalog id is `1000001` per the C# constant.
     pub fn get_current_gil(&self) -> i32 {
-        self.helpers.inventory_summary.get(&1_000_001).copied().unwrap_or(0)
+        self.helpers
+            .inventory_summary
+            .get(&1_000_001)
+            .copied()
+            .unwrap_or(0)
     }
 
     // ----- Zone change ---------------------------------------------------
@@ -547,7 +551,7 @@ impl PlayerState {
 
 #[cfg(test)]
 mod tests {
-    use super::super::quest::{quest_actor_id, Quest};
+    use super::super::quest::{Quest, quest_actor_id};
     use super::*;
     use crate::actor::Player;
 

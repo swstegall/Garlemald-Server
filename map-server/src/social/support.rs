@@ -33,7 +33,10 @@ pub fn emit_issue_list(actor_id: u32, outbox: &mut SocialOutbox) {
 }
 
 pub fn emit_gm_ticket_state(actor_id: u32, is_active: bool, outbox: &mut SocialOutbox) {
-    outbox.push(SocialEvent::GmTicketStartQueried { actor_id, is_active });
+    outbox.push(SocialEvent::GmTicketStartQueried {
+        actor_id,
+        is_active,
+    });
 }
 
 pub fn emit_gm_ticket_response(actor_id: u32, outbox: &mut SocialOutbox) {

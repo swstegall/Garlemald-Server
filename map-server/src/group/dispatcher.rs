@@ -12,7 +12,7 @@ use crate::world_manager::WorldManager;
 
 use super::outbox::GroupEvent;
 use super::party::Party;
-use super::types::{chunk_bucket, ChunkBucket, GroupKind, GroupMemberRef, GroupTypeId};
+use super::types::{ChunkBucket, GroupKind, GroupMemberRef, GroupTypeId, chunk_bucket};
 
 /// Dispatch one `GroupEvent`. `resolver` supplies the per-group
 /// member list + type id so the dispatcher doesn't have to own the
@@ -323,9 +323,7 @@ mod tests {
             ))
             .await;
         let (tx, mut rx) = mpsc::channel::<Vec<u8>>(16);
-        world
-            .register_client(11, ClientHandle::new(11, tx))
-            .await;
+        world.register_client(11, ClientHandle::new(11, tx)).await;
 
         let resolver = DummyResolver(party);
         dispatch_group_event(

@@ -109,12 +109,8 @@ pub async fn dispatch_event_event(
             event_name,
             event_type,
         } => {
-            let sub = tx::build_end_event(
-                *player_actor_id,
-                *owner_actor_id,
-                event_name,
-                *event_type,
-            );
+            let sub =
+                tx::build_end_event(*player_actor_id, *owner_actor_id, event_name, *event_type);
             send_to_player(world, registry, *player_actor_id, sub.to_bytes()).await;
         }
         EventEvent::KickEvent {
@@ -241,8 +237,8 @@ async fn dispatch_event_started(
                 }
             },
         };
-        let args = to_multi_value(&lua_vm, &args_vec)
-            .map_err(|e| format!("args conversion: {e}"))?;
+        let args =
+            to_multi_value(&lua_vm, &args_vec).map_err(|e| format!("args conversion: {e}"))?;
         let globals = lua_vm.globals();
         let Some(f): Option<mlua::Function> = globals.get("onEventStarted").ok() else {
             return Ok(());
@@ -459,8 +455,8 @@ fn to_multi_value(lua: &mlua::Lua, args: &[OwnedArg]) -> mlua::Result<MultiValue
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::outbox::EventOutbox;
     use crate::event::EventEvent;
+    use crate::event::outbox::EventOutbox;
 
     fn tmpdir() -> std::path::PathBuf {
         let nanos = std::time::SystemTime::now()
@@ -472,13 +468,18 @@ mod tests {
         dir
     }
 
-    /// Per-test SQLite path — one file per test run so WAL files don't collide.
+    /// Per-test SQLite path — one file per test run so WAL files don't
+    /// collide. The `AtomicU64` guarantees uniqueness even when two
+    /// parallel tests hit `SystemTime::now` within the same nanosecond.
     fn tempdb() -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("garlemald-event-dispatch-{nanos}.db"))
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("garlemald-event-dispatch-{nanos}-{seq}.db"))
     }
 
     #[tokio::test]
@@ -568,7 +569,18 @@ mod tests {
 
         // One Zone + one Greeter NPC in it.
         let zone = Zone::new(
-            100, "test", 1, "/Area/Zone/Test", 0, 0, 0, false, false, false, false, false,
+            100,
+            "test",
+            1,
+            "/Area/Zone/Test",
+            0,
+            0,
+            0,
+            false,
+            false,
+            false,
+            false,
+            false,
             Some(&StubNavmeshLoader),
         );
         world.register_zone(zone).await;
@@ -578,9 +590,7 @@ mod tests {
         npc_chara.base.class_name = "Greeter".into();
         npc_chara.base.actor_name = "greeter_main".into();
         registry
-            .insert(ActorHandle::new(
-                42, ActorKindTag::Npc, 100, 0, npc_chara,
-            ))
+            .insert(ActorHandle::new(42, ActorKindTag::Npc, 100, 0, npc_chara))
             .await;
 
         let event = EventEvent::EventStarted {

@@ -114,7 +114,12 @@ impl Blowfish {
         *xl ^= self.p[0];
     }
 
-    pub fn encipher(&self, data: &mut [u8], offset: usize, length: usize) -> Result<(), PacketError> {
+    pub fn encipher(
+        &self,
+        data: &mut [u8],
+        offset: usize,
+        length: usize,
+    ) -> Result<(), PacketError> {
         if !length.is_multiple_of(8) {
             return Err(PacketError::BlowfishBlockMisaligned(length));
         }
@@ -131,7 +136,12 @@ impl Blowfish {
         Ok(())
     }
 
-    pub fn decipher(&self, data: &mut [u8], offset: usize, length: usize) -> Result<(), PacketError> {
+    pub fn decipher(
+        &self,
+        data: &mut [u8],
+        offset: usize,
+        length: usize,
+    ) -> Result<(), PacketError> {
         if !length.is_multiple_of(8) {
             return Err(PacketError::BlowfishBlockMisaligned(length));
         }

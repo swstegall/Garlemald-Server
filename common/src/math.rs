@@ -8,7 +8,11 @@ pub struct Vector3 {
 }
 
 impl Vector3 {
-    pub const ZERO: Vector3 = Vector3 { x: 0.0, y: 0.0, z: 0.0 };
+    pub const ZERO: Vector3 = Vector3 {
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    };
 
     pub const fn new(x: f32, y: f32, z: f32) -> Self {
         Self { x, y, z }
@@ -35,7 +39,11 @@ impl Vector3 {
             return 0.0;
         }
         let angle = ((z2 - z) / (x2 - x)).atan();
-        if x > x2 { angle + std::f32::consts::PI } else { angle }
+        if x > x2 {
+            angle + std::f32::consts::PI
+        } else {
+            angle
+        }
     }
 
     pub fn new_horizontal(&self, angle: f32, extents: f32) -> Vector3 {
@@ -64,7 +72,12 @@ impl Vector3 {
     }
 
     /// Matches the legacy C# `IsWithinCone` which ignores distance.
-    pub fn is_within_cone(&self, cone_center: Vector3, cone_rotation: f32, cone_angle: f32) -> bool {
+    pub fn is_within_cone(
+        &self,
+        cone_center: Vector3,
+        cone_rotation: f32,
+        cone_angle: f32,
+    ) -> bool {
         let mut angle_to_target = Self::angle_between(cone_center, *self);
         let half_angle_of_aoe = cone_angle * std::f32::consts::PI / 2.0;
         let rotation_to_add = cone_rotation + half_angle_of_aoe;

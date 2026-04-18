@@ -18,7 +18,13 @@ fn ack(actor_id: u32, opcode: u16, is_success: bool, name: &str, size: usize) ->
 
 /// 0x01D7 ItemSearchResultsBegin.
 pub fn build_item_search_results_begin(actor_id: u32, is_success: bool, name: &str) -> SubPacket {
-    ack(actor_id, OP_ITEM_SEARCH_RESULTS_BEGIN, is_success, name, 0x28)
+    ack(
+        actor_id,
+        OP_ITEM_SEARCH_RESULTS_BEGIN,
+        is_success,
+        name,
+        0x28,
+    )
 }
 
 /// 0x01D9 ItemSearchResultsEnd.

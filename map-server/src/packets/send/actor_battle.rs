@@ -50,7 +50,8 @@ fn encode_command_result(c: &mut Cursor<&mut [u8]>, entry: &CommandResult) {
     c.write_u32::<LittleEndian>(entry.target_id).unwrap();
     c.write_u8(entry.hit_num).unwrap();
     c.write_u8(entry.sub_command).unwrap();
-    c.write_u16::<LittleEndian>(entry.worldmaster_text_id).unwrap();
+    c.write_u16::<LittleEndian>(entry.worldmaster_text_id)
+        .unwrap();
     c.write_u32::<LittleEndian>(entry.hit_effect).unwrap();
     c.write_u32::<LittleEndian>(entry.mitigated_amount).unwrap();
     c.write_u32::<LittleEndian>(entry.amount).unwrap();
@@ -108,7 +109,14 @@ pub fn build_command_result_x10(
     list_offset: &mut usize,
 ) -> SubPacket {
     build_command_result_container(
-        actor_id, animation_id, command_id, actions, list_offset, 16, OP_COMMAND_RESULT_X10, 0xD8,
+        actor_id,
+        animation_id,
+        command_id,
+        actions,
+        list_offset,
+        16,
+        OP_COMMAND_RESULT_X10,
+        0xD8,
     )
 }
 
@@ -121,7 +129,14 @@ pub fn build_command_result_x18(
     list_offset: &mut usize,
 ) -> SubPacket {
     build_command_result_container(
-        actor_id, animation_id, command_id, actions, list_offset, 24, OP_COMMAND_RESULT_X18, 0x148,
+        actor_id,
+        animation_id,
+        command_id,
+        actions,
+        list_offset,
+        24,
+        OP_COMMAND_RESULT_X18,
+        0x148,
     )
 }
 
@@ -163,8 +178,15 @@ pub fn build_battle_action_x10(
     list_offset: &mut usize,
 ) -> SubPacket {
     build_battle_action_container(
-        player_actor_id, source_actor_id, animation_id, command_id, actions, list_offset, 16,
-        OP_BATTLE_ACTION_X10, 0xD8,
+        player_actor_id,
+        source_actor_id,
+        animation_id,
+        command_id,
+        actions,
+        list_offset,
+        16,
+        OP_BATTLE_ACTION_X10,
+        0xD8,
     )
 }
 
@@ -177,8 +199,15 @@ pub fn build_battle_action_x18(
     list_offset: &mut usize,
 ) -> SubPacket {
     build_battle_action_container(
-        player_actor_id, source_actor_id, animation_id, command_id, actions, list_offset, 24,
-        OP_BATTLE_ACTION_X18, 0x148,
+        player_actor_id,
+        source_actor_id,
+        animation_id,
+        command_id,
+        actions,
+        list_offset,
+        24,
+        OP_BATTLE_ACTION_X18,
+        0x148,
     )
 }
 

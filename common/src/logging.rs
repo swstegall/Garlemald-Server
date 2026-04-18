@@ -66,8 +66,8 @@ pub fn init(tag: &'static str) {
         "map_server=debug",
     ]
     .join(",");
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(default_directives));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_directives));
 
     tracing_subscriber::fmt()
         .with_env_filter(filter)

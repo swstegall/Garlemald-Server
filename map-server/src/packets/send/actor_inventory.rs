@@ -91,7 +91,14 @@ pub fn build_inventory_list_x16(
     items: &[InventoryItem],
     list_offset: &mut usize,
 ) -> SubPacket {
-    build_inventory_list_n(actor_id, items, list_offset, 16, OP_INVENTORY_LIST_X16, 0x720)
+    build_inventory_list_n(
+        actor_id,
+        items,
+        list_offset,
+        16,
+        OP_INVENTORY_LIST_X16,
+        0x720,
+    )
 }
 
 /// 0x014B InventoryListX32 — up to 32 items.
@@ -100,7 +107,14 @@ pub fn build_inventory_list_x32(
     items: &[InventoryItem],
     list_offset: &mut usize,
 ) -> SubPacket {
-    build_inventory_list_n(actor_id, items, list_offset, 32, OP_INVENTORY_LIST_X32, 0xE20)
+    build_inventory_list_n(
+        actor_id,
+        items,
+        list_offset,
+        32,
+        OP_INVENTORY_LIST_X32,
+        0xE20,
+    )
 }
 
 /// 0x014C InventoryListX64 — up to 64 items.
@@ -109,7 +123,14 @@ pub fn build_inventory_list_x64(
     items: &[InventoryItem],
     list_offset: &mut usize,
 ) -> SubPacket {
-    build_inventory_list_n(actor_id, items, list_offset, 64, OP_INVENTORY_LIST_X64, 0x1C20)
+    build_inventory_list_n(
+        actor_id,
+        items,
+        list_offset,
+        64,
+        OP_INVENTORY_LIST_X64,
+        0x1C20,
+    )
 }
 
 fn build_inventory_list_x08(
@@ -160,7 +181,15 @@ pub fn build_inventory_remove_x08(
     slots: &[u16],
     list_offset: &mut usize,
 ) -> SubPacket {
-    build_inventory_remove_n(actor_id, slots, list_offset, 8, OP_INVENTORY_REMOVE_X08, 0x38, 0x10)
+    build_inventory_remove_n(
+        actor_id,
+        slots,
+        list_offset,
+        8,
+        OP_INVENTORY_REMOVE_X08,
+        0x38,
+        0x10,
+    )
 }
 
 pub fn build_inventory_remove_x16(
@@ -168,7 +197,15 @@ pub fn build_inventory_remove_x16(
     slots: &[u16],
     list_offset: &mut usize,
 ) -> SubPacket {
-    build_inventory_remove_n(actor_id, slots, list_offset, 16, OP_INVENTORY_REMOVE_X16, 0x40, 0x20)
+    build_inventory_remove_n(
+        actor_id,
+        slots,
+        list_offset,
+        16,
+        OP_INVENTORY_REMOVE_X16,
+        0x40,
+        0x20,
+    )
 }
 
 pub fn build_inventory_remove_x32(
@@ -176,7 +213,15 @@ pub fn build_inventory_remove_x32(
     slots: &[u16],
     list_offset: &mut usize,
 ) -> SubPacket {
-    build_inventory_remove_n(actor_id, slots, list_offset, 32, OP_INVENTORY_REMOVE_X32, 0x60, 0x40)
+    build_inventory_remove_n(
+        actor_id,
+        slots,
+        list_offset,
+        32,
+        OP_INVENTORY_REMOVE_X32,
+        0x60,
+        0x40,
+    )
 }
 
 pub fn build_inventory_remove_x64(
@@ -184,7 +229,15 @@ pub fn build_inventory_remove_x64(
     slots: &[u16],
     list_offset: &mut usize,
 ) -> SubPacket {
-    build_inventory_remove_n(actor_id, slots, list_offset, 64, OP_INVENTORY_REMOVE_X64, 0xA0, 0x80)
+    build_inventory_remove_n(
+        actor_id,
+        slots,
+        list_offset,
+        64,
+        OP_INVENTORY_REMOVE_X64,
+        0xA0,
+        0x80,
+    )
 }
 
 fn build_inventory_remove_n(
@@ -200,7 +253,8 @@ fn build_inventory_remove_n(
     let max = slots.len().saturating_sub(*list_offset).min(cap);
     let mut c = Cursor::new(&mut data[..]);
     for i in 0..max {
-        c.write_u16::<LittleEndian>(slots[*list_offset + i]).unwrap();
+        c.write_u16::<LittleEndian>(slots[*list_offset + i])
+            .unwrap();
     }
     *list_offset += max;
     if count_offset < data.len() {
@@ -237,7 +291,11 @@ fn encode_item(item: &InventoryItem) -> Vec<u8> {
     c.write_u64::<LittleEndian>(item.unique_id).unwrap();
     c.write_i32::<LittleEndian>(item.quantity).unwrap();
     c.write_u32::<LittleEndian>(item.item_id).unwrap();
-    let slot = if item.link_slot == 0xFFFF { item.slot } else { item.link_slot };
+    let slot = if item.link_slot == 0xFFFF {
+        item.slot
+    } else {
+        item.link_slot
+    };
     c.write_u16::<LittleEndian>(slot).unwrap();
     // dealingVal + dealingMode bytes + three dealingAttached u32 — left zero
     // until trade/bazaar plumbing lights up.

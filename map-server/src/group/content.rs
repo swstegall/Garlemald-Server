@@ -225,10 +225,11 @@ mod tests {
         let cg = ContentGroup::new(1, 100, &[200, 201], &mut ob);
         ob.drain();
         cg.check_destroy(|_| false, &mut ob);
-        assert!(ob
-            .events
-            .iter()
-            .any(|e| matches!(e, GroupEvent::ContentGroupAutoDelete { .. })));
+        assert!(
+            ob.events
+                .iter()
+                .any(|e| matches!(e, GroupEvent::ContentGroupAutoDelete { .. }))
+        );
     }
 
     #[test]

@@ -178,7 +178,11 @@ pub async fn dispatch_social_event(
             );
             send_bytes(world, handle.session_id, sub.to_bytes()).await;
         }
-        SocialEvent::FriendlistRemoved { actor_id, name, success } => {
+        SocialEvent::FriendlistRemoved {
+            actor_id,
+            name,
+            success,
+        } => {
             let Some(handle) = registry.get(*actor_id).await else {
                 return;
             };
@@ -201,14 +205,22 @@ pub async fn dispatch_social_event(
             let sub = tx::build_friend_status(handle.session_id, entries);
             send_bytes(world, handle.session_id, sub.to_bytes()).await;
         }
-        SocialEvent::BlacklistAdded { actor_id, name, success } => {
+        SocialEvent::BlacklistAdded {
+            actor_id,
+            name,
+            success,
+        } => {
             let Some(handle) = registry.get(*actor_id).await else {
                 return;
             };
             let sub = tx::build_blacklist_added(handle.session_id, *success, name);
             send_bytes(world, handle.session_id, sub.to_bytes()).await;
         }
-        SocialEvent::BlacklistRemoved { actor_id, name, success } => {
+        SocialEvent::BlacklistRemoved {
+            actor_id,
+            name,
+            success,
+        } => {
             let Some(handle) = registry.get(*actor_id).await else {
                 return;
             };
@@ -304,14 +316,21 @@ pub async fn dispatch_social_event(
             let sub = tx::build_issue_list_response(handle.session_id, issues);
             send_bytes(world, handle.session_id, sub.to_bytes()).await;
         }
-        SocialEvent::GmTicketStartQueried { actor_id, is_active } => {
+        SocialEvent::GmTicketStartQueried {
+            actor_id,
+            is_active,
+        } => {
             let Some(handle) = registry.get(*actor_id).await else {
                 return;
             };
             let sub = tx::build_start_gm_ticket(handle.session_id, *is_active);
             send_bytes(world, handle.session_id, sub.to_bytes()).await;
         }
-        SocialEvent::GmTicketResponseQueried { actor_id, title, body } => {
+        SocialEvent::GmTicketResponseQueried {
+            actor_id,
+            title,
+            body,
+        } => {
             let Some(handle) = registry.get(*actor_id).await else {
                 return;
             };
@@ -333,7 +352,6 @@ pub async fn dispatch_social_event(
             send_bytes(world, handle.session_id, sub.to_bytes()).await;
         }
     }
-
 }
 
 async fn send_bytes(world: &WorldManager, session_id: u32, bytes: Vec<u8>) {

@@ -201,9 +201,24 @@ mod tests {
     #[tokio::test]
     async fn actors_in_zone_filters() {
         let reg = ActorRegistry::new();
-        reg.insert(ActorHandle::new(100, ActorKindTag::Player, 1, 42, character())).await;
-        reg.insert(ActorHandle::new(200, ActorKindTag::BattleNpc, 1, 0, character())).await;
-        reg.insert(ActorHandle::new(300, ActorKindTag::Npc, 2, 0, character())).await;
+        reg.insert(ActorHandle::new(
+            100,
+            ActorKindTag::Player,
+            1,
+            42,
+            character(),
+        ))
+        .await;
+        reg.insert(ActorHandle::new(
+            200,
+            ActorKindTag::BattleNpc,
+            1,
+            0,
+            character(),
+        ))
+        .await;
+        reg.insert(ActorHandle::new(300, ActorKindTag::Npc, 2, 0, character()))
+            .await;
         let in_zone_1 = reg.actors_in_zone(1).await;
         assert_eq!(in_zone_1.len(), 2);
     }
@@ -211,14 +226,22 @@ mod tests {
     #[tokio::test]
     async fn npcs_skip_session_index() {
         let reg = ActorRegistry::new();
-        reg.insert(ActorHandle::new(500, ActorKindTag::Npc, 1, 0, character())).await;
+        reg.insert(ActorHandle::new(500, ActorKindTag::Npc, 1, 0, character()))
+            .await;
         assert_eq!(reg.by_session(0).await.map(|h| h.actor_id), None);
     }
 
     #[tokio::test]
     async fn reassign_zone_updates_filter() {
         let reg = ActorRegistry::new();
-        reg.insert(ActorHandle::new(100, ActorKindTag::BattleNpc, 1, 0, character())).await;
+        reg.insert(ActorHandle::new(
+            100,
+            ActorKindTag::BattleNpc,
+            1,
+            0,
+            character(),
+        ))
+        .await;
         assert_eq!(reg.actors_in_zone(1).await.len(), 1);
         assert!(reg.reassign_zone(100, 2).await);
         assert_eq!(reg.actors_in_zone(1).await.len(), 0);

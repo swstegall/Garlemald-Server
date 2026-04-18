@@ -12,11 +12,15 @@ pub struct Efficient32BitHashTable<T> {
 
 impl<T> Efficient32BitHashTable<T> {
     pub fn new() -> Self {
-        Self { inner: HashMap::new() }
+        Self {
+            inner: HashMap::new(),
+        }
     }
 
     pub fn with_capacity(capacity: usize) -> Self {
-        Self { inner: HashMap::with_capacity(capacity) }
+        Self {
+            inner: HashMap::with_capacity(capacity),
+        }
     }
 
     pub fn add(&mut self, key: u32, value: T) {
@@ -43,11 +47,15 @@ pub struct Efficient64BitHashTable<T> {
 
 impl<T> Efficient64BitHashTable<T> {
     pub fn new() -> Self {
-        Self { inner: HashMap::new() }
+        Self {
+            inner: HashMap::new(),
+        }
     }
 
     pub fn with_capacity(capacity: usize) -> Self {
-        Self { inner: HashMap::with_capacity(capacity) }
+        Self {
+            inner: HashMap::with_capacity(capacity),
+        }
     }
 
     pub fn add(&mut self, key: u64, value: T) {

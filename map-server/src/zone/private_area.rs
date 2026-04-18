@@ -89,11 +89,7 @@ pub struct PrivateAreaContent {
 }
 
 impl PrivateAreaContent {
-    pub fn new(
-        area: PrivateArea,
-        director_id: u32,
-        starter_actor_id: u32,
-    ) -> Self {
+    pub fn new(area: PrivateArea, director_id: u32, starter_actor_id: u32) -> Self {
         Self {
             area,
             director_id,
@@ -134,8 +130,20 @@ mod tests {
 
     fn mk_private_area() -> PrivateArea {
         PrivateArea::new(
-            1, "parent_zone", 1, 100, "/Area/Zone/TestContent", "private1", 1,
-            0, 0, 0, false, false, false, false,
+            1,
+            "parent_zone",
+            1,
+            100,
+            "/Area/Zone/TestContent",
+            "private1",
+            1,
+            0,
+            0,
+            0,
+            false,
+            false,
+            false,
+            false,
         )
     }
 

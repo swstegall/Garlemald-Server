@@ -77,7 +77,12 @@ pub fn write_lua_params<W: Write>(writer: &mut W, params: &[LuaParam]) -> std::i
             }
             LuaParam::True | LuaParam::False | LuaParam::Nil => {}
             LuaParam::Actor(v) => writer.write_u32::<BigEndian>(*v)?,
-            LuaParam::Type7 { actor_id, unknown, slot, inventory_type } => {
+            LuaParam::Type7 {
+                actor_id,
+                unknown,
+                slot,
+                inventory_type,
+            } => {
                 writer.write_u32::<BigEndian>(*actor_id)?;
                 writer.write_u8(*unknown)?;
                 writer.write_u8(*slot)?;
@@ -131,7 +136,12 @@ pub fn read_lua_params_from<R: Read>(reader: &mut R) -> std::io::Result<Vec<LuaP
                 let unknown = reader.read_u8()?;
                 let slot = reader.read_u8()?;
                 let inventory_type = reader.read_u8()?;
-                out.push(LuaParam::Type7 { actor_id, unknown, slot, inventory_type });
+                out.push(LuaParam::Type7 {
+                    actor_id,
+                    unknown,
+                    slot,
+                    inventory_type,
+                });
             }
             0x9 => {
                 let item1 = reader.read_u64::<BigEndian>()?;
@@ -167,7 +177,12 @@ pub fn dump_params(params: &[LuaParam]) -> String {
             LuaParam::False => out.push_str("false"),
             LuaParam::Nil => out.push_str("nil"),
             LuaParam::Actor(v) => out.push_str(&format!("0x{v:X}")),
-            LuaParam::Type7 { actor_id, unknown, slot, inventory_type } => {
+            LuaParam::Type7 {
+                actor_id,
+                unknown,
+                slot,
+                inventory_type,
+            } => {
                 out.push_str(&format!(
                     "Type7 Param: (0x{actor_id:X}, 0x{unknown:X}, 0x{slot:X}, 0x{inventory_type:X})"
                 ));

@@ -189,11 +189,7 @@ impl HitType {
     pub fn landed(self) -> bool {
         !matches!(
             self,
-            Self::Miss
-                | Self::Evade
-                | Self::SingleResist
-                | Self::DoubleResist
-                | Self::FullResist
+            Self::Miss | Self::Evade | Self::SingleResist | Self::DoubleResist | Self::FullResist
         )
     }
 

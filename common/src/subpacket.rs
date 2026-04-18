@@ -22,7 +22,10 @@ pub struct SubPacketHeader {
 impl SubPacketHeader {
     pub fn read(buf: &[u8]) -> Result<Self, PacketError> {
         if buf.len() < SUBPACKET_SIZE {
-            return Err(PacketError::TooSmall { needed: SUBPACKET_SIZE, have: buf.len() });
+            return Err(PacketError::TooSmall {
+                needed: SUBPACKET_SIZE,
+                have: buf.len(),
+            });
         }
         let mut c = Cursor::new(buf);
         Ok(Self {
@@ -56,7 +59,10 @@ pub struct GameMessageHeader {
 impl GameMessageHeader {
     pub fn read(buf: &[u8]) -> Result<Self, PacketError> {
         if buf.len() < GAMEMESSAGE_SIZE {
-            return Err(PacketError::TooSmall { needed: GAMEMESSAGE_SIZE, have: buf.len() });
+            return Err(PacketError::TooSmall {
+                needed: GAMEMESSAGE_SIZE,
+                have: buf.len(),
+            });
         }
         let mut c = Cursor::new(buf);
         Ok(Self {
@@ -89,7 +95,12 @@ impl SubPacket {
     /// Mirrors the C# `SubPacket(bool isGameMessage, ushort opcode, uint sourceId, byte[] data)`.
     /// When `is_game_message` is true, the 16-byte game-message header is
     /// prefixed and the subpacket `type` is forced to 0x03 (GameMessage).
-    pub fn new_with_flag(is_game_message: bool, opcode: u16, source_id: u32, data: Vec<u8>) -> Self {
+    pub fn new_with_flag(
+        is_game_message: bool,
+        opcode: u16,
+        source_id: u32,
+        data: Vec<u8>,
+    ) -> Self {
         let mut header = SubPacketHeader::default();
         let mut game_message = GameMessageHeader::default();
 
@@ -100,13 +111,21 @@ impl SubPacket {
         }
 
         header.source_id = source_id;
-        header.r#type = if is_game_message { SUBPACKET_TYPE_GAMEMESSAGE } else { opcode };
+        header.r#type = if is_game_message {
+            SUBPACKET_TYPE_GAMEMESSAGE
+        } else {
+            opcode
+        };
         header.subpacket_size = (SUBPACKET_SIZE + data.len()) as u16;
         if is_game_message {
             header.subpacket_size += GAMEMESSAGE_SIZE as u16;
         }
 
-        SubPacket { header, game_message, data }
+        SubPacket {
+            header,
+            game_message,
+            data,
+        }
     }
 
     /// Convenience constructor: game-message subpacket.
@@ -118,7 +137,11 @@ impl SubPacket {
     pub fn with_target(other: &SubPacket, new_target: u32) -> Self {
         let mut header = other.header;
         header.target_id = new_target;
-        SubPacket { header, game_message: other.game_message, data: other.data.clone() }
+        SubPacket {
+            header,
+            game_message: other.game_message,
+            data: other.data.clone(),
+        }
     }
 
     pub fn set_target_id(&mut self, target: u32) {
@@ -157,7 +180,11 @@ impl SubPacket {
         let data = bytes[data_start..data_end].to_vec();
 
         *offset += header.subpacket_size as usize;
-        Ok(SubPacket { header, game_message, data })
+        Ok(SubPacket {
+            header,
+            game_message,
+            data,
+        })
     }
 
     /// Try to parse a single subpacket from a buffer slice, returning `None`

@@ -144,7 +144,11 @@ mod tests {
         assert!(s.is_in_event());
         assert_eq!(s.current_event_owner, 42);
         assert_eq!(s.current_event_name, "quest_man0l0");
-        assert!(ob.events.iter().any(|e| matches!(e, EventEvent::EventStarted { .. })));
+        assert!(
+            ob.events
+                .iter()
+                .any(|e| matches!(e, EventEvent::EventStarted { .. }))
+        );
     }
 
     #[test]
@@ -154,7 +158,11 @@ mod tests {
         s.start_event(1, 42, "quest_man0l0", 2, vec![], &mut ob);
         s.end_event(1, &mut ob);
         assert!(!s.is_in_event());
-        assert!(ob.events.iter().any(|e| matches!(e, EventEvent::EndEvent { .. })));
+        assert!(
+            ob.events
+                .iter()
+                .any(|e| matches!(e, EventEvent::EndEvent { .. }))
+        );
     }
 
     #[test]
@@ -164,7 +172,10 @@ mod tests {
         s.start_event(1, 42, "quest_x", 0, vec![], &mut ob);
         ob.drain();
         s.run_event_function(1, "nextDialog", vec![], &mut ob);
-        let ran = ob.events.iter().find(|e| matches!(e, EventEvent::RunEventFunction { .. }));
+        let ran = ob
+            .events
+            .iter()
+            .find(|e| matches!(e, EventEvent::RunEventFunction { .. }));
         match ran {
             Some(EventEvent::RunEventFunction {
                 owner_actor_id,

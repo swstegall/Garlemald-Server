@@ -33,7 +33,11 @@ impl<'a> GmCommandRunner<'a> {
         resolver: &'a PathResolver,
         queue: std::sync::Arc<std::sync::Mutex<CommandQueue>>,
     ) -> Self {
-        Self { resolver, queue, lua: mlua::Lua::new() }
+        Self {
+            resolver,
+            queue,
+            lua: mlua::Lua::new(),
+        }
     }
 
     /// Look up the command's `properties` table without executing `onTrigger`.

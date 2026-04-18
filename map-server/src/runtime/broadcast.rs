@@ -79,8 +79,19 @@ mod tests {
         let registry = ActorRegistry::new();
 
         let mut zone = Zone::new(
-            100, "test", 1, "/Area/Zone/Test", 0, 0, 0,
-            false, false, false, false, false, Some(&StubNavmeshLoader),
+            100,
+            "test",
+            1,
+            "/Area/Zone/Test",
+            0,
+            0,
+            0,
+            false,
+            false,
+            false,
+            false,
+            false,
+            Some(&StubNavmeshLoader),
         );
 
         // Source BattleNpc at origin.
@@ -108,27 +119,48 @@ mod tests {
         );
 
         let zone_arc = Arc::new(RwLock::new(zone));
-        world.register_zone({
-            let z = zone_arc.read().await;
-            Zone::new(
-                z.core.actor_id,
-                z.core.zone_name.clone(),
-                z.core.region_id,
-                z.core.class_path.clone(),
-                0, 0, 0, false, false, false, false, false,
-                Some(&StubNavmeshLoader),
-            )
-        }).await;
+        world
+            .register_zone({
+                let z = zone_arc.read().await;
+                Zone::new(
+                    z.core.actor_id,
+                    z.core.zone_name.clone(),
+                    z.core.region_id,
+                    z.core.class_path.clone(),
+                    0,
+                    0,
+                    0,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    Some(&StubNavmeshLoader),
+                )
+            })
+            .await;
 
         // Register the player handle + client socket.
         registry
-            .insert(ActorHandle::new(10, ActorKindTag::Player, 100, 42, character()))
+            .insert(ActorHandle::new(
+                10,
+                ActorKindTag::Player,
+                100,
+                42,
+                character(),
+            ))
             .await;
         let (tx, mut rx) = mpsc::channel::<Vec<u8>>(4);
         world.register_client(42, ClientHandle::new(42, tx)).await;
 
-        let sent =
-            broadcast_around_actor(&world, &registry, &zone_arc, /* source */ 1, vec![1, 2, 3]).await;
+        let sent = broadcast_around_actor(
+            &world,
+            &registry,
+            &zone_arc,
+            /* source */ 1,
+            vec![1, 2, 3],
+        )
+        .await;
         assert_eq!(sent, 1);
         let got = rx.recv().await.unwrap();
         assert_eq!(got, vec![1, 2, 3]);
@@ -140,9 +172,19 @@ mod tests {
         let registry = ActorRegistry::new();
 
         let zone = Zone::new(
-            100, "inst", 1, "/Area/Zone/Inst", 0, 0, 0,
+            100,
+            "inst",
+            1,
+            "/Area/Zone/Inst",
+            0,
+            0,
+            0,
             /* is_isolated */ true,
-            false, false, false, false, Some(&StubNavmeshLoader),
+            false,
+            false,
+            false,
+            false,
+            Some(&StubNavmeshLoader),
         );
         let zone_arc = Arc::new(RwLock::new(zone));
         let sent = broadcast_around_actor(&world, &registry, &zone_arc, 1, vec![]).await;

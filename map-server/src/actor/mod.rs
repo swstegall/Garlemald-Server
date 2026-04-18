@@ -94,8 +94,12 @@ impl BaseActor {
 
     pub fn is_facing(&self, target: &BaseActor, half_angle_deg: f32) -> bool {
         let half_angle_rad = half_angle_deg.to_radians();
-        let angle_to =
-            common::Vector3::angle_xz(self.position_x, self.position_z, target.position_x, target.position_z);
+        let angle_to = common::Vector3::angle_xz(
+            self.position_x,
+            self.position_z,
+            target.position_x,
+            target.position_z,
+        );
         let diff = (angle_to - self.rotation).rem_euclid(std::f32::consts::TAU);
         diff.min(std::f32::consts::TAU - diff) <= half_angle_rad
     }
@@ -186,11 +190,19 @@ impl CharaState {
     }
 
     pub fn hpp(&self) -> u8 {
-        if self.max_hp == 0 { 0 } else { ((self.hp as i32 * 100) / self.max_hp as i32).clamp(0, 100) as u8 }
+        if self.max_hp == 0 {
+            0
+        } else {
+            ((self.hp as i32 * 100) / self.max_hp as i32).clamp(0, 100) as u8
+        }
     }
 
     pub fn mpp(&self) -> u8 {
-        if self.max_mp == 0 { 0 } else { ((self.mp as i32 * 100) / self.max_mp as i32).clamp(0, 100) as u8 }
+        if self.max_mp == 0 {
+            0
+        } else {
+            ((self.mp as i32 * 100) / self.max_mp as i32).clamp(0, 100) as u8
+        }
     }
 
     pub fn tpp(&self) -> u8 {
@@ -225,7 +237,10 @@ impl Character {
     pub fn new(actor_id: u32) -> Self {
         Self {
             base: BaseActor::new(actor_id),
-            chara: CharaState { is_auto_attack_enabled: true, ..Default::default() },
+            chara: CharaState {
+                is_auto_attack_enabled: true,
+                ..Default::default()
+            },
             status_effects: crate::status::StatusEffectContainer::new(actor_id),
             ai_container: crate::battle::AIContainer::new(actor_id, None, None),
             hate: crate::battle::HateContainer::new(actor_id),
@@ -298,7 +313,10 @@ impl Player {
     pub fn new(actor_id: u32) -> Self {
         let mut me = Self {
             character: Character::new(actor_id),
-            player: PlayerState { is_zone_changing: true, ..Default::default() },
+            player: PlayerState {
+                is_zone_changing: true,
+                ..Default::default()
+            },
             helpers: player::PlayerHelperState::default(),
             item_packages: std::collections::HashMap::new(),
             equipment: None,
@@ -309,8 +327,8 @@ impl Player {
 
     fn install_default_packages(&mut self) {
         use crate::inventory::{
-            default_capacity, ItemPackage, ReferencedItemPackage, PKG_BAZAAR, PKG_CURRENCY_CRYSTALS,
-            PKG_EQUIPMENT, PKG_KEYITEMS, PKG_LOOT, PKG_MELDREQUEST, PKG_NORMAL, PKG_TRADE,
+            ItemPackage, PKG_BAZAAR, PKG_CURRENCY_CRYSTALS, PKG_EQUIPMENT, PKG_KEYITEMS, PKG_LOOT,
+            PKG_MELDREQUEST, PKG_NORMAL, PKG_TRADE, ReferencedItemPackage, default_capacity,
         };
         let aid = self.character.base.actor_id;
         for code in [
@@ -357,7 +375,10 @@ pub struct Npc {
 
 impl Npc {
     pub fn new(actor_id: u32, actor_class_id: u32) -> Self {
-        Self { character: Character::new(actor_id), actor_class_id }
+        Self {
+            character: Character::new(actor_id),
+            actor_class_id,
+        }
     }
 }
 
@@ -406,7 +427,11 @@ mod tests {
 
     #[test]
     fn hpp_math_is_clamped() {
-        let mut state = CharaState { hp: 50, max_hp: 100, ..Default::default() };
+        let mut state = CharaState {
+            hp: 50,
+            max_hp: 100,
+            ..Default::default()
+        };
         assert_eq!(state.hpp(), 50);
         state.hp = 200;
         assert_eq!(state.hpp(), 100);

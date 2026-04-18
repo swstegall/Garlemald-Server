@@ -11,7 +11,7 @@
 #![allow(dead_code)]
 
 use super::effects::{ActionProperty, ActionType, HitType};
-use super::target_find::{ValidTarget, TargetFindAOEType, TargetFindAOETarget};
+use super::target_find::{TargetFindAOETarget, TargetFindAOEType, ValidTarget};
 
 // ---------------------------------------------------------------------------
 // Supporting enums (mostly 1:1 with the C# definitions).
@@ -576,7 +576,10 @@ mod tests {
     #[test]
     fn validate_enemy_target_on_enemy_ok() {
         let c = stub_command(1);
-        assert!(c.validate_main_target(&user_snap(), Some(&target_snap())).is_ok());
+        assert!(
+            c.validate_main_target(&user_snap(), Some(&target_snap()))
+                .is_ok()
+        );
     }
 
     #[test]
