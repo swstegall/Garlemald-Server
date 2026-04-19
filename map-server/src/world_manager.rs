@@ -83,13 +83,13 @@ fn shorten_zone_name(zone_name: &str) -> String {
 /// name, class name, and the LuaParam list that goes into the
 /// `ActorInstantiate` script-bind packet.
 ///
-/// **Currently unused.** Emitting any of the three master spawns to the
-/// 1.23b client triggers STATUS_INVALID_PARAMETER on a deferred callback
-/// ~5s post-login — most likely a failed script/resource load driven by
-/// a ScriptBind LuaParam the client can't resolve against its local
-/// data archive. Kept intact so the implementation can be revived once
-/// we know which specific param path fails.
-#[allow(dead_code)]
+/// Re-enabled after rebuilding ScriptBind LuaParams to match Project
+/// Meteor's `Zone.CreateScriptBindPacket` / `DebugProg.
+/// CreateScriptBindPacket` / `WorldMaster.CreateScriptBindPacket`
+/// verbatim. The earlier STATUS_INVALID_PARAMETER crash traced to a
+/// param list the client couldn't resolve; the current call sites in
+/// `send_zone_in_bundle` build the full 15/9/7-param lists the C#
+/// reference ships.
 fn push_master_spawn(
     subpackets: &mut Vec<common::subpacket::SubPacket>,
     actor_id: u32,
@@ -825,13 +825,117 @@ impl WorldManager {
             initial_town,
             rest_bonus_exp_rate,
         ));
-        // Master-actor spawns (area master / debug / world master) are
-        // still disabled — they crashed the client last round with
-        // STATUS_INVALID_PARAMETER. The login director spawn is
-        // prepended earlier in the bundle (above the player's own
-        // packets) so the client sees the director's `AddActor` before
-        // the player's `ActorInstantiate` references it by actor id.
-        let _ = (&zone_name, &zone_class_path, &zone_class_name);
+        // Master-actor spawns — C# `Player.SendZoneInPackets` queues
+        // `zone.GetSpawnPackets()` + `debugActor.GetSpawnPackets()` +
+        // `worldMaster.GetSpawnPackets()` after the player's own init
+        // packets. Omitting them leaves the 1.23b client's login state
+        // machine waiting on fixed-id actors it expects to resolve
+        // before the zone is considered "live". The earlier removal
+        // was due to a STATUS_INVALID_PARAMETER crash traced to a bad
+        // ScriptBind LuaParam list; we now rebuild those LuaParam sets
+        // directly from `Zone.CreateScriptBindPacket` /
+        // `DebugProg.CreateScriptBindPacket` /
+        // `WorldMaster.CreateScriptBindPacket` in Project Meteor.
+        //
+        // Actor ids are fixed constants in the C# reference:
+        //   WorldMaster = 0x5FF80001   (`/World/WorldMaster_event`)
+        //   Debug       = 0x5FF80002   (`/System/Debug.prog`)
+        //   AreaMaster  = zone_actor_id (runtime, from `AreaCore`)
+        const WORLD_MASTER_ACTOR_ID: u32 = 0x5FF8_0001;
+        const DEBUG_ACTOR_ID: u32 = 0x5FF8_0002;
+
+        // AreaMaster (Zone). 15 LuaParams per `Zone.CreateScriptBindPacket`:
+        //   classPath, false, true, zoneName, "", -1,
+        //   canRideChocobo?1:0 (byte), canStealth, isInn,
+        //   false, false, false, true, isInstanceRaid, isEntranceDesion
+        // We don't track `isEntranceDesion` per-session so pass false (the
+        // C# default — the flag only flips during seamless boundary crossings).
+        let (can_ride_chocobo, can_stealth, is_inn, is_instance_raid) = {
+            let z = zone_arc.read().await;
+            (
+                z.core.can_ride_chocobo,
+                z.core.can_stealth,
+                z.core.is_inn,
+                z.core.is_instance_raid,
+            )
+        };
+        let area_master_params: Vec<common::luaparam::LuaParam> = vec![
+            common::luaparam::LuaParam::String(zone_class_path.clone()),
+            common::luaparam::LuaParam::False,
+            common::luaparam::LuaParam::True,
+            common::luaparam::LuaParam::String(zone_name.clone()),
+            common::luaparam::LuaParam::String(String::new()),
+            common::luaparam::LuaParam::Int32(-1),
+            common::luaparam::LuaParam::UInt32(if can_ride_chocobo { 1 } else { 0 }),
+            if can_stealth {
+                common::luaparam::LuaParam::True
+            } else {
+                common::luaparam::LuaParam::False
+            },
+            if is_inn {
+                common::luaparam::LuaParam::True
+            } else {
+                common::luaparam::LuaParam::False
+            },
+            common::luaparam::LuaParam::False,
+            common::luaparam::LuaParam::False,
+            common::luaparam::LuaParam::False,
+            common::luaparam::LuaParam::True,
+            if is_instance_raid {
+                common::luaparam::LuaParam::True
+            } else {
+                common::luaparam::LuaParam::False
+            },
+            common::luaparam::LuaParam::False,
+        ];
+        let area_master_name = format!("_areaMaster@{:05X}", zone_actor_id << 8);
+        push_master_spawn(
+            &mut subpackets,
+            zone_actor_id,
+            area_master_name,
+            zone_class_name.clone(),
+            area_master_params,
+        );
+
+        // Debug. 9 LuaParams per `DebugProg.CreateScriptBindPacket`:
+        //   "/System/Debug.prog", false, false, false, false, true,
+        //   0xC51F, true, true
+        push_master_spawn(
+            &mut subpackets,
+            DEBUG_ACTOR_ID,
+            "debug".to_string(),
+            "Debug".to_string(),
+            vec![
+                common::luaparam::LuaParam::String("/System/Debug.prog".to_string()),
+                common::luaparam::LuaParam::False,
+                common::luaparam::LuaParam::False,
+                common::luaparam::LuaParam::False,
+                common::luaparam::LuaParam::False,
+                common::luaparam::LuaParam::True,
+                common::luaparam::LuaParam::Int32(0xC51F),
+                common::luaparam::LuaParam::True,
+                common::luaparam::LuaParam::True,
+            ],
+        );
+
+        // WorldMaster. 7 LuaParams per `WorldMaster.CreateScriptBindPacket`:
+        //   "/World/WorldMaster_event", false, false, false, false, false, nil
+        push_master_spawn(
+            &mut subpackets,
+            WORLD_MASTER_ACTOR_ID,
+            "worldMaster".to_string(),
+            "WorldMaster".to_string(),
+            vec![
+                common::luaparam::LuaParam::String("/World/WorldMaster_event".to_string()),
+                common::luaparam::LuaParam::False,
+                common::luaparam::LuaParam::False,
+                common::luaparam::LuaParam::False,
+                common::luaparam::LuaParam::False,
+                common::luaparam::LuaParam::False,
+                common::luaparam::LuaParam::Nil,
+            ],
+        );
+
         let _ = &main_state;
         let _ = &login_director_spec;
 
