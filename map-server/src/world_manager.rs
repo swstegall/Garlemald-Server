@@ -800,6 +800,14 @@ impl WorldManager {
                 current_job as u32,
             ));
         }
+        // C# `Player.CreatePlayerRelatedPackets` unconditionally emits
+        // `SetSpecialEventWork` for the self-view (inside
+        // `IsMyPlayer(requestingPlayerActorId)`). The client treats its
+        // absence as "special-event state unknown" and stalls the
+        // player's init state machine — one of the reasons "Now Loading"
+        // doesn't dismiss even after the zone-in bundle and the
+        // post-bundle `noticeEvent` KickEvent land.
+        subpackets.push(tx::player::build_set_special_event_work(actor_id));
         subpackets.extend(tx::actor::build_player_property_init(
             actor_id,
             hp,

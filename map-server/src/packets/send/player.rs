@@ -152,9 +152,20 @@ pub fn build_set_player_dream(actor_id: u32, dream_id: u8, inn_id: u8) -> SubPac
     SubPacket::new(OP_SET_PLAYER_DREAM, actor_id, data)
 }
 
-/// 0x0196 SetSpecialEventWork — empty-payload trigger.
+/// 0x0196 SetSpecialEventWork. C#
+/// `Packets/Send/Player/SetSpecialEventWorkPacket.cs` writes two `UInt16`
+/// values at offsets 0x00 and 0x02: `0` (unknown) and `18` (a comment in
+/// the C# source notes this is the "Bomb Festival" event code, which
+/// unlocks the Bombdance emote). Our earlier builder emitted an empty
+/// body, which Project Meteor never does — omitting the 18 leaves the
+/// client without a baseline special-event state and its player-init
+/// code path waits for this packet before clearing the loading screen.
 pub fn build_set_special_event_work(actor_id: u32) -> SubPacket {
-    SubPacket::new(OP_SET_SPECIAL_EVENT_WORK, actor_id, body(0x38))
+    let mut data = body(0x38);
+    let mut c = Cursor::new(&mut data[..]);
+    c.write_u16::<LittleEndian>(0).unwrap();
+    c.write_u16::<LittleEndian>(18).unwrap();
+    SubPacket::new(OP_SET_SPECIAL_EVENT_WORK, actor_id, data)
 }
 
 /// 0x01A5 SetPlayerItemStorage — empty marker used at login.
