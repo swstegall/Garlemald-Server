@@ -808,6 +808,23 @@ impl WorldManager {
         // doesn't dismiss even after the zone-in bundle and the
         // post-bundle `noticeEvent` KickEvent land.
         subpackets.push(tx::player::build_set_special_event_work(actor_id));
+        // Three achievement packets follow in C#
+        // `CreatePlayerRelatedPackets`. Omitting them leaves the client's
+        // `achievement.latestAchievement` / `achievement.completed` tables
+        // uninitialised, which surfaces as a `Client Script ERROR:
+        // attempt to index a nil value` the first frame the client's
+        // `DepictionJudge:judgeNameplate()` runs — the nameplate renderer
+        // dereferences achievement state every tick and pops an
+        // "An error has occured. (40000)4" dialog when the read fails.
+        subpackets.push(tx::player::build_set_achievement_points(actor_id, 0));
+        subpackets.push(tx::player::build_set_latest_achievements(
+            actor_id,
+            &[0u32; 5],
+        ));
+        subpackets.push(tx::player::build_set_completed_achievements(
+            actor_id,
+            &[],
+        ));
         subpackets.extend(tx::actor::build_player_property_init(
             actor_id,
             hp,
@@ -866,7 +883,17 @@ impl WorldManager {
             common::luaparam::LuaParam::String(zone_name.clone()),
             common::luaparam::LuaParam::String(String::new()),
             common::luaparam::LuaParam::Int32(-1),
-            common::luaparam::LuaParam::UInt32(if can_ride_chocobo { 1 } else { 0 }),
+            // C# `Zone.CreateScriptBindPacket` passes
+            // `canRideChocobo ? (byte)1 : (byte)0` — explicit byte cast,
+            // LuaParam type 0xC (1 payload byte) on the wire. Emitting
+            // this as UInt32 would inject three extra zero bytes into
+            // the param stream and shift every following param out of
+            // alignment. The 1.23b client's Lua reads the parsed params
+            // positionally; a misaligned stream is read as `nil` where
+            // a value was expected, which surfaces as the Client Script
+            // ERROR "attempt to index a nil value" the client reports
+            // back to us wrapped in an EventStart packet.
+            common::luaparam::LuaParam::Byte(if can_ride_chocobo { 1 } else { 0 }),
             if can_stealth {
                 common::luaparam::LuaParam::True
             } else {

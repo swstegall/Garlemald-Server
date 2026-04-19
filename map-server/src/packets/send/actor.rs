@@ -514,6 +514,20 @@ pub fn build_player_property_init(
     b.add_byte("charaWork.eventSave.bazaarTax", 0);
     b.add_float("charaWork.battleSave.potencial", 6.6);
 
+    // Nameplate-visibility flags. Project Meteor's Player ctor sets
+    // `charaWork.property[0/1/2/4] = 1` and `GetInitPackets` emits any
+    // non-zero property slot. `CharaWork.cs:26` defines the constant
+    // `PROPERTY_NAMEPLATE_VISIBLE = 1` — i.e. slot 1 literally gates
+    // whether the client's `DepictionJudge:judgeNameplate()` can read
+    // its nameplate-config table. Without these slots emitted, that
+    // method indexes a nil table at line 900 on the first frame of the
+    // player's `_onUpdateWork()` tick and the client pops "An error has
+    // occured. (40000)4" and punts back to character select.
+    b.add_byte("charaWork.property[0]", 1);
+    b.add_byte("charaWork.property[1]", 1);
+    b.add_byte("charaWork.property[2]", 1);
+    b.add_byte("charaWork.property[4]", 1);
+
     // Parameters (HP/MP/class).
     b.add_short("charaWork.parameterSave.hp[0]", hp);
     b.add_short("charaWork.parameterSave.hpMax[0]", hp_max);
