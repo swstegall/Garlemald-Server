@@ -143,6 +143,40 @@ impl LuaEngine {
         })
     }
 
+    /// Player-hook helper: load `player.lua` (or whichever script path was
+    /// passed), build a `LuaPlayer` userdata with the caller's snapshot
+    /// wrapping the freshly-created command queue, and invoke `function_name`
+    /// with the player as the sole argument. Mirrors the shape of C#
+    /// `LuaEngine.CallLuaFunction(player, target=player, ...)`. Returns the
+    /// commands drained from the queue so the caller can apply them.
+    pub fn call_player_hook(
+        &self,
+        script_path: &Path,
+        function_name: &str,
+        snapshot: userdata::PlayerSnapshot,
+    ) -> Result<LuaCallResult> {
+        let (lua, queue) = self.load_script(script_path)?;
+        let globals = lua.globals();
+        let f: Function = globals.get(function_name).map_err(|e| {
+            anyhow::anyhow!("{function_name} not in {}: {e}", script_path.display())
+        })?;
+        let player = userdata::LuaPlayer {
+            snapshot,
+            queue: queue.clone(),
+        };
+        let user_data = lua
+            .create_userdata(player)
+            .map_err(|e| anyhow::anyhow!("create_userdata(LuaPlayer): {e}"))?;
+        let result: Value = f
+            .call::<Value>(user_data)
+            .map_err(|e| anyhow::anyhow!("{function_name}: {e}"))?;
+        let commands = CommandQueue::drain(&queue);
+        Ok(LuaCallResult {
+            value: result,
+            commands,
+        })
+    }
+
     /// NPC-specific helper: try the unique-override script first, then fall
     /// back to the base-class script. Mirrors the C# `CallLuaFunctionNpc`.
     pub fn call_npc(

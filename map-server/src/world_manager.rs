@@ -447,6 +447,7 @@ impl WorldManager {
             initial_town,
             rest_bonus_exp_rate,
             current_job,
+            has_login_director,
         ) = {
             let c = actor_handle.character.read().await;
             (
@@ -470,6 +471,7 @@ impl WorldManager {
                 c.chara.initial_town,
                 c.chara.rest_bonus_exp_rate,
                 c.chara.current_job,
+                c.chara.has_login_director,
             )
         };
         let (zone_actor_id, region_id, bgm_day, zone_name, zone_class_path, zone_class_name) = {
@@ -486,22 +488,45 @@ impl WorldManager {
 
         // The "script-bind" for the player — mirrors
         // `Map Server/Actors/Chara/Player/Player.cs` `CreateScriptBindPacket`
-        // for the self-view (IsMyPlayer=true, loginInitDirector==null):
-        //   class_path, true, false, false, true, 0, false, timers[20], true
-        // Timers default to `new uint[20]`, so 20 UInt32(0)s. Without this
-        // list the client can't bind `Player_work` to the avatar and
-        // aborts shortly after Now Loading with error 40000.
+        // for the self-view. Two variants depending on whether the
+        // `player.lua:onBeginLogin` hook attached a login director (via
+        // `player:SetLoginDirector(director)` — fires on the tutorial
+        // path in zones 193/166/184).
+        //
+        // - No director (default): `[classPath, true, false, false, true,
+        //   Int(0), false, timers[20], true]` — 28 params.
+        // - With director: `[classPath, false, false, true, Actor(dirId),
+        //   true, Int(0), false, timers[20], true]` — 29 params, one
+        //   extra `Actor` reference for the director.
+        //
+        // Director spawning is still stubbed, so we send `Actor(0)` as a
+        // placeholder; the client's Lua binder receives it as a null
+        // actor reference, and the tutorial script-bind path still sees
+        // the "Is Init Director = true" flag.
         let player_actor_name = format!("_pc{:08}", actor_id);
         let player_class_name = "Player";
-        let mut script_bind_params: Vec<common::luaparam::LuaParam> = vec![
-            common::luaparam::LuaParam::String("/Chara/Player/Player_work".to_string()),
-            common::luaparam::LuaParam::True,
-            common::luaparam::LuaParam::False,
-            common::luaparam::LuaParam::False,
-            common::luaparam::LuaParam::True,
-            common::luaparam::LuaParam::Int32(0),
-            common::luaparam::LuaParam::False,
-        ];
+        let mut script_bind_params: Vec<common::luaparam::LuaParam> = if has_login_director {
+            vec![
+                common::luaparam::LuaParam::String("/Chara/Player/Player_work".to_string()),
+                common::luaparam::LuaParam::False,
+                common::luaparam::LuaParam::False,
+                common::luaparam::LuaParam::True, // "Is Init Director"
+                common::luaparam::LuaParam::Actor(0),
+                common::luaparam::LuaParam::True,
+                common::luaparam::LuaParam::Int32(0),
+                common::luaparam::LuaParam::False,
+            ]
+        } else {
+            vec![
+                common::luaparam::LuaParam::String("/Chara/Player/Player_work".to_string()),
+                common::luaparam::LuaParam::True,
+                common::luaparam::LuaParam::False,
+                common::luaparam::LuaParam::False,
+                common::luaparam::LuaParam::True,
+                common::luaparam::LuaParam::Int32(0),
+                common::luaparam::LuaParam::False,
+            ]
+        };
         script_bind_params.extend((0..20).map(|_| common::luaparam::LuaParam::UInt32(0)));
         script_bind_params.push(common::luaparam::LuaParam::True);
 

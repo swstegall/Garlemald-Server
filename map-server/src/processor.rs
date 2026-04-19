@@ -273,6 +273,83 @@ impl PacketProcessor {
         self.world.upsert_session(snap).await;
 
         let actor_id = handle.actor_id;
+
+        // Run `player.lua:onBeginLogin(player)` *before* the zone-in
+        // bundle, matching C# `PacketProcessor` case 0x0006 ordering
+        // (`onBeginLogin` → `DoZoneIn` → `onLogin`). The script is what
+        // calls `player:SetLoginDirector(director)` on the tutorial
+        // path (zones 193/166/184) — that flips `has_login_director` on
+        // the Character so `send_zone_in_bundle` can emit the correct
+        // ActorInstantiate LuaParam shape. Without this hook firing the
+        // client stays at Now Loading even when every zone-in packet
+        // lands correctly.
+        //
+        // We drain the command queue and apply only the commands we
+        // know how to handle on the Rust side (SetLoginDirector,
+        // AddQuest, SetHomePoint). Other commands are logged and
+        // skipped — the Lua side-effect surface isn't fully ported.
+        if let Some(ref engine) = self.lua {
+            let script = engine.resolver().player();
+            if script.exists() {
+                // The C# `onBeginLogin` flow is two-pass: the first branch
+                // issues `AddQuest(110001)` when play_time==0, then the
+                // second branch checks `HasQuest(110001)==true` and
+                // attaches the login director. Our Lua call sees a stale
+                // snapshot, so without pre-populating `active_quests`
+                // with the tutorial quest id for a fresh tutorial-zone
+                // character the director branch never fires. Seed the
+                // expected quest based on the initial town / zone so the
+                // second branch evaluates truthy. For tutorial zones:
+                // town 1 → zone 193 → quest 110001
+                // town 2 → zone 166 → quest 110005
+                // town 3 → zone 184 → quest 110009
+                let snapshot = {
+                    let c = handle.character.read().await;
+                    let mut snap = build_player_snapshot_for_login(&c);
+                    let tutorial_quest = match snap.initial_town {
+                        1 => Some(110001u32),
+                        2 => Some(110005u32),
+                        3 => Some(110009u32),
+                        _ => None,
+                    };
+                    if let Some(q) = tutorial_quest
+                        && !snap.active_quests.contains(&q)
+                    {
+                        snap.active_quests.push(q);
+                    }
+                    snap
+                };
+                let snapshot_for_err = snapshot.clone();
+                match engine.call_player_hook(&script, "onBeginLogin", snapshot) {
+                    Ok(result) => {
+                        let cmd_count = result.commands.len();
+                        for cmd in result.commands {
+                            self.apply_login_lua_command(&handle, cmd).await;
+                        }
+                        tracing::info!(
+                            session = session_id,
+                            actor = actor_id,
+                            commands = cmd_count,
+                            "onBeginLogin lua hook ran"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            session = session_id,
+                            actor = snapshot_for_err.actor_id,
+                            "onBeginLogin lua hook failed; continuing without it"
+                        );
+                    }
+                }
+            } else {
+                tracing::debug!(
+                    path = %script.display(),
+                    "player.lua not present; skipping onBeginLogin"
+                );
+            }
+        }
+
         if let Err(e) = self
             .world
             .do_zone_change(actor_id, session_id, zone, spawn, rotation)
@@ -285,8 +362,6 @@ impl PacketProcessor {
                 .await;
         }
 
-        // onBeginLogin / onLogin Lua hooks ride on the LuaEngine wiring
-        // sprint — log so we can see the trigger fired.
         tracing::info!(
             session = session_id,
             language = lang,
@@ -294,6 +369,46 @@ impl PacketProcessor {
             "language code received; login zone-in dispatched",
         );
         Ok(())
+    }
+
+    /// Apply a LuaCommand emitted by `onBeginLogin`. Only the commands
+    /// load-bearing for the login flow are handled here; others are
+    /// logged and dropped.
+    async fn apply_login_lua_command(
+        &self,
+        handle: &ActorHandle,
+        cmd: crate::lua::LuaCommandKind,
+    ) {
+        use crate::lua::LuaCommandKind as LC;
+        match cmd {
+            LC::SetLoginDirector { player_id } => {
+                let mut c = handle.character.write().await;
+                c.chara.has_login_director = true;
+                tracing::info!(
+                    player = player_id,
+                    "SetLoginDirector applied (ScriptBind LuaParams will use tutorial variant)"
+                );
+            }
+            LC::AddQuest {
+                player_id,
+                quest_id,
+            } => {
+                tracing::debug!(player = player_id, quest = quest_id, "AddQuest (stub)");
+            }
+            LC::SetHomePoint {
+                player_id,
+                homepoint,
+            } => {
+                tracing::debug!(
+                    player = player_id,
+                    homepoint,
+                    "SetHomePoint (stub)"
+                );
+            }
+            other => {
+                tracing::debug!(?other, "login lua cmd (unhandled)");
+            }
+        }
     }
 
     async fn handle_game_message(&self, client: &ClientHandle, sub: &SubPacket) -> Result<()> {
@@ -862,4 +977,55 @@ fn hash_name_to_id(name: &str) -> u64 {
         h = h.wrapping_mul(1099511628211).wrapping_add(b as u64);
     }
     h
+}
+
+/// Assemble a `PlayerSnapshot` from just the `Character` state available to
+/// the packet processor (no full `Player` wrapper). The normal
+/// `PlayerSnapshot::from(&Player)` path requires the richer `actor::Player`
+/// struct with helper state we don't have plumbed into `ActorRegistry`
+/// yet — this constructs the subset `player.lua:onBeginLogin` actually
+/// reads: `GetPlayTime` (returns 0 → "new player"), `GetInitialTown`,
+/// `HasQuest`, `GetZoneID`, plus the `playerWork.tribe` field read in
+/// the tutorial branch.
+fn build_player_snapshot_for_login(c: &Character) -> crate::lua::userdata::PlayerSnapshot {
+    crate::lua::userdata::PlayerSnapshot {
+        actor_id: c.base.actor_id,
+        name: c.base.actor_name.clone(),
+        zone_id: c.base.zone_id,
+        pos: (c.base.position_x, c.base.position_y, c.base.position_z),
+        rotation: c.base.rotation,
+        state: c.base.current_main_state,
+        hp: c.chara.hp,
+        max_hp: c.chara.max_hp,
+        mp: c.chara.mp,
+        max_mp: c.chara.max_mp,
+        tp: c.chara.tp,
+        play_time: 0,
+        current_class: c.chara.class.max(0) as u8,
+        current_level: c.chara.level,
+        current_job: c.chara.current_job as u8,
+        current_gil: 0,
+        initial_town: c.chara.initial_town,
+        tribe: c.chara.tribe,
+        guardian: c.chara.guardian,
+        birth_month: c.chara.birthday_month,
+        birth_day: c.chara.birthday_day,
+        homepoint: 0,
+        homepoint_inn: 0,
+        mount_state: 0,
+        has_chocobo: false,
+        is_gm: false,
+        is_engaged: false,
+        is_trading: false,
+        is_trade_accepted: false,
+        is_party_leader: false,
+        current_event_owner: 0,
+        current_event_name: String::new(),
+        current_event_type: 0,
+        completed_quests: Vec::new(),
+        active_quests: Vec::new(),
+        unlocked_aetherytes: Vec::new(),
+        traits: Vec::new(),
+        inventory: Vec::new(),
+    }
 }

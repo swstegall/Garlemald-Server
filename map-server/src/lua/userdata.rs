@@ -626,11 +626,24 @@ impl UserData for LuaPlayer {
                 Ok(())
             },
         );
-        methods.add_method("GetZone", |_, this, _: ()| {
-            // Return the zone id as a Lua integer. Scripts treat the
-            // return value as an opaque handle they then pass back to
-            // other host functions.
-            Ok(this.snapshot.zone_id)
+        methods.add_method("GetZone", |lua, this, _: ()| {
+            // Return a `LuaZone` userdata so scripts can chain
+            // `player:GetZone():CreateDirector(...)`. `battlenpc.lua`
+            // `onBeginLogin` needs this chain for the tutorial zone 193
+            // opening director. An integer handle here would error on
+            // the `:CreateDirector` call and the Lua frame would abort
+            // before `SetLoginDirector` ran.
+            let zone = LuaZone {
+                snapshot: ZoneSnapshot {
+                    zone_id: this.snapshot.zone_id,
+                    zone_name: String::new(),
+                    player_ids: Vec::new(),
+                    npc_ids: Vec::new(),
+                    monster_ids: Vec::new(),
+                },
+                queue: this.queue.clone(),
+            };
+            lua.create_userdata(zone)
         });
         methods.add_method("GetItemPackage", |_, _, _pkg_code: u16| {
             // Real retail returns an ItemPackage userdata. Phase 8c
@@ -638,15 +651,21 @@ impl UserData for LuaPlayer {
             // matches C# `null` when the package isn't loaded yet.
             Ok(Value::Nil)
         });
-        methods.add_method("GetQuest", |_, this, id: u32| {
-            // Returns a placeholder truthy value when the player has
-            // the quest — scripts usually just check for non-nil before
-            // calling `SetQuestFlag` etc.
-            if this.snapshot.active_quests.contains(&id) {
-                Ok(Value::Integer(id as i64))
-            } else {
-                Ok(Value::Nil)
-            }
+        methods.add_method("GetQuest", |lua, this, id: u32| {
+            // Scripts chain `GetQuest(id):ClearQuestData()` / `:ClearQuestFlags()`
+            // (e.g. the tutorial cleanup in battlenpc.lua `onBeginLogin`).
+            // Returning an integer or nil here would error on the method
+            // call; return a `LuaQuestHandle` userdata so the chain runs.
+            // If the player doesn't have the quest, still return a handle
+            // — the C# behaviour is similarly lenient (method no-ops on
+            // missing quest).
+            let handle = LuaQuestHandle {
+                player_id: this.snapshot.actor_id,
+                quest_id: id,
+                has_quest: this.snapshot.active_quests.contains(&id),
+                queue: this.queue.clone(),
+            };
+            lua.create_userdata(handle)
         });
         methods.add_method("RemoveQuest", |_, this, id: u32| {
             push(
@@ -696,7 +715,20 @@ impl UserData for LuaPlayer {
         methods.add_method("RemoveDirector", |_, _this, _director: Value| Ok(()));
         methods.add_method("GetDirector", |_, _this, _id: u32| Ok(Value::Nil));
         methods.add_method("GetGuildleveDirector", |_, _this, _: ()| Ok(Value::Nil));
-        methods.add_method("SetLoginDirector", |_, _this, _director: Value| Ok(()));
+        methods.add_method("SetLoginDirector", |_, this, _director: Value| {
+            // Fire the SetLoginDirector command so the caller can flip
+            // `Character.chara.has_login_director`. The zone-in bundle
+            // reads this flag to switch the ActorInstantiate ScriptBind
+            // LuaParam shape to the "tutorial with init director" variant
+            // expected by the client in zones 193/166/184.
+            push(
+                &this.queue,
+                LuaCommand::SetLoginDirector {
+                    player_id: this.snapshot.actor_id,
+                },
+            );
+            Ok(())
+        });
         methods.add_method("SetEventStatus", |_, _this, _status: Value| Ok(()));
 
         // --- Equipment / inventory ------------------------------------------
@@ -839,6 +871,25 @@ impl UserData for LuaZone {
             Ok(this.snapshot.monster_ids.clone())
         });
         methods.add_method("GetAllies", |_, _this, _: ()| Ok(Vec::<u32>::new()));
+        // `zone:CreateDirector(name, some_flag)` is called from
+        // `battlenpc.lua`/`player.lua` `onBeginLogin` for the tutorial
+        // opening. Returns a `LuaDirectorHandle` so scripts can chain
+        // `:StartDirector(...)` etc. without nil-method errors. The
+        // real director-spawn side effect (packet-level actor spawn)
+        // is deliberately left out — it crashed the client when we
+        // tried it earlier (STATUS_INVALID_PARAMETER). The stub's
+        // purpose is only to keep the script running long enough to
+        // call `player:SetLoginDirector(director)`.
+        methods.add_method(
+            "CreateDirector",
+            |lua, this, (name, _flag): (String, Option<bool>)| {
+                let handle = LuaDirectorHandle {
+                    name,
+                    queue: this.queue.clone(),
+                };
+                lua.create_userdata(handle)
+            },
+        );
         methods.add_method(
             "SpawnActor",
             |_, this, (class_id, x, y, z, rotation): (u32, f32, f32, f32, Option<f32>)| {
@@ -976,5 +1027,85 @@ impl UserData for LuaItemData {
         methods.add_method("GetPrice", |_, this, _: ()| Ok(this.price));
         methods.add_method("GetIcon", |_, this, _: ()| Ok(this.icon));
         methods.add_method("GetRarity", |_, this, _: ()| Ok(this.rarity));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LuaDirectorHandle — stub returned by `Zone:CreateDirector(...)`. All the
+// method chains scripts call on a director (`StartDirector`, `KickEvent`,
+// `EndDirector`, etc.) are no-ops at the userdata layer; the packet-level
+// actor spawn that would normally accompany them is deliberately omitted
+// because emitting an ActorInstantiate for an unresolved director crashes
+// the 1.23b client (earlier observation with master-actor spawns). The
+// whole point of this handle is to let `battlenpc.lua`/`player.lua`
+// `onBeginLogin` reach the `player:SetLoginDirector(director)` call without
+// aborting on a nil-method error.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct LuaDirectorHandle {
+    pub name: String,
+    pub queue: Arc<Mutex<CommandQueue>>,
+}
+
+impl UserData for LuaDirectorHandle {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("GetName", |_, this, _: ()| Ok(this.name.clone()));
+        // Common methods scripts call on directors. All no-ops at the
+        // moment — propagating real director state requires spawning the
+        // director as a tracked actor, which is the follow-up.
+        methods.add_method("StartDirector", |_, _this, _: Option<bool>| Ok(()));
+        methods.add_method("EndDirector", |_, _this, _: ()| Ok(()));
+        methods.add_method("StartSceneSession", |_, _this, _: Option<Value>| Ok(()));
+        methods.add_method("EndSceneSession", |_, _this, _: ()| Ok(()));
+        methods.add_method("AddMember", |_, _this, _member: Value| Ok(()));
+        methods.add_method("RemoveMember", |_, _this, _member: Value| Ok(()));
+        methods.add_method("GetContentMembers", |_, _this, _: ()| Ok(Vec::<u32>::new()));
+        methods.add_method("SetLeader", |_, _this, _actor: Value| Ok(()));
+        methods.add_method("IsInstanceRaid", |_, _this, _: ()| Ok(false));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LuaQuestHandle — stub returned by `player:GetQuest(id)`. Scripts chain
+// `:ClearQuestData()` / `:ClearQuestFlags()` / `:SetQuestFlag(...)` on
+// the return. All no-ops for now; the quest journal lives on the Rust
+// side and is mutated via LuaCommand variants (AddQuest/AbandonQuest).
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct LuaQuestHandle {
+    pub player_id: u32,
+    pub quest_id: u32,
+    pub has_quest: bool,
+    pub queue: Arc<Mutex<CommandQueue>>,
+}
+
+impl UserData for LuaQuestHandle {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("GetQuestId", |_, this, _: ()| Ok(this.quest_id));
+        methods.add_method("HasQuest", |_, this, _: ()| Ok(this.has_quest));
+        methods.add_method("ClearQuestData", |_, _this, _: ()| Ok(()));
+        methods.add_method("ClearQuestFlags", |_, _this, _: ()| Ok(()));
+        methods.add_method(
+            "SetQuestFlag",
+            |_, _this, _args: mlua::MultiValue| Ok(()),
+        );
+        methods.add_method(
+            "GetQuestFlag",
+            |_, _this, _slot: Option<u32>| Ok(false),
+        );
+        methods.add_method(
+            "SetQuestData",
+            |_, _this, _args: mlua::MultiValue| Ok(()),
+        );
+        methods.add_method(
+            "GetQuestData",
+            |_, _this, _slot: Option<u32>| Ok(Value::Nil),
+        );
+        methods.add_method(
+            "SetQuestScenarioCounter",
+            |_, _this, _counter: Option<u32>| Ok(()),
+        );
     }
 }

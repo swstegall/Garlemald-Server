@@ -93,6 +93,14 @@ pub enum LuaCommand {
         player_id: u32,
         homepoint: u32,
     },
+    /// Mirrors `Player.SetLoginDirector(director)` in C# — used by
+    /// `battlenpc.lua` / `player.lua` `onBeginLogin` on the tutorial path.
+    /// Flipping this changes the LuaParam shape of the player's
+    /// `ActorInstantiate` ScriptBind packet (C# `Player.CreateScriptBindPacket`
+    /// branches on `loginInitDirector != null`). Without this command
+    /// being fired on tutorial-zone login the 1.23b client stays at Now
+    /// Loading because it never sees the "init director attached" variant.
+    SetLoginDirector { player_id: u32 },
     RunEventFunction {
         player_id: u32,
         event_name: String,
