@@ -83,8 +83,10 @@ pub fn build_delete_all_actors(actor_id: u32) -> SubPacket {
 }
 
 /// OP_0XF_PACKET (0x000F) — terminator/init marker in the login sequence.
+/// Built as a game-message subpacket (C# `_0xFPacket` uses the
+/// `new SubPacket(OPCODE, ...)` overload, which defaults to isGameMessage=true).
 pub fn build_0xf(actor_id: u32) -> SubPacket {
-    SubPacket::new_with_flag(false, OP_0XF_PACKET, actor_id, body(0x38))
+    SubPacket::new(OP_0XF_PACKET, actor_id, body(0x38))
 }
 
 /// OP_LOGOUT (0x000E) — server-side logout trigger.

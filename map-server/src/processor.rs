@@ -154,6 +154,12 @@ impl PacketProcessor {
         character.chara.max_hp = hp_max;
         character.chara.mp = mp;
         character.chara.max_mp = mp_max;
+        // Pack the DB appearance rows into the 28-slot table the client
+        // expects in `SetActorAppearancePacket`. Without these the zone-in
+        // bundle can't render the avatar and the client hangs at Now
+        // Loading even after all the other init packets land.
+        character.chara.appearance_ids = loaded.appearance.to_slot_ids();
+        character.chara.model_id = loaded.appearance.resolve_model_id(loaded.tribe);
 
         self.registry
             .insert(ActorHandle::new(

@@ -186,6 +186,104 @@ pub struct AppearanceFull {
     pub right_ear: u32,
 }
 
+impl AppearanceFull {
+    /// Pack the raw DB fields into the 28-slot table the client expects in
+    /// `SetActorAppearancePacket` (opcode 0x00D6). Layout mirrors the C#
+    /// `Database.LoadCharacter` → `player.appearanceIds[...]` assignments:
+    /// slot 0 is SIZE; slot 1 packs skin/hair/eye color; slot 2 packs face
+    /// features (characteristics, type, ears, mouth, features, nose,
+    /// eye-shape, iris-size, eyebrows, each one byte wide in appearance
+    /// order); slot 3 packs hair highlight/variation/style; slot 4 is VOICE;
+    /// slots 5+ are weapon/gear slots in the enum order defined on the
+    /// C# packet class.
+    pub fn to_slot_ids(&self) -> [u32; 28] {
+        let mut ids = [0u32; 28];
+        ids[0] = self.size as u32; // SIZE
+        ids[1] = (self.skin_color as u32)
+            | ((self.hair_color as u32) << 10)
+            | ((self.eye_color as u32) << 20); // COLORINFO
+        ids[2] = pack_face_info(
+            self.characteristics,
+            self.characteristics_color,
+            self.face_type,
+            self.ears,
+            self.face_mouth,
+            self.face_features,
+            self.face_nose,
+            self.face_eye_shape,
+            self.face_iris_size,
+            self.face_eyebrows,
+        ); // FACEINFO
+        ids[3] = (self.hair_highlight_color as u32)
+            | ((self.hair_variation as u32) << 5)
+            | ((self.hair_style as u32) << 10); // HIGHLIGHT_HAIR
+        ids[4] = self.voice as u32; // VOICE
+        ids[5] = self.main_hand; // MAINHAND
+        ids[6] = self.off_hand; // OFFHAND
+        // 7..11 unused in the load path (SPMAINHAND..POUCH)
+        ids[12] = self.head; // HEADGEAR
+        ids[13] = self.body; // BODYGEAR
+        ids[14] = self.legs; // LEGSGEAR
+        ids[15] = self.hands; // HANDSGEAR
+        ids[16] = self.feet; // FEETGEAR
+        ids[17] = self.waist; // WAISTGEAR
+        ids[18] = self.neck; // NECKGEAR
+        ids[19] = self.left_ear; // L_EAR
+        ids[20] = self.right_ear; // R_EAR
+        ids[23] = self.right_finger; // R_RINGFINGER
+        ids[24] = self.left_finger; // L_RINGFINGER
+        ids
+    }
+
+    /// Resolve the player's model id. C# falls back to `GetTribeModel(tribe)`
+    /// when `baseId == 0xFFFFFFFF` — the sentinel used by the lobby server
+    /// to mean "use tribe-default model". For now we return a fixed
+    /// Hyur-Midlander-male model when the sentinel is set; a later pass
+    /// can table-drive the full tribe mapping.
+    pub fn resolve_model_id(&self, tribe: u8) -> u32 {
+        if self.base_id == 0xFFFFFFFF {
+            tribe_default_model(tribe)
+        } else {
+            self.base_id
+        }
+    }
+}
+
+/// Pack the 10 face-feature bytes into a single u32. Mirrors the C#
+/// `CharacterUtils.GetFaceInfo` layout: one byte per field, packed
+/// least-significant-first in the listed order (characteristics at bits 0..8,
+/// characteristicsColor at 8..16, etc.). Only the first four fit in a u32;
+/// the rest are discarded by `PrimitiveConversion.ToUInt32` in the C# path
+/// so the 1.23b client only expects the low-order four bytes.
+fn pack_face_info(
+    characteristics: u8,
+    characteristics_color: u8,
+    face_type: u8,
+    ears: u8,
+    _face_mouth: u8,
+    _face_features: u8,
+    _face_nose: u8,
+    _face_eye_shape: u8,
+    _face_iris_size: u8,
+    _face_eyebrows: u8,
+) -> u32 {
+    (characteristics as u32)
+        | ((characteristics_color as u32) << 8)
+        | ((face_type as u32) << 16)
+        | ((ears as u32) << 24)
+}
+
+/// Fallback model id when the DB stores the `baseId = 0xFFFFFFFF` sentinel.
+/// Mirrors C# `CharacterUtils.GetTribeModel` at a coarse level — the full
+/// 14-entry table can ride a later pass once the tribe enum is ported.
+fn tribe_default_model(tribe: u8) -> u32 {
+    // Hyur Midlander Male. Conservative default — most other tribes render
+    // fine with this as a placeholder, though the avatar won't look right.
+    // Matches the pattern the C# server uses at boot (`modelId = 0x10000001`).
+    let _ = tribe;
+    0x10000001
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct StatusEffectEntry {
     pub status_id: u32,

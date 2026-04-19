@@ -116,6 +116,11 @@ pub struct CharaState {
     pub is_auto_attack_enabled: bool,
 
     pub model_id: u32,
+    /// 28-slot appearance/equipment id table sent to the client via
+    /// `SetActorAppearancePacket` (opcode 0x00D6). Indices mirror the C#
+    /// `SetActorAppearancePacket` constants — SIZE=0, COLORINFO=1,
+    /// FACEINFO=2, HIGHLIGHT_HAIR=3, VOICE=4, weapons 5..11, gear 12..27.
+    pub appearance_ids: [u32; 28],
     pub animation_id: u32,
     pub current_target: u32,
     pub current_locked_target: u32,
@@ -155,6 +160,7 @@ impl Default for CharaState {
             is_moving_to_spawn: false,
             is_auto_attack_enabled: false,
             model_id: 0,
+            appearance_ids: [0u32; 28],
             animation_id: 0,
             current_target: 0,
             current_locked_target: 0,

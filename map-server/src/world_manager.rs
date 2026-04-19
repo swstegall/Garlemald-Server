@@ -376,7 +376,7 @@ impl WorldManager {
         };
 
         let actor_id = actor_handle.actor_id;
-        let (actor_name, display_name_id, main_state, position, rotation) = {
+        let (actor_name, display_name_id, main_state, position, rotation, model_id, appearance_ids) = {
             let c = actor_handle.character.read().await;
             (
                 c.base.display_name().to_string(),
@@ -384,6 +384,8 @@ impl WorldManager {
                 c.base.current_main_state as u8,
                 c.base.position(),
                 c.base.rotation,
+                c.chara.model_id,
+                c.chara.appearance_ids,
             )
         };
         let (zone_actor_id, region_id, bgm_day) = {
@@ -427,7 +429,9 @@ impl WorldManager {
             tx::actor::build_set_actor_position(
                 actor_id, -1, position.x, position.y, position.z, rotation, spawn_type, true,
             ),
+            tx::actor::build_set_actor_appearance(actor_id, model_id, &appearance_ids),
             tx::actor::build_set_actor_name(actor_id, display_name_id, &actor_name),
+            tx::handshake::build_0xf(actor_id),
             tx::actor::build_set_actor_state(actor_id, main_state, 0),
             tx::actor::build_set_actor_is_zoning(actor_id, false),
             tx::actor::build_actor_instantiate(
