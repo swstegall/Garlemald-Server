@@ -197,15 +197,19 @@ impl PacketProcessor {
     }
 
     /// Game-message opcode 0x0002 — the client's "I'm here, ack me" frame.
-    /// Mirrors C# `Map/PacketProcessor.cs` case 0x0002: reply with the canned
-    /// 40-byte 0x2 blob with the session id patched into the first four bytes.
+    /// Mirrors C# `Map/PacketProcessor.cs` case 0x0002: reply with the 0x10-
+    /// byte `_0x2Packet` that has source id at offset 0x8, wrapped as a
+    /// game-message subpacket. Without this ack the client never advances
+    /// to sending 0x0006 (LanguageCode), so the login flow stalls before
+    /// `handle_language_code` and the zone-in bundle ever fire.
     async fn handle_gm_handshake_ack(
         &self,
         client: &ClientHandle,
         session_id: u32,
     ) -> Result<()> {
-        let reply = tx::build_handshake_response(session_id);
+        let reply = tx::build_gm_0x02_ack(session_id);
         client.send_bytes(reply.to_bytes()).await;
+        tracing::debug!(session = session_id, "gm handshake ack sent");
         Ok(())
     }
 

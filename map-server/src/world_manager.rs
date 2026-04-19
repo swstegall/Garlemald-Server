@@ -396,29 +396,33 @@ impl WorldManager {
             )
         };
 
-        let packets: Vec<Vec<u8>> = vec![
-            tx::actor::build_set_actor_is_zoning(actor_id, false).to_bytes(),
-            tx::misc::build_set_dalamud(actor_id, 0).to_bytes(),
-            tx::misc::build_set_music(actor_id, bgm_day, 0x01).to_bytes(),
-            tx::misc::build_set_weather(actor_id, 1, 1).to_bytes(),
-            tx::misc::build_set_map(actor_id, zone_actor_id, region_id).to_bytes(),
-            tx::actor::build_add_actor(actor_id, 8).to_bytes(),
-            tx::actor::build_set_actor_speed_default(actor_id).to_bytes(),
+        // Every subpacket crosses the world-server proxy; its reader
+        // (`world-server/src/server.rs`) drops subpackets whose
+        // `target_id == 0`, so tag each one with the session id before
+        // serialising.
+        let subpackets = vec![
+            tx::actor::build_set_actor_is_zoning(actor_id, false),
+            tx::misc::build_set_dalamud(actor_id, 0),
+            tx::misc::build_set_music(actor_id, bgm_day, 0x01),
+            tx::misc::build_set_weather(actor_id, 1, 1),
+            tx::misc::build_set_map(actor_id, zone_actor_id, region_id),
+            tx::actor::build_add_actor(actor_id, 8),
+            tx::actor::build_set_actor_speed_default(actor_id),
             tx::actor::build_set_actor_position(
                 actor_id, -1, position.x, position.y, position.z, rotation, spawn_type, true,
-            )
-            .to_bytes(),
-            tx::actor::build_set_actor_name(actor_id, display_name_id, &actor_name).to_bytes(),
-            tx::actor::build_set_actor_state(actor_id, main_state, 0).to_bytes(),
-            tx::actor::build_set_actor_is_zoning(actor_id, false).to_bytes(),
-            tx::actor::build_actor_instantiate(actor_id, 0, 0, &actor_name, &class_name).to_bytes(),
-            tx::actor_inventory::build_inventory_begin_change(actor_id, true).to_bytes(),
-            tx::actor_inventory::build_inventory_end_change(actor_id).to_bytes(),
-            tx::actor::build_actor_property_init(actor_id).to_bytes(),
+            ),
+            tx::actor::build_set_actor_name(actor_id, display_name_id, &actor_name),
+            tx::actor::build_set_actor_state(actor_id, main_state, 0),
+            tx::actor::build_set_actor_is_zoning(actor_id, false),
+            tx::actor::build_actor_instantiate(actor_id, 0, 0, &actor_name, &class_name),
+            tx::actor_inventory::build_inventory_begin_change(actor_id, true),
+            tx::actor_inventory::build_inventory_end_change(actor_id),
+            tx::actor::build_actor_property_init(actor_id),
         ];
 
-        for bytes in packets {
-            client.send_bytes(bytes).await;
+        for mut sub in subpackets {
+            sub.set_target_id(session_id);
+            client.send_bytes(sub.to_bytes()).await;
         }
         tracing::info!(
             session = session_id,

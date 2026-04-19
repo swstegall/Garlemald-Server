@@ -49,6 +49,19 @@ pub fn build_0x02(actor_id: u32, val: i32) -> SubPacket {
     SubPacket::new_with_flag(false, OP_HANDSHAKE_RESPONSE, actor_id, data)
 }
 
+/// Map-server reply to the client's 0x0002 game-message handshake ack.
+/// Matches `Map Server/Packets/Send/Login/0x2Packet.cs`: a 0x10-byte body
+/// with `source_id` at offset 0x8, wrapped as a game-message subpacket.
+/// Sets `target_id = session_id` so the world server's proxy router
+/// (`world-server/src/server.rs`) forwards it back to the right client.
+pub fn build_gm_0x02_ack(session_id: u32) -> SubPacket {
+    let mut data = body(0x30);
+    data[0x08..0x0C].copy_from_slice(&session_id.to_le_bytes());
+    let mut sub = SubPacket::new(OP_HANDSHAKE_RESPONSE, session_id, data);
+    sub.set_target_id(session_id);
+    sub
+}
+
 /// OP_0XE2 (0x00E2) — mystery client-signalling frame; carries a single int.
 pub fn build_0xe2(actor_id: u32, val: i32) -> SubPacket {
     let mut data = body(0x28);
