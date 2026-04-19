@@ -132,11 +132,12 @@ pub struct CharaState {
     pub initial_town: u8,
     pub rest_bonus_exp_rate: i32,
     /// Set when `player.lua:onBeginLogin` invokes `player:SetLoginDirector(...)`.
-    /// Toggles the branch in `Player.CreateScriptBindPacket` — C# picks a
-    /// different LuaParam layout for the player's ActorInstantiate when a
-    /// login director is attached (tutorial/opening flows). Zone-in bundle
-    /// reads this flag to decide which LuaParams to send.
-    pub has_login_director: bool,
+    /// Non-zero → the ScriptBind LuaParam layout switches to the
+    /// "tutorial with init director" variant C# `Player.CreateScriptBindPacket`
+    /// uses when `loginInitDirector != null`, and the zone-in bundle emits
+    /// the director's 7-packet spawn sequence so the `Actor(…)` reference
+    /// resolves on the client side.
+    pub login_director_actor_id: u32,
     pub animation_id: u32,
     pub current_target: u32,
     pub current_locked_target: u32,
@@ -183,7 +184,7 @@ impl Default for CharaState {
             birthday_month: 0,
             initial_town: 0,
             rest_bonus_exp_rate: 0,
-            has_login_director: false,
+            login_director_actor_id: 0,
             animation_id: 0,
             current_target: 0,
             current_locked_target: 0,

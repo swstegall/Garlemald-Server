@@ -39,6 +39,20 @@ pub struct Session {
     pub destination_y: f32,
     pub destination_z: f32,
     pub destination_rot: f32,
+    /// Pending login director captured during `onBeginLogin`'s
+    /// `zone:CreateDirector(...)` call. `zone_in_bundle` reads this to
+    /// decide whether to emit the director's 7-packet spawn sequence
+    /// and which actor id to reference in the player's ScriptBind
+    /// LuaParam list. `None` → no director (non-tutorial login).
+    pub login_director: Option<LoginDirectorSpec>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LoginDirectorSpec {
+    pub actor_id: u32,
+    pub zone_actor_id: u32,
+    pub class_path: String,
+    pub class_name: String,
 }
 
 impl Session {

@@ -100,7 +100,22 @@ pub enum LuaCommand {
     /// branches on `loginInitDirector != null`). Without this command
     /// being fired on tutorial-zone login the 1.23b client stays at Now
     /// Loading because it never sees the "init director attached" variant.
-    SetLoginDirector { player_id: u32 },
+    SetLoginDirector {
+        player_id: u32,
+        director_actor_id: u32,
+    },
+    /// `zone:CreateDirector(path, hasContentGroup)` in Lua. The C# version
+    /// creates a `Director` actor with `actor_id = (6 << 28) | (zone_actor_id
+    /// << 19) | director_local_id` and loads its `.lua` script. We don't
+    /// persist any director state cross-session yet; this command just
+    /// carries the computed id + classPath back to the Rust side so
+    /// `send_zone_in_bundle` can emit the director's 7-packet spawn
+    /// sequence and `SetLoginDirector` can reference the right actor id.
+    CreateDirector {
+        director_actor_id: u32,
+        zone_actor_id: u32,
+        class_path: String,
+    },
     RunEventFunction {
         player_id: u32,
         event_name: String,

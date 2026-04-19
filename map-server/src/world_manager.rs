@@ -31,6 +31,23 @@ use crate::zone::navmesh::StubNavmeshLoader;
 use crate::zone::private_area::PrivateArea;
 use crate::zone::zone::Zone;
 
+/// Mirror of C# `Director.GenerateActorName` zone-name abbreviation:
+/// `Field→Fld, Dungeon→Dgn, Town→Twn, Battle→Btl, Test→Tes,
+/// Event→Evt, Ship→Shp, Office→Ofc`. Used when building the director's
+/// actor-name field so it matches the format the client expects (e.g.
+/// `ocn0Battle02` → `ocn0Btl02`).
+fn shorten_zone_name(zone_name: &str) -> String {
+    zone_name
+        .replace("Field", "Fld")
+        .replace("Dungeon", "Dgn")
+        .replace("Town", "Twn")
+        .replace("Battle", "Btl")
+        .replace("Test", "Tes")
+        .replace("Event", "Evt")
+        .replace("Ship", "Shp")
+        .replace("Office", "Ofc")
+}
+
 /// Append the full 7-packet spawn sequence for a zone-resident "master"
 /// actor (area master, debug, or world master) — matches C# `Actor.
 /// GetSpawnPackets`: AddActor(0), Speed, SpawnPosition(spawnType=1),
@@ -447,7 +464,7 @@ impl WorldManager {
             initial_town,
             rest_bonus_exp_rate,
             current_job,
-            has_login_director,
+            login_director_actor_id,
         ) = {
             let c = actor_handle.character.read().await;
             (
@@ -471,9 +488,11 @@ impl WorldManager {
                 c.chara.initial_town,
                 c.chara.rest_bonus_exp_rate,
                 c.chara.current_job,
-                c.chara.has_login_director,
+                c.chara.login_director_actor_id,
             )
         };
+        let has_login_director = login_director_actor_id != 0;
+        let login_director_spec = session.login_director.clone();
         let (zone_actor_id, region_id, bgm_day, zone_name, zone_class_path, zone_class_name) = {
             let z = zone_arc.read().await;
             (
@@ -511,7 +530,7 @@ impl WorldManager {
                 common::luaparam::LuaParam::False,
                 common::luaparam::LuaParam::False,
                 common::luaparam::LuaParam::True, // "Is Init Director"
-                common::luaparam::LuaParam::Actor(0),
+                common::luaparam::LuaParam::Actor(login_director_actor_id),
                 common::luaparam::LuaParam::True,
                 common::luaparam::LuaParam::Int32(0),
                 common::luaparam::LuaParam::False,
@@ -541,7 +560,75 @@ impl WorldManager {
         // in particular to instantiate the in-game UI; without these the
         // player sits on "Now Loading" indefinitely after an otherwise
         // clean zone-in bundle.
-        let subpackets = vec![
+        //
+        // The login director (if any) is spawned **first** — C#
+        // `Director.StartDirector(spawnImmediate=true)` emits the
+        // director's 7-packet spawn sequence during `onBeginLogin`
+        // BEFORE `DoZoneIn` runs `SendZoneInPackets`. That ordering
+        // matters: the player's `ActorInstantiate` references the
+        // director via `Actor(login_director_actor_id)` inside its
+        // ScriptBind LuaParams, and the client needs to have seen the
+        // director's `AddActor` before it can resolve that reference.
+        let mut subpackets: Vec<common::subpacket::SubPacket> = Vec::new();
+        if let Some(spec) = &login_director_spec {
+            let zone_short = shorten_zone_name(&zone_name);
+            let mut class_lower = spec.class_name.clone();
+            if let Some(first) = class_lower.chars().next() {
+                let mut lowered = first.to_lowercase().to_string();
+                lowered.push_str(&class_lower[first.len_utf8()..]);
+                class_lower = lowered;
+            }
+            let max_class_len = 20usize.saturating_sub(zone_short.len());
+            if class_lower.len() > max_class_len {
+                class_lower.truncate(max_class_len);
+            }
+            let director_actor_name = format!(
+                "{class_lower}_{zone_short}_0@{zone_actor_id:03X}00",
+                zone_actor_id = spec.zone_actor_id
+            );
+            let director_bind_params = vec![
+                common::luaparam::LuaParam::String(spec.class_path.clone()),
+                common::luaparam::LuaParam::False,
+                common::luaparam::LuaParam::False,
+                common::luaparam::LuaParam::False,
+                common::luaparam::LuaParam::False,
+                common::luaparam::LuaParam::False,
+            ];
+            subpackets.push(tx::actor::build_add_actor(spec.actor_id, 0));
+            subpackets.push(tx::actor::build_set_actor_speed_default(spec.actor_id));
+            subpackets.push(tx::actor::build_set_actor_position(
+                spec.actor_id,
+                spec.actor_id as i32,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0x0,
+                false,
+            ));
+            subpackets.push(tx::actor::build_set_actor_name(
+                spec.actor_id,
+                0,
+                &director_actor_name,
+            ));
+            subpackets.push(tx::actor::build_set_actor_state(spec.actor_id, 0, 0));
+            subpackets.push(tx::actor::build_set_actor_is_zoning(spec.actor_id, false));
+            subpackets.push(tx::actor::build_actor_instantiate(
+                spec.actor_id,
+                0,
+                0x3040,
+                &director_actor_name,
+                &spec.class_name,
+                &director_bind_params,
+            ));
+            tracing::info!(
+                director = spec.actor_id,
+                class_path = %spec.class_path,
+                name = %director_actor_name,
+                "login director spawn packets prepended"
+            );
+        }
+        subpackets.extend(vec![
             tx::actor::build_set_actor_is_zoning(actor_id, false),
             tx::misc::build_set_dalamud(actor_id, 0),
             tx::misc::build_set_music(actor_id, bgm_day, 0x01),
@@ -607,13 +694,13 @@ impl WorldManager {
             tx::actor_inventory::build_inventory_set_begin(actor_id, 35, 0x00FE),
             tx::actor_inventory::build_inventory_set_end(actor_id),
             tx::actor_inventory::build_inventory_end_change(actor_id),
-        ];
+        ]);
         // `Player.GetInitPackets` can span multiple `SetActorProperty`
         // subpackets when the byte budget is exceeded; the builder emits
         // them in order with the right continuation markers (0x60+len on
         // every packet except the last, which gets 0x82+len). Extend the
         // zone-in bundle with whatever the builder returned.
-        let mut subpackets = subpackets;
+        //
         // C# `Player.CreatePlayerRelatedPackets` only emits SetCurrentJob
         // when `currentJob != 0`. Advanced job is 0 by default for a
         // fresh character — sending SetCurrentJob(0) unconditionally was
@@ -643,18 +730,15 @@ impl WorldManager {
             initial_town,
             rest_bonus_exp_rate,
         ));
-        // Master-actor spawns (area master / debug / world master) were
-        // attempted here per C# `Player.SendZoneInPackets`, but emitting
-        // them causes the 1.23b client to raise STATUS_INVALID_PARAMETER
-        // 5–6 seconds post-login, consistently crashing out of Wine. The
-        // exact field is unknown without debug symbols — likely one of
-        // the LuaParam payloads in the ScriptBind triggers a failed
-        // script/resource load on a deferred callback. Leaving them
-        // disabled keeps the client alive at the Now-Loading hang
-        // (which is still our furthest-progress stable state). See
-        // `push_master_spawn` below for the (inactive) implementation.
+        // Master-actor spawns (area master / debug / world master) are
+        // still disabled — they crashed the client last round with
+        // STATUS_INVALID_PARAMETER. The login director spawn is
+        // prepended earlier in the bundle (above the player's own
+        // packets) so the client sees the director's `AddActor` before
+        // the player's `ActorInstantiate` references it by actor id.
         let _ = (&zone_name, &zone_class_path, &zone_class_name);
-        let _ = &main_state; // consumed above; retained in local for future reuse
+        let _ = &main_state;
+        let _ = &login_director_spec;
 
         for mut sub in subpackets {
             sub.set_target_id(session_id);

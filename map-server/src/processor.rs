@@ -399,12 +399,46 @@ impl PacketProcessor {
     ) {
         use crate::lua::LuaCommandKind as LC;
         match cmd {
-            LC::SetLoginDirector { player_id } => {
+            LC::CreateDirector {
+                director_actor_id,
+                zone_actor_id,
+                class_path,
+            } => {
+                // Capture a LoginDirectorSpec on the Session. The
+                // zone-in bundle reads this later to emit the director
+                // spawn sequence AND patch the player's ScriptBind
+                // LuaParams with the correct `Actor(id)` reference.
+                let class_name = class_path
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(&class_path)
+                    .to_string();
+                if let Some(mut snap) = self.world.session(handle.session_id).await {
+                    snap.login_director = Some(crate::data::LoginDirectorSpec {
+                        actor_id: director_actor_id,
+                        zone_actor_id,
+                        class_path: class_path.clone(),
+                        class_name: class_name.clone(),
+                    });
+                    self.world.upsert_session(snap).await;
+                }
+                tracing::info!(
+                    director = director_actor_id,
+                    zone = zone_actor_id,
+                    class_path = %class_path,
+                    "CreateDirector applied (will emit director spawn in zone-in bundle)"
+                );
+            }
+            LC::SetLoginDirector {
+                player_id,
+                director_actor_id,
+            } => {
                 let mut c = handle.character.write().await;
-                c.chara.has_login_director = true;
+                c.chara.login_director_actor_id = director_actor_id;
                 tracing::info!(
                     player = player_id,
-                    "SetLoginDirector applied (ScriptBind LuaParams will use tutorial variant)"
+                    director = director_actor_id,
+                    "SetLoginDirector applied (ScriptBind LuaParams will reference director actor)"
                 );
             }
             // `player.lua:onBeginLogin` for tutorial zones sets the

@@ -715,16 +715,24 @@ impl UserData for LuaPlayer {
         methods.add_method("RemoveDirector", |_, _this, _director: Value| Ok(()));
         methods.add_method("GetDirector", |_, _this, _id: u32| Ok(Value::Nil));
         methods.add_method("GetGuildleveDirector", |_, _this, _: ()| Ok(Value::Nil));
-        methods.add_method("SetLoginDirector", |_, this, _director: Value| {
-            // Fire the SetLoginDirector command so the caller can flip
-            // `Character.chara.has_login_director`. The zone-in bundle
-            // reads this flag to switch the ActorInstantiate ScriptBind
-            // LuaParam shape to the "tutorial with init director" variant
-            // expected by the client in zones 193/166/184.
+        methods.add_method("SetLoginDirector", |_, this, director: Value| {
+            // Extract the director's actor_id from the userdata so we can
+            // reference the spawned actor in the player's ScriptBind
+            // LuaParams. If the script somehow passes a non-director
+            // value, fall back to 0 (client will see a null actor ref).
+            let director_actor_id = match &director {
+                Value::UserData(ud) => ud
+                    .borrow::<LuaDirectorHandle>()
+                    .ok()
+                    .map(|h| h.actor_id)
+                    .unwrap_or(0),
+                _ => 0,
+            };
             push(
                 &this.queue,
                 LuaCommand::SetLoginDirector {
                     player_id: this.snapshot.actor_id,
+                    director_actor_id,
                 },
             );
             Ok(())
@@ -873,18 +881,40 @@ impl UserData for LuaZone {
         methods.add_method("GetAllies", |_, _this, _: ()| Ok(Vec::<u32>::new()));
         // `zone:CreateDirector(name, some_flag)` is called from
         // `battlenpc.lua`/`player.lua` `onBeginLogin` for the tutorial
-        // opening. Returns a `LuaDirectorHandle` so scripts can chain
-        // `:StartDirector(...)` etc. without nil-method errors. The
-        // real director-spawn side effect (packet-level actor spawn)
-        // is deliberately left out — it crashed the client when we
-        // tried it earlier (STATUS_INVALID_PARAMETER). The stub's
-        // purpose is only to keep the script running long enough to
-        // call `player:SetLoginDirector(director)`.
+        // opening. Computes the director's actor id per the C# formula
+        // `(6 << 28) | (zone_actor_id << 19) | director_local_id` (see
+        // `Director.cs` ctor base call) and fires a `CreateDirector`
+        // command so the host can emit the director's spawn packets in
+        // the same pass as the zone-in bundle. Returns a LuaDirectorHandle
+        // carrying that actor id so `player:SetLoginDirector(director)`
+        // can read it back. For the login director we only ever need
+        // one per zone, so `director_local_id` is always 0.
         methods.add_method(
             "CreateDirector",
             |lua, this, (name, _flag): (String, Option<bool>)| {
+                let director_local_id: u32 = 0;
+                let zone_actor_id = this.snapshot.zone_id;
+                let director_actor_id = (6u32 << 28) | (zone_actor_id << 19) | director_local_id;
+                // C# `Director.init()` returns the classPath — for
+                // OpeningDirector that's `/Director/OpeningDirector`.
+                // We reconstruct the path deterministically from the
+                // `name` arg rather than calling the director script's
+                // `init()` here; it matches the OpeningDirector case
+                // and avoids pulling the director script VM into this
+                // userdata method.
+                let class_path = format!("/Director/{name}");
+                push(
+                    &this.queue,
+                    LuaCommand::CreateDirector {
+                        director_actor_id,
+                        zone_actor_id,
+                        class_path: class_path.clone(),
+                    },
+                );
                 let handle = LuaDirectorHandle {
                     name,
+                    actor_id: director_actor_id,
+                    class_path,
                     queue: this.queue.clone(),
                 };
                 lua.create_userdata(handle)
@@ -1045,6 +1075,8 @@ impl UserData for LuaItemData {
 #[derive(Debug, Clone)]
 pub struct LuaDirectorHandle {
     pub name: String,
+    pub actor_id: u32,
+    pub class_path: String,
     pub queue: Arc<Mutex<CommandQueue>>,
 }
 
