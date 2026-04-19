@@ -446,6 +446,7 @@ impl WorldManager {
             birthday_month,
             initial_town,
             rest_bonus_exp_rate,
+            current_job,
         ) = {
             let c = actor_handle.character.read().await;
             (
@@ -468,6 +469,7 @@ impl WorldManager {
                 c.chara.birthday_month,
                 c.chara.initial_town,
                 c.chara.rest_bonus_exp_rate,
+                c.chara.current_job,
             )
         };
         let (zone_actor_id, region_id, bgm_day, zone_name, zone_class_path, zone_class_name) = {
@@ -541,7 +543,6 @@ impl WorldManager {
             tx::actor::build_set_actor_status_all(actor_id, &[0u16; 20]),
             tx::actor::build_set_actor_icon(actor_id, 0),
             tx::actor::build_set_actor_is_zoning(actor_id, false),
-            tx::player::build_set_current_job(actor_id, class_slot as u32),
             tx::actor::build_actor_instantiate(
                 actor_id,
                 0,
@@ -551,6 +552,35 @@ impl WorldManager {
                 &script_bind_params,
             ),
             tx::actor_inventory::build_inventory_begin_change(actor_id, true),
+            // Empty-package brackets for the 6 item packages + equipment,
+            // matching the C# `Player.SendZoneInPackets` sequence that
+            // calls `itemPackages[...].SendFullPackage()` for each of
+            // NORMAL/CURRENCY_CRYSTALS/KEYITEMS/BAZAAR/MELDREQUEST/LOOT
+            // followed by `equipment.SendUpdate()`. For a fresh
+            // character each package is empty — the client still needs
+            // to see the (SetBegin, SetEnd) pair to know the package
+            // exists and is empty.
+            //
+            // `code` values from C# `ItemPackage.cs`, `size` from the
+            // `MAXSIZE_*` constants: NORMAL=0/200, CURRENCY_CRYSTALS=99/320,
+            // KEYITEMS=100/500, BAZAAR=7/10, MELDREQUEST=5/4, LOOT=4/10,
+            // EQUIPMENT=0x00FE/35.
+            tx::actor_inventory::build_inventory_set_begin(actor_id, 200, 0),
+            tx::actor_inventory::build_inventory_set_end(actor_id),
+            tx::actor_inventory::build_inventory_set_begin(actor_id, 320, 99),
+            tx::actor_inventory::build_inventory_set_end(actor_id),
+            tx::actor_inventory::build_inventory_set_begin(actor_id, 500, 100),
+            tx::actor_inventory::build_inventory_set_end(actor_id),
+            tx::actor_inventory::build_inventory_set_begin(actor_id, 10, 7),
+            tx::actor_inventory::build_inventory_set_end(actor_id),
+            tx::actor_inventory::build_inventory_set_begin(actor_id, 4, 5),
+            tx::actor_inventory::build_inventory_set_end(actor_id),
+            tx::actor_inventory::build_inventory_set_begin(actor_id, 10, 4),
+            tx::actor_inventory::build_inventory_set_end(actor_id),
+            // `equipment.SendUpdate` — ReferencedItemPackage shape with
+            // code=0x00FE, size=35. Empty for a fresh character.
+            tx::actor_inventory::build_inventory_set_begin(actor_id, 35, 0x00FE),
+            tx::actor_inventory::build_inventory_set_end(actor_id),
             tx::actor_inventory::build_inventory_end_change(actor_id),
         ];
         // `Player.GetInitPackets` can span multiple `SetActorProperty`
@@ -559,6 +589,18 @@ impl WorldManager {
         // every packet except the last, which gets 0x82+len). Extend the
         // zone-in bundle with whatever the builder returned.
         let mut subpackets = subpackets;
+        // C# `Player.CreatePlayerRelatedPackets` only emits SetCurrentJob
+        // when `currentJob != 0`. Advanced job is 0 by default for a
+        // fresh character — sending SetCurrentJob(0) unconditionally was
+        // a port bug (we were also passing `class_slot` here, which is
+        // the active *class*, not the advanced *job* — distinct fields
+        // in the 1.0 data model).
+        if current_job != 0 {
+            subpackets.push(tx::player::build_set_current_job(
+                actor_id,
+                current_job as u32,
+            ));
+        }
         subpackets.extend(tx::actor::build_player_property_init(
             actor_id,
             hp,

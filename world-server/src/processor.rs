@@ -183,7 +183,15 @@ impl PacketProcessor {
                 );
                 session.client.send_bytes(packet.to_bytes()).await;
             }
-            tracing::info!(session = target, "DoLogin MotD dispatched");
+            // Final step of C# `WorldMaster.DoLogin`: tell the client
+            // which linkshell is active. For a fresh character with no
+            // linkshells the group id is 0 and the "has active" flag
+            // collapses to 0 (see build_set_active_linkshell). This is
+            // the world-side "handshake complete" packet the client
+            // waits on before finalising its chat/UI state.
+            let active_ls = tx::build_set_active_linkshell(target, 0);
+            session.client.send_bytes(active_ls.to_bytes()).await;
+            tracing::info!(session = target, "DoLogin MotD + active-LS dispatched");
         }
 
         // Group creation notification — currently just logged; the full
