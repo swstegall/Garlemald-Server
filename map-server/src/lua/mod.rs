@@ -96,6 +96,19 @@ impl LuaEngine {
         let source = std::fs::read_to_string(path)
             .with_context(|| format!("reading lua script {}", path.display()))?;
         let lua = Arc::new(Lua::new());
+        // Point `require` at the script root so `require("global")` resolves
+        // to `scripts/lua/global.lua`. Without this mlua searches only the
+        // default Lua paths (/usr/local/share/lua/..., ./global.lua) and
+        // `player.lua`'s very first line (`require("global");`) aborts the
+        // script before any function body runs. The `?.lua` / `?/init.lua`
+        // patterns mirror the default lua loader; we just prefix them with
+        // our resolver root.
+        let root = self.resolver.root.display().to_string();
+        let path_patterns = format!("{root}/?.lua;{root}/?/init.lua");
+        {
+            let package: mlua::Table = lua.globals().get("package")?;
+            package.set("path", path_patterns)?;
+        }
         let queue = CommandQueue::new();
         install_globals(&lua, queue.clone(), self.catalogs.clone())?;
         lua.load(&source)
