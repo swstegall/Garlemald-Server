@@ -31,6 +31,43 @@ use crate::zone::navmesh::StubNavmeshLoader;
 use crate::zone::private_area::PrivateArea;
 use crate::zone::zone::Zone;
 
+/// Append the full 7-packet spawn sequence for a zone-resident "master"
+/// actor (area master, debug, or world master) — matches C# `Actor.
+/// GetSpawnPackets`: AddActor(0), Speed, SpawnPosition(spawnType=1),
+/// Name, State(passive), IsZoning(false), ScriptBind. All three master
+/// actors share this shape; the only thing that varies is the actor id,
+/// name, class name, and the LuaParam list that goes into the
+/// `ActorInstantiate` script-bind packet.
+fn push_master_spawn(
+    subpackets: &mut Vec<common::subpacket::SubPacket>,
+    actor_id: u32,
+    actor_name: String,
+    class_name: String,
+    script_bind_params: Vec<common::luaparam::LuaParam>,
+) {
+    subpackets.push(tx::actor::build_add_actor(actor_id, 0));
+    subpackets.push(tx::actor::build_set_actor_speed_default(actor_id));
+    subpackets.push(tx::actor::build_set_actor_position(
+        actor_id, -1, 0.0, 0.0, 0.0, 0.0, 0x1, false,
+    ));
+    // C# `CreateNamePacket` uses displayNameId=0 when a customDisplayName
+    // is set; all three masters ship with names ("debug", "worldMaster",
+    // "_areaMaster@…"). The area master's displayNameId is technically
+    // 0xFFFFFFFF in C# but the packet skips that branch when a custom
+    // name is present, so 0 here is fine.
+    subpackets.push(tx::actor::build_set_actor_name(actor_id, 0, &actor_name));
+    subpackets.push(tx::actor::build_set_actor_state(actor_id, 0, 0));
+    subpackets.push(tx::actor::build_set_actor_is_zoning(actor_id, false));
+    subpackets.push(tx::actor::build_actor_instantiate(
+        actor_id,
+        0,
+        0x3040,
+        &actor_name,
+        &class_name,
+        &script_bind_params,
+    ));
+}
+
 /// Outcome of a single `seamless_check` call. Describes what, if anything,
 /// the player's position change triggered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -420,9 +457,16 @@ impl WorldManager {
                 c.chara.rest_bonus_exp_rate,
             )
         };
-        let (zone_actor_id, region_id, bgm_day) = {
+        let (zone_actor_id, region_id, bgm_day, zone_name, zone_class_path, zone_class_name) = {
             let z = zone_arc.read().await;
-            (z.core.actor_id, z.core.region_id as u32, z.core.bgm_day)
+            (
+                z.core.actor_id,
+                z.core.region_id as u32,
+                z.core.bgm_day,
+                z.core.zone_name.clone(),
+                z.core.class_path.clone(),
+                z.core.class_name.clone(),
+            )
         };
 
         // The "script-bind" for the player — mirrors
@@ -480,7 +524,11 @@ impl WorldManager {
             tx::actor::build_set_actor_name(actor_id, display_name_id, &actor_name),
             tx::handshake::build_0xf(actor_id),
             tx::actor::build_set_actor_state(actor_id, main_state, 0),
+            tx::actor::build_set_actor_sub_state(actor_id, 0, 0, 0, 0, 0, 0),
+            tx::actor::build_set_actor_status_all(actor_id, &[0u16; 20]),
+            tx::actor::build_set_actor_icon(actor_id, 0),
             tx::actor::build_set_actor_is_zoning(actor_id, false),
+            tx::player::build_set_current_job(actor_id, class_slot as u32),
             tx::actor::build_actor_instantiate(
                 actor_id,
                 0,
@@ -509,6 +557,73 @@ impl WorldManager {
                 rest_bonus_exp_rate,
             ),
         ];
+        let mut subpackets = subpackets;
+
+        // Area master / Debug / World master spawns — three zone-resident
+        // static actors C# `Player.SendZoneInPackets` always appends after
+        // the player's own spawn. The client references these from many
+        // scripts (the zone actor for zone-wide events, `worldMaster` for
+        // cross-zone messaging, `debug` for GM utilities). Their absence
+        // appears to keep the client from concluding zone-load.
+        //
+        // IDs are hardcoded in C# `DebugProg` / `WorldMaster`; the area
+        // master gets its id from the zone row. The script-bind LuaParam
+        // shapes mirror each C# actor's `CreateScriptBindPacket` exactly.
+        push_master_spawn(
+            &mut subpackets,
+            zone_actor_id,
+            format!("_areaMaster@{:05X}", zone_actor_id << 8),
+            zone_class_name.clone(),
+            vec![
+                common::luaparam::LuaParam::String(zone_class_path.clone()),
+                common::luaparam::LuaParam::False,
+                common::luaparam::LuaParam::True,
+                common::luaparam::LuaParam::String(zone_name.clone()),
+                common::luaparam::LuaParam::String("/Area/Zone/ZoneDefault".to_string()),
+                common::luaparam::LuaParam::Int32(-1),
+                common::luaparam::LuaParam::Byte(1),
+                common::luaparam::LuaParam::True,
+                common::luaparam::LuaParam::False,
+                common::luaparam::LuaParam::False,
+                common::luaparam::LuaParam::False,
+                common::luaparam::LuaParam::False,
+                common::luaparam::LuaParam::False,
+                common::luaparam::LuaParam::False,
+                common::luaparam::LuaParam::False,
+            ],
+        );
+        push_master_spawn(
+            &mut subpackets,
+            0x5FF80002,
+            "debug".to_string(),
+            "Debug".to_string(),
+            vec![
+                common::luaparam::LuaParam::String("/System/Debug.prog".to_string()),
+                common::luaparam::LuaParam::False,
+                common::luaparam::LuaParam::False,
+                common::luaparam::LuaParam::False,
+                common::luaparam::LuaParam::False,
+                common::luaparam::LuaParam::True,
+                common::luaparam::LuaParam::Int32(0xC51F),
+                common::luaparam::LuaParam::True,
+                common::luaparam::LuaParam::True,
+            ],
+        );
+        push_master_spawn(
+            &mut subpackets,
+            0x5FF80001,
+            "worldMaster".to_string(),
+            "WorldMaster".to_string(),
+            vec![
+                common::luaparam::LuaParam::String("/World/WorldMaster_event".to_string()),
+                common::luaparam::LuaParam::False,
+                common::luaparam::LuaParam::False,
+                common::luaparam::LuaParam::False,
+                common::luaparam::LuaParam::False,
+                common::luaparam::LuaParam::False,
+                common::luaparam::LuaParam::Nil,
+            ],
+        );
 
         for mut sub in subpackets {
             sub.set_target_id(session_id);
