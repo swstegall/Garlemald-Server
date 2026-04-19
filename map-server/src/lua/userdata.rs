@@ -220,6 +220,12 @@ pub struct PlayerSnapshot {
     pub traits: Vec<u16>,
     /// (item_id, quantity) tuples in inventory.
     pub inventory: Vec<(u32, i32)>,
+    /// Set by `player:SetLoginDirector(director)` during `onBeginLogin`
+    /// — zero means no director attached. `player:GetDirector()` reads
+    /// this to hand the `zone.lua:onZoneIn` hook a real director handle
+    /// so its `player:KickEvent(player:GetDirector(), "noticeEvent")`
+    /// call lands on the right actor id.
+    pub login_director_actor_id: u32,
 }
 
 impl From<&crate::actor::Player> for PlayerSnapshot {
@@ -286,6 +292,7 @@ impl From<&crate::actor::Player> for PlayerSnapshot {
             unlocked_aetherytes,
             traits,
             inventory,
+            login_director_actor_id: p.character.chara.login_director_actor_id,
         }
     }
 }
@@ -748,7 +755,29 @@ impl UserData for LuaPlayer {
             Ok(())
         });
         methods.add_method("RemoveDirector", |_, _this, _director: Value| Ok(()));
-        methods.add_method("GetDirector", |_, _this, _id: u32| Ok(Value::Nil));
+        methods.add_method("GetDirector", |lua, this, _id: Option<u32>| {
+            // `zone.lua:onZoneIn` calls `player:GetDirector()` to recover
+            // the login director attached earlier by `onBeginLogin`'s
+            // `player:SetLoginDirector(director)`. Returning nil here
+            // caused the followup `player:KickEvent(player:GetDirector(),
+            // "noticeEvent")` to fall through to `current_event_owner`
+            // (0 on fresh login), emitting a malformed KickEventPacket
+            // that the client silently drops — which is precisely why
+            // "Now Loading" never dismissed after the opening director
+            // spawn. Hand back a real `LuaDirectorHandle` so the 2-arg
+            // `KickEvent` resolves to the director's actor id.
+            if this.snapshot.login_director_actor_id == 0 {
+                return Ok(Value::Nil);
+            }
+            let handle = LuaDirectorHandle {
+                name: String::new(),
+                actor_id: this.snapshot.login_director_actor_id,
+                class_path: String::new(),
+                queue: this.queue.clone(),
+            };
+            let ud = lua.create_userdata(handle)?;
+            Ok(Value::UserData(ud))
+        });
         methods.add_method("GetGuildleveDirector", |_, _this, _: ()| Ok(Value::Nil));
         methods.add_method("SetLoginDirector", |_, this, director: Value| {
             // Extract the director's actor_id from the userdata so we can

@@ -422,9 +422,149 @@ impl PacketProcessor {
                     ),
                 }
             }
+
+            // C# `WorldManager.DoZoneIn` ends with
+            // `LuaEngine.CallLuaFunction(player, playerArea, "onZoneIn", true)`
+            // — fired AFTER `SendZoneInPackets`, `SendInstanceUpdate`, and
+            // `LockUpdates(false)`. For the tutorial zone `ocn0Battle02`
+            // that hook re-kicks the opening director with
+            // `player:KickEvent(player:GetDirector(), "noticeEvent")`
+            // (no varargs). The packet from the first KickEvent inside
+            // the zone-in bundle is apparently not enough on its own —
+            // the client also needs this second KickEvent that arrives
+            // *after* it has finished ingesting the bundle. Missing this
+            // call is what leaves "Now Loading" on screen indefinitely.
+            let zone_name = match self.world.zone(zone).await {
+                Some(z) => z.read().await.core.zone_name.clone(),
+                None => String::new(),
+            };
+            if !zone_name.is_empty() {
+                let zone_script = engine.resolver().zone(&zone_name);
+                if zone_script.exists() {
+                    let snapshot = {
+                        let c = handle.character.read().await;
+                        build_player_snapshot_for_login(&c)
+                    };
+                    let result =
+                        engine.call_player_hook_best_effort(&zone_script, "onZoneIn", snapshot);
+                    let cmd_count = result.commands.len();
+                    for cmd in result.commands {
+                        self.apply_post_zone_in_lua_command(&handle, session_id, cmd)
+                            .await;
+                    }
+                    match result.error {
+                        None => tracing::info!(
+                            session = session_id,
+                            actor = actor_id,
+                            zone = %zone_name,
+                            commands = cmd_count,
+                            "onZoneIn lua hook ran"
+                        ),
+                        Some(e) => tracing::warn!(
+                            error = %e,
+                            session = session_id,
+                            actor = actor_id,
+                            zone = %zone_name,
+                            commands = cmd_count,
+                            "onZoneIn lua hook errored; applied partial commands"
+                        ),
+                    }
+                } else {
+                    tracing::debug!(
+                        path = %zone_script.display(),
+                        "zone.lua not present; skipping onZoneIn"
+                    );
+                }
+            }
         }
 
         Ok(())
+    }
+
+    /// Commands emitted by `zone.lua:onZoneIn` arrive *after* the zone-in
+    /// bundle has already been flushed to the client. KickEvent in
+    /// particular has to be sent immediately as its own subpacket rather
+    /// than captured onto `session.pending_kick_event` (which would be
+    /// read by a future `send_zone_in_bundle` call that never comes).
+    async fn apply_post_zone_in_lua_command(
+        &self,
+        handle: &ActorHandle,
+        session_id: u32,
+        cmd: crate::lua::LuaCommandKind,
+    ) {
+        use crate::lua::LuaCommandKind as LC;
+        match cmd {
+            LC::KickEvent {
+                player_id,
+                actor_id,
+                trigger,
+                args,
+            } => {
+                if actor_id == 0 {
+                    tracing::debug!(
+                        %trigger,
+                        "onZoneIn KickEvent skipped — no director actor id"
+                    );
+                    return;
+                }
+                let lua_params: Vec<common::luaparam::LuaParam> = args
+                    .into_iter()
+                    .map(|a| match a {
+                        crate::lua::command::LuaCommandArg::Int(i) => {
+                            common::luaparam::LuaParam::Int32(i as i32)
+                        }
+                        crate::lua::command::LuaCommandArg::UInt(u) => {
+                            common::luaparam::LuaParam::UInt32(u as u32)
+                        }
+                        crate::lua::command::LuaCommandArg::Float(_) => {
+                            common::luaparam::LuaParam::Int32(0)
+                        }
+                        crate::lua::command::LuaCommandArg::String(s) => {
+                            common::luaparam::LuaParam::String(s)
+                        }
+                        crate::lua::command::LuaCommandArg::Bool(true) => {
+                            common::luaparam::LuaParam::True
+                        }
+                        crate::lua::command::LuaCommandArg::Bool(false) => {
+                            common::luaparam::LuaParam::False
+                        }
+                        crate::lua::command::LuaCommandArg::Nil => {
+                            common::luaparam::LuaParam::Nil
+                        }
+                        crate::lua::command::LuaCommandArg::ActorId(id) => {
+                            common::luaparam::LuaParam::Actor(id)
+                        }
+                    })
+                    .collect();
+                // C# `Player.KickEvent` always uses event_type=5 (the
+                // 2-arg Lua form and 3-arg form both land here); only
+                // the rarely-used `KickEventSpecial` uses 0.
+                let mut sub = crate::packets::send::events::build_kick_event(
+                    player_id, actor_id, &trigger, 5, &lua_params,
+                );
+                sub.set_target_id(session_id);
+                if let Some(client) = self.world.client(session_id).await {
+                    client.send_bytes(sub.to_bytes()).await;
+                    tracing::info!(
+                        session = session_id,
+                        trigger_actor = player_id,
+                        owner_actor = actor_id,
+                        event = %trigger,
+                        args = lua_params.len(),
+                        "onZoneIn KickEvent dispatched directly to client"
+                    );
+                } else {
+                    tracing::warn!(
+                        session = session_id,
+                        "onZoneIn KickEvent dropped — no client handle"
+                    );
+                }
+                let _ = handle.actor_id;
+            }
+            other => {
+                tracing::debug!(?other, "post-zone-in lua cmd (unhandled)");
+            }
+        }
     }
 
     /// Apply a LuaCommand emitted by `onBeginLogin`. Only the commands
@@ -1250,5 +1390,6 @@ fn build_player_snapshot_for_login(c: &Character) -> crate::lua::userdata::Playe
         unlocked_aetherytes: Vec::new(),
         traits: Vec::new(),
         inventory: Vec::new(),
+        login_director_actor_id: c.chara.login_director_actor_id,
     }
 }

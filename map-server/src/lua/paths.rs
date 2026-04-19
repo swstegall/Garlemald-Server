@@ -19,7 +19,20 @@ impl PathResolver {
     }
 
     pub fn zone(&self, zone_name: &str) -> PathBuf {
-        self.root.join(format!("unique/{zone_name}/zone.lua"))
+        // C# `LuaEngine.GetLuaScriptPath` for `Area` targets returns
+        // `./scripts/unique/{zoneName}/zone.lua`. In both Project Meteor's
+        // `Data/scripts/` snapshot and our own `scripts/lua/`, the actual
+        // on-disk `zone.lua` lives one level deeper — under
+        // `unique/{zoneName}/PopulaceStandard/`. Prefer the flat path when
+        // it exists (in case a zone has been promoted to the canonical
+        // location) and fall back to the PopulaceStandard subdir so
+        // `ocn0Battle02` (and every other tutorial/town/field zone) resolves.
+        let flat = self.root.join(format!("unique/{zone_name}/zone.lua"));
+        if flat.exists() {
+            return flat;
+        }
+        self.root
+            .join(format!("unique/{zone_name}/PopulaceStandard/zone.lua"))
     }
 
     pub fn npc(&self, zone_name: &str, class_name: &str, unique_id: &str) -> PathBuf {
