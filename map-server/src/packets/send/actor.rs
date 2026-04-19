@@ -374,4 +374,107 @@ pub fn build_actor_property_init(actor_id: u32) -> SubPacket {
     SubPacket::new(OP_SET_ACTOR_PROPERTY, actor_id, data)
 }
 
+/// Player-specific `/_init` property dump, modelled on C#
+/// `Player.GetInitPackets()` + `ActorPropertyPacketUtil`. The 1.23b client
+/// treats the minimal Actor init (3 anonymous flags) as enough to render a
+/// generic NPC, but the Player UI needs HP/MP/class info before it will
+/// leave "Now Loading" and instantiate the HUD. Property ids are the
+/// Murmur2 hash of the path string; the byte prefixes match
+/// `SetActorPropetyPacket.AddByte/AddShort/AddInt`.
+///
+/// Fields and field widths follow the C# reflection path:
+/// - `charaWork.parameterSave.hp[0]`                 u16 (AddShort, type 2)
+/// - `charaWork.parameterSave.hpMax[0]`              u16
+/// - `charaWork.parameterSave.mp`                    u16
+/// - `charaWork.parameterSave.mpMax`                 u16
+/// - `charaWork.parameterTemp.tp`                    u16
+/// - `charaWork.parameterSave.state_mainSkill[0]`    u8 (AddByte, type 1)
+/// - `charaWork.parameterSave.state_mainSkillLevel`  u8
+/// - `charaWork.commandBorder`                       u8
+/// - `playerWork.tribe`                              u8
+/// - `playerWork.guardian`                           u8
+/// - `playerWork.birthdayDay`                        u8
+/// - `playerWork.birthdayMonth`                      u8
+/// - `playerWork.initialTown`                        u8
+/// - `playerWork.restBonusExpRate`                   i32 (AddInt, type 4)
+///
+/// Total wire cost: 9×AddByte (54) + 5×AddShort (35) + 1×AddInt (9) +
+/// target marker (7) = 105 bytes. Stays under the C# MAXBYTES=125 limit
+/// so it all fits in a single packet.
+#[allow(clippy::too_many_arguments)]
+pub fn build_player_property_init(
+    actor_id: u32,
+    hp: u16,
+    hp_max: u16,
+    mp: u16,
+    mp_max: u16,
+    tp: u16,
+    main_skill: u8,
+    main_skill_level: u8,
+    command_border: u8,
+    tribe: u8,
+    guardian: u8,
+    birthday_day: u8,
+    birthday_month: u8,
+    initial_town: u8,
+    rest_bonus_exp_rate: i32,
+) -> SubPacket {
+    let mut data = body(0xA8);
+    let mut c = Cursor::new(&mut data[..]);
+    c.set_position(1);
+
+    // AddShort(id, value) — type=2, then u32 id, then u16 value. 7 bytes.
+    let add_short = |c: &mut Cursor<&mut [u8]>, name: &str, value: u16| {
+        let id = common::utils::murmur_hash2(name, 0);
+        c.write_u8(2).unwrap();
+        c.write_u32::<LittleEndian>(id).unwrap();
+        c.write_u16::<LittleEndian>(value).unwrap();
+    };
+    // AddByte(id, value) — type=1, u32 id, u8 value. 6 bytes.
+    let add_byte = |c: &mut Cursor<&mut [u8]>, name: &str, value: u8| {
+        let id = common::utils::murmur_hash2(name, 0);
+        c.write_u8(1).unwrap();
+        c.write_u32::<LittleEndian>(id).unwrap();
+        c.write_u8(value).unwrap();
+    };
+    // AddInt(id, value) — type=4, u32 id, u32 value. 9 bytes.
+    let add_int = |c: &mut Cursor<&mut [u8]>, name: &str, value: u32| {
+        let id = common::utils::murmur_hash2(name, 0);
+        c.write_u8(4).unwrap();
+        c.write_u32::<LittleEndian>(id).unwrap();
+        c.write_u32::<LittleEndian>(value).unwrap();
+    };
+
+    add_short(&mut c, "charaWork.parameterSave.hp[0]", hp);
+    add_short(&mut c, "charaWork.parameterSave.hpMax[0]", hp_max);
+    add_short(&mut c, "charaWork.parameterSave.mp", mp);
+    add_short(&mut c, "charaWork.parameterSave.mpMax", mp_max);
+    add_short(&mut c, "charaWork.parameterTemp.tp", tp);
+    add_byte(&mut c, "charaWork.parameterSave.state_mainSkill[0]", main_skill);
+    add_byte(
+        &mut c,
+        "charaWork.parameterSave.state_mainSkillLevel",
+        main_skill_level,
+    );
+    add_byte(&mut c, "charaWork.commandBorder", command_border);
+    add_byte(&mut c, "playerWork.tribe", tribe);
+    add_byte(&mut c, "playerWork.guardian", guardian);
+    add_byte(&mut c, "playerWork.birthdayDay", birthday_day);
+    add_byte(&mut c, "playerWork.birthdayMonth", birthday_month);
+    add_byte(&mut c, "playerWork.initialTown", initial_town);
+    add_int(
+        &mut c,
+        "playerWork.restBonusExpRate",
+        rest_bonus_exp_rate as u32,
+    );
+
+    let target = b"/_init";
+    c.write_u8(0x82u8 + target.len() as u8).unwrap();
+    c.write_all(target).unwrap();
+
+    let running_total = 5 * 7 + 9 * 6 + 1 * 9 + 1 + target.len();
+    data[0] = running_total as u8;
+    SubPacket::new(OP_SET_ACTOR_PROPERTY, actor_id, data)
+}
+
 use std::io::Write as _;

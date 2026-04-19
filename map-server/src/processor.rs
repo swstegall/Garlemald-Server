@@ -160,6 +160,13 @@ impl PacketProcessor {
         // Loading even after all the other init packets land.
         character.chara.appearance_ids = loaded.appearance.to_slot_ids();
         character.chara.model_id = loaded.appearance.resolve_model_id(loaded.tribe);
+        character.chara.tribe = loaded.tribe;
+        character.chara.guardian = loaded.guardian;
+        character.chara.birthday_day = loaded.birth_day;
+        character.chara.birthday_month = loaded.birth_month;
+        character.chara.initial_town = loaded.initial_town;
+        character.chara.rest_bonus_exp_rate = loaded.rest_bonus_exp_rate;
+        character.chara.tp = 0;
 
         self.registry
             .insert(ActorHandle::new(

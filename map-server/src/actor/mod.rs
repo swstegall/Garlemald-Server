@@ -121,6 +121,16 @@ pub struct CharaState {
     /// `SetActorAppearancePacket` constants — SIZE=0, COLORINFO=1,
     /// FACEINFO=2, HIGHLIGHT_HAIR=3, VOICE=4, weapons 5..11, gear 12..27.
     pub appearance_ids: [u32; 28],
+    /// `playerWork.*` profile fields emitted in the `/_init` property dump
+    /// mirrored from C# `Player.GetInitPackets()`. These exist on
+    /// CharaState so the zone-in bundle can read them without a second DB
+    /// round-trip; only populated for players, zero for NPCs.
+    pub tribe: u8,
+    pub guardian: u8,
+    pub birthday_day: u8,
+    pub birthday_month: u8,
+    pub initial_town: u8,
+    pub rest_bonus_exp_rate: i32,
     pub animation_id: u32,
     pub current_target: u32,
     pub current_locked_target: u32,
@@ -161,6 +171,12 @@ impl Default for CharaState {
             is_auto_attack_enabled: false,
             model_id: 0,
             appearance_ids: [0u32; 28],
+            tribe: 0,
+            guardian: 0,
+            birthday_day: 0,
+            birthday_month: 0,
+            initial_town: 0,
+            rest_bonus_exp_rate: 0,
             animation_id: 0,
             current_target: 0,
             current_locked_target: 0,

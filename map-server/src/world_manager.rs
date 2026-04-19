@@ -376,7 +376,27 @@ impl WorldManager {
         };
 
         let actor_id = actor_handle.actor_id;
-        let (actor_name, display_name_id, main_state, position, rotation, model_id, appearance_ids) = {
+        let (
+            actor_name,
+            display_name_id,
+            main_state,
+            position,
+            rotation,
+            model_id,
+            appearance_ids,
+            hp,
+            hp_max,
+            mp,
+            mp_max,
+            tp,
+            class_slot,
+            tribe,
+            guardian,
+            birthday_day,
+            birthday_month,
+            initial_town,
+            rest_bonus_exp_rate,
+        ) = {
             let c = actor_handle.character.read().await;
             (
                 c.base.display_name().to_string(),
@@ -386,6 +406,18 @@ impl WorldManager {
                 c.base.rotation,
                 c.chara.model_id,
                 c.chara.appearance_ids,
+                c.chara.hp.max(0) as u16,
+                c.chara.max_hp.max(0) as u16,
+                c.chara.mp.max(0) as u16,
+                c.chara.max_mp.max(0) as u16,
+                c.chara.tp,
+                c.chara.class.max(0) as u8,
+                c.chara.tribe,
+                c.chara.guardian,
+                c.chara.birthday_day,
+                c.chara.birthday_month,
+                c.chara.initial_town,
+                c.chara.rest_bonus_exp_rate,
             )
         };
         let (zone_actor_id, region_id, bgm_day) = {
@@ -418,6 +450,13 @@ impl WorldManager {
         // (`world-server/src/server.rs`) drops subpackets whose
         // `target_id == 0`, so tag each one with the session id before
         // serialising.
+        //
+        // The 8 `_0x132` packets register the client's command / widget /
+        // macro system. They fire only for the self-view — mirrors the C#
+        // `Player.Create0x132Packets()`. The client needs `widgetCreate`
+        // in particular to instantiate the in-game UI; without these the
+        // player sits on "Now Loading" indefinitely after an otherwise
+        // clean zone-in bundle.
         let subpackets = vec![
             tx::actor::build_set_actor_is_zoning(actor_id, false),
             tx::misc::build_set_dalamud(actor_id, 0),
@@ -425,6 +464,14 @@ impl WorldManager {
             tx::misc::build_set_weather(actor_id, 1, 1),
             tx::misc::build_set_map(actor_id, region_id, zone_actor_id),
             tx::actor::build_add_actor(actor_id, 8),
+            tx::actor::build_0x132(actor_id, 0x0B, "commandForced"),
+            tx::actor::build_0x132(actor_id, 0x0A, "commandDefault"),
+            tx::actor::build_0x132(actor_id, 0x06, "commandWeak"),
+            tx::actor::build_0x132(actor_id, 0x04, "commandContent"),
+            tx::actor::build_0x132(actor_id, 0x06, "commandJudgeMode"),
+            tx::actor::build_0x132(actor_id, 0x100, "commandRequest"),
+            tx::actor::build_0x132(actor_id, 0x100, "widgetCreate"),
+            tx::actor::build_0x132(actor_id, 0x100, "macroRequest"),
             tx::actor::build_set_actor_speed_default(actor_id),
             tx::actor::build_set_actor_position(
                 actor_id, -1, position.x, position.y, position.z, rotation, spawn_type, true,
@@ -444,7 +491,23 @@ impl WorldManager {
             ),
             tx::actor_inventory::build_inventory_begin_change(actor_id, true),
             tx::actor_inventory::build_inventory_end_change(actor_id),
-            tx::actor::build_actor_property_init(actor_id),
+            tx::actor::build_player_property_init(
+                actor_id,
+                hp,
+                hp_max,
+                mp,
+                mp_max,
+                tp,
+                class_slot,
+                1,
+                0,
+                tribe,
+                guardian,
+                birthday_day,
+                birthday_month,
+                initial_town,
+                rest_bonus_exp_rate,
+            ),
         ];
 
         for mut sub in subpackets {
