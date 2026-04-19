@@ -580,9 +580,19 @@ pub fn build_player_property_init(
     for i in 0..36 {
         b.add_byte(&format!("charaWork.additionalCommandAcquired[{}]", i), 1);
     }
-    // `battleTemp.generalParameter[3] = 1` — specific short slot
-    // Project Meteor sets before AddProperty iterates the array (with
-    // `i >= 3` guard, so only this one slot gets emitted).
+    // `battleTemp.generalParameter[0..3] = 1` — the first three slots are
+    // `NAMEPLATE_SHOWN` (0), `TARGETABLE` (1), `NAMEPLATE_SHOWN2` (2) per
+    // Project Meteor's `BattleTemp.cs` constants; slot 3 is STR. Project
+    // Meteor's `GetInitPackets` starts iterating at `i = 3` and only
+    // emits non-zero entries — so slots 0/1/2 ride on a client-local
+    // default. Our test client (1.23b under Wine) behaves as if those
+    // defaults are nil rather than 1, so `DepictionJudge:judgeNameplate()`
+    // indexes a nil visibility table at line 900. Emit all three
+    // explicitly to seed the client's nameplate-visibility state before
+    // the first `_onUpdateWork` tick.
+    b.add_short("charaWork.battleTemp.generalParameter[0]", 1);
+    b.add_short("charaWork.battleTemp.generalParameter[1]", 1);
+    b.add_short("charaWork.battleTemp.generalParameter[2]", 1);
     b.add_short("charaWork.battleTemp.generalParameter[3]", 1);
 
     // C# forces `commandCategory[i] = 1` for all 64 slots. byte[].
