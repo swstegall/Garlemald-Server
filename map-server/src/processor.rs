@@ -485,19 +485,52 @@ impl PacketProcessor {
                 player_id,
                 actor_id,
                 trigger,
-                args: _,
+                args,
             } => {
                 // Capture onto the session so send_zone_in_bundle can
                 // emit the KickEventPacket after the director spawn.
                 // C# `Player.KickEvent` runs with `eventType = 5` —
                 // that specific value triggers the cutscene dispatcher
                 // inside the 1.23b client. The `actor_id` is the owner
-                // (the director actor we just spawned).
+                // (the director actor we just spawned). Args from the
+                // script (e.g. the `true` in `player:KickEvent(director,
+                // "noticeEvent", true)`) are promoted to `LuaParam`s
+                // and written into the packet body at offset 0x30.
+                let lua_params: Vec<common::luaparam::LuaParam> = args
+                    .into_iter()
+                    .map(|a| match a {
+                        crate::lua::command::LuaCommandArg::Int(i) => {
+                            common::luaparam::LuaParam::Int32(i as i32)
+                        }
+                        crate::lua::command::LuaCommandArg::UInt(u) => {
+                            common::luaparam::LuaParam::UInt32(u as u32)
+                        }
+                        crate::lua::command::LuaCommandArg::Float(_) => {
+                            common::luaparam::LuaParam::Int32(0)
+                        }
+                        crate::lua::command::LuaCommandArg::String(s) => {
+                            common::luaparam::LuaParam::String(s)
+                        }
+                        crate::lua::command::LuaCommandArg::Bool(true) => {
+                            common::luaparam::LuaParam::True
+                        }
+                        crate::lua::command::LuaCommandArg::Bool(false) => {
+                            common::luaparam::LuaParam::False
+                        }
+                        crate::lua::command::LuaCommandArg::Nil => {
+                            common::luaparam::LuaParam::Nil
+                        }
+                        crate::lua::command::LuaCommandArg::ActorId(id) => {
+                            common::luaparam::LuaParam::Actor(id)
+                        }
+                    })
+                    .collect();
                 if let Some(mut snap) = self.world.session(handle.session_id).await {
                     snap.pending_kick_event = Some(crate::data::PendingKickEvent {
                         trigger_actor_id: player_id,
                         owner_actor_id: actor_id,
                         event_name: trigger.clone(),
+                        args: lua_params,
                     });
                     self.world.upsert_session(snap).await;
                 }

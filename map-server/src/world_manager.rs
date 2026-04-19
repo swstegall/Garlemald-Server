@@ -704,12 +704,13 @@ impl WorldManager {
                     kick.owner_actor_id,
                     &kick.event_name,
                     5,
-                    &[],
+                    &kick.args,
                 ));
                 tracing::info!(
                     trigger = kick.trigger_actor_id,
                     owner = kick.owner_actor_id,
                     event = %kick.event_name,
+                    args = kick.args.len(),
                     "KickEventPacket appended after director spawn"
                 );
             }

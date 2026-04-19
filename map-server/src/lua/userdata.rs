@@ -512,7 +512,7 @@ impl UserData for LuaPlayer {
         );
         methods.add_method(
             "KickEvent",
-            |_, this, (target, trigger, _args): (Value, String, mlua::MultiValue)| {
+            |_, this, (target, trigger, varargs): (Value, String, mlua::MultiValue)| {
                 // Extract the target actor id from the userdata the
                 // script passed in (usually a `LuaDirectorHandle`). On
                 // the tutorial path this is the `OpeningDirector`, and
@@ -529,13 +529,23 @@ impl UserData for LuaPlayer {
                         .unwrap_or(this.snapshot.current_event_owner),
                     _ => this.snapshot.current_event_owner,
                 };
+                // Convert the Lua varargs to `LuaCommandArg`s. Scripts
+                // commonly pass `true`/`false`/integers here — for
+                // `player:KickEvent(director, "noticeEvent", true)`
+                // that becomes `[Bool(true)]`, which the C# server
+                // propagates into the KickEventPacket's lua-param
+                // stream via `LuaUtils.CreateLuaParamList`.
+                let args: Vec<super::command::LuaCommandArg> = varargs
+                    .iter()
+                    .map(super::scheduler::value_to_command_arg)
+                    .collect();
                 push(
                     &this.queue,
                     LuaCommand::KickEvent {
                         player_id: this.snapshot.actor_id,
                         actor_id: target_actor_id,
                         trigger,
-                        args: Vec::new(),
+                        args,
                     },
                 );
                 Ok(())

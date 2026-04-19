@@ -66,6 +66,12 @@ pub struct PendingKickEvent {
     pub trigger_actor_id: u32,
     pub owner_actor_id: u32,
     pub event_name: String,
+    /// LuaParams passed from the script's `player:KickEvent(actor,
+    /// "eventName", …args)` call. C# propagates these verbatim into
+    /// the `KickEventPacket` body at offset 0x30; without them the
+    /// client's event dispatcher doesn't have the arguments the
+    /// tutorial opening event expects and silently no-ops.
+    pub args: Vec<common::luaparam::LuaParam>,
 }
 
 impl Session {
