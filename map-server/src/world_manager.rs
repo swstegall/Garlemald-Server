@@ -31,6 +31,33 @@ use crate::zone::navmesh::StubNavmeshLoader;
 use crate::zone::private_area::PrivateArea;
 use crate::zone::zone::Zone;
 
+/// Empty `/_init` SetActorProperty for a director. Mirrors C#
+/// `Director.GetInitPackets` which builds a `SetActorPropetyPacket`
+/// with only an `AddTarget()` call — no actual properties. On the wire
+/// this is the 0x0137 SetActorProperty body with:
+///   - byte 0: runningByteTotal = 1 + target.len()
+///   - byte 1: target marker = 0x82 + target.len()
+///   - byte 2..: target path ("/_init")
+/// Body is zero-filled to the 0xA8 packet size and wrapped as a
+/// game-message subpacket (opcode 0x0137).
+fn build_director_init_packet(actor_id: u32) -> common::subpacket::SubPacket {
+    use std::io::Write as _;
+    let mut data = vec![0u8; 0xA8 - 0x20];
+    let target = b"/_init";
+    let running_total = (1 + target.len()) as u8;
+    data[0] = running_total;
+    // Write at offset 1: marker byte, then target bytes.
+    let mut c = std::io::Cursor::new(&mut data[..]);
+    c.set_position(1);
+    c.write_all(&[0x82u8 + target.len() as u8]).unwrap();
+    c.write_all(target).unwrap();
+    common::subpacket::SubPacket::new(
+        crate::packets::opcodes::OP_SET_ACTOR_PROPERTY,
+        actor_id,
+        data,
+    )
+}
+
 /// Mirror of C# `Director.GenerateActorName` zone-name abbreviation:
 /// `Field→Fld, Dungeon→Dgn, Town→Twn, Battle→Btl, Test→Tes,
 /// Event→Evt, Ship→Shp, Office→Ofc`. Used when building the director's
@@ -596,6 +623,34 @@ impl WorldManager {
                 common::luaparam::LuaParam::False,
             ];
             subpackets.push(tx::actor::build_add_actor(spec.actor_id, 0));
+            // C# `Director` ctor registers three notice-event conditions:
+            //   ("noticeEvent",   0xE, 0x0)   ← event the login director fires
+            //   ("noticeRequest", 0x0, 0x1)
+            //   ("reqForChild",   0x0, 0x1)
+            // `Director.GetSpawnPackets` emits them right after
+            // `AddActor` via `SetNoticeEventCondition` (opcode 0x016B).
+            // Without these, the `KickEventPacket("noticeEvent")` a few
+            // packets later can't resolve to any registered condition
+            // on the director and the client silently drops it — which
+            // is what we were seeing.
+            subpackets.push(tx::actor_events::build_set_notice_event_condition_raw(
+                spec.actor_id,
+                0x0E,
+                0x00,
+                "noticeEvent",
+            ));
+            subpackets.push(tx::actor_events::build_set_notice_event_condition_raw(
+                spec.actor_id,
+                0x00,
+                0x01,
+                "noticeRequest",
+            ));
+            subpackets.push(tx::actor_events::build_set_notice_event_condition_raw(
+                spec.actor_id,
+                0x00,
+                0x01,
+                "reqForChild",
+            ));
             subpackets.push(tx::actor::build_set_actor_speed_default(spec.actor_id));
             subpackets.push(tx::actor::build_set_actor_position(
                 spec.actor_id,
@@ -622,6 +677,14 @@ impl WorldManager {
                 &spec.class_name,
                 &director_bind_params,
             ));
+            // C# `Director.GetInitPackets` emits a single empty
+            // `SetActorProperty` with `/_init` target after the spawn —
+            // signals to the client that the director is initialised
+            // and safe to fire events against. Empty body (just the
+            // target marker); our existing `build_actor_property_init`
+            // emits three flag entries which is fine for a player but
+            // C# emits zero for a director. We build one directly.
+            subpackets.push(build_director_init_packet(spec.actor_id));
             tracing::info!(
                 director = spec.actor_id,
                 class_path = %spec.class_path,

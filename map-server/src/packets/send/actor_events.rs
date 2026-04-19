@@ -31,15 +31,40 @@ pub fn build_set_talk_event_condition(actor_id: u32, condition: &EventCondition)
     SubPacket::new(OP_SET_TALK_EVENT_CONDITION, actor_id, data)
 }
 
-/// 0x016B SetNoticeEventCondition.
-pub fn build_set_notice_event_condition(actor_id: u32, condition: &EventCondition) -> SubPacket {
+/// 0x016B SetNoticeEventCondition. Byte layout mirrors C#
+/// `Map Server/Packets/Send/Actor/Events/SetNoticeEventCondition.cs`:
+/// - 0x00: `unknown1` (u8; observed values: 0, 1, 0xE per C# comment)
+/// - 0x01: `unknown2` (u8; observed values: 0, 1)
+/// - 0x02..: ASCII condition name (up to 36 bytes / 0x24, no null term)
+///
+/// These packets must be emitted inside the director's spawn sequence
+/// (between `AddActor` and `Speed`) for the 1.23b client to recognise
+/// that the actor handles event names like `"noticeEvent"`. Without
+/// them, a subsequent `KickEventPacket("noticeEvent")` is ignored.
+pub fn build_set_notice_event_condition_raw(
+    actor_id: u32,
+    unknown1: u8,
+    unknown2: u8,
+    name: &str,
+) -> SubPacket {
     let mut data = body(0x48);
     let mut c = Cursor::new(&mut data[..]);
-    c.write_u8(condition.enabled as u8).unwrap();
-    c.write_u8(0).unwrap();
-    c.write_u32::<LittleEndian>(condition.emote_id).unwrap();
-    write_padded_ascii(&mut c, &condition.name, 0x20);
+    c.write_u8(unknown1).unwrap();
+    c.write_u8(unknown2).unwrap();
+    // C# caps the ASCII copy at 0x24 bytes, no null terminator emitted.
+    // Body is zero-initialised so short names leave trailing zeros.
+    let bytes = name.as_bytes();
+    let n = bytes.len().min(0x24);
+    use std::io::Write as _;
+    c.write_all(&bytes[..n]).unwrap();
     SubPacket::new(OP_SET_NOTICE_EVENT_CONDITION, actor_id, data)
+}
+
+/// Legacy wrapper retained for the existing `EventCondition`-based
+/// caller shape. Maps `enabled` → unknown1, hardcodes unknown2=0.
+/// New code should prefer `build_set_notice_event_condition_raw`.
+pub fn build_set_notice_event_condition(actor_id: u32, condition: &EventCondition) -> SubPacket {
+    build_set_notice_event_condition_raw(actor_id, condition.enabled as u8, 0, &condition.name)
 }
 
 /// 0x016C SetEmoteEventCondition.
