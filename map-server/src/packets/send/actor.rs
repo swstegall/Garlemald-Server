@@ -508,10 +508,11 @@ pub fn build_player_property_init(
 ) -> Vec<SubPacket> {
     let mut b = ActorPropertyPacketBuilder::new(actor_id, "/_init");
 
-    // Base charaWork state. `bazaarTax` is a byte; `potencial` is a
-    // float in C# (default 6.6f) — emitted via AddBuffer(4) which shares
-    // the wire shape with AddInt.
-    b.add_byte("charaWork.eventSave.bazaarTax", 0);
+    // Base charaWork state. Values match Project Meteor's Player ctor:
+    // `bazaarTax = 5` (byte, not 0), `potencial = 6.6f`. The default 0 we
+    // were sending for bazaarTax is what the client sees as "tax rate
+    // unknown"; bits of nameplate logic can read this.
+    b.add_byte("charaWork.eventSave.bazaarTax", 5);
     b.add_float("charaWork.battleSave.potencial", 6.6);
 
     // Nameplate-visibility flags. Project Meteor's Player ctor sets
@@ -535,7 +536,15 @@ pub fn build_player_property_init(
     b.add_short("charaWork.parameterSave.mpMax", mp_max);
     b.add_short("charaWork.parameterTemp.tp", tp);
     b.add_byte("charaWork.parameterSave.state_mainSkill[0]", main_skill);
-    b.add_byte("charaWork.parameterSave.state_mainSkillLevel", main_skill_level);
+    // C# `ParameterSave.state_mainSkillLevel` is `short`; reflection in
+    // `AddProperty` emits it via `AddShort`. We were emitting it as a
+    // byte, giving the client a 1-byte payload where it read 2 bytes of
+    // the type table — the extra byte came from whatever followed, so
+    // every read of this field returned a bogus high nibble.
+    b.add_short(
+        "charaWork.parameterSave.state_mainSkillLevel",
+        main_skill_level as u16,
+    );
 
     // Cast gauge defaults are floats (C# `float[] castGauge_speed = { 1.0f, 0.25f }`).
     b.add_float("charaWork.battleTemp.castGauge_speed[0]", 1.0);
@@ -548,8 +557,42 @@ pub fn build_player_property_init(
     );
 
     b.add_byte("charaWork.commandBorder", command_border);
-    // `negotiationFlag` is bool[] — serialized as byte.
-    b.add_byte("charaWork.battleSave.negotiationFlag[0]", 0);
+    // `negotiationFlag` is bool[] — serialized as byte. Project Meteor's
+    // Player ctor sets `negotiationFlag[0] = true`; we were sending
+    // false, which the client reads as "no default haggling behaviour"
+    // and (per the DepictionJudge stack trace) can leave nameplate
+    // state partially uninitialised.
+    b.add_byte("charaWork.battleSave.negotiationFlag[0]", 1);
+
+    // Project Meteor's Player ctor pre-binds the first 16 command slots
+    // (`charaWork.command[0..15] = 0xA0F00000 | commandId`). These are
+    // the starter hotbar abilities — all u32. `GetInitPackets` emits
+    // each non-zero slot. The client reads `charaWork.command[i]` to
+    // resolve icon + name + cooldown for each slot; nameplate code can
+    // walk the command table to decide whether to draw ability
+    // ornaments. Without these the walk terminates on a nil lookup.
+    let starter_commands: [u32; 16] = [
+        21001, 21001, 21002, 12004, 21005, 21006, 21007, 12009, 12010, 12005, 12007, 12011,
+        22012, 22013, 29497, 22015,
+    ];
+    for (i, cmd) in starter_commands.iter().enumerate() {
+        b.add_int(
+            &format!("charaWork.command[{}]", i),
+            0xA0F0_0000 | *cmd,
+        );
+    }
+    // `commandAcquired[27150 - 26000]` — one specific commandAcquired slot
+    // Project Meteor's Player ctor flips to true.
+    b.add_byte("charaWork.commandAcquired[1150]", 1);
+    // C# also flips every slot in `additionalCommandAcquired[0..35]` to
+    // true. Array length is 36.
+    for i in 0..36 {
+        b.add_byte(&format!("charaWork.additionalCommandAcquired[{}]", i), 1);
+    }
+    // `battleTemp.generalParameter[3] = 1` — specific short slot
+    // Project Meteor sets before AddProperty iterates the array (with
+    // `i >= 3` guard, so only this one slot gets emitted).
+    b.add_short("charaWork.battleTemp.generalParameter[3]", 1);
 
     // C# forces `commandCategory[i] = 1` for all 64 slots. byte[].
     for i in 0..64 {
