@@ -168,13 +168,18 @@ impl PacketProcessor {
         //    but only for non-login transfers. Initial login defers this
         //    to the opcode-0x6 (LanguageCode) handler so the client has
         //    signalled it's ready to receive world-spawn packets.
-        if !is_login
-            && let Err(e) = self
+        if !is_login {
+            if let Err(e) = self
                 .world
                 .do_zone_change(actor_id, session_id, zone_id, spawn, rotation)
                 .await
-        {
-            tracing::error!(error = %e, actor = actor_id, "zone change failed");
+            {
+                tracing::error!(error = %e, actor = actor_id, "zone change failed");
+            } else {
+                self.world
+                    .send_zone_in_bundle(&self.registry, session_id, 0x1)
+                    .await;
+            }
         }
 
         let _ = client;
@@ -238,6 +243,10 @@ impl PacketProcessor {
             .await
         {
             tracing::error!(error = %e, actor = actor_id, "login zone change failed");
+        } else {
+            self.world
+                .send_zone_in_bundle(&self.registry, session_id, 0x1)
+                .await;
         }
 
         // onBeginLogin / onLogin Lua hooks ride on the LuaEngine wiring

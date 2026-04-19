@@ -25,6 +25,8 @@ use common::Vector3;
 
 use crate::data::{ClientHandle, SeamlessBoundary, Session, ZoneEntrance, check_pos_in_bounds};
 use crate::database::{Database, PrivateAreaRow, ZoneRow};
+use crate::packets::send as tx;
+use crate::runtime::actor_registry::ActorRegistry;
 use crate::zone::navmesh::StubNavmeshLoader;
 use crate::zone::private_area::PrivateArea;
 use crate::zone::zone::Zone;
@@ -271,9 +273,9 @@ impl WorldManager {
 
     /// Whole-cloth zone transition — removes the player from their old
     /// zone (if any), places them in the new one, updates their session
-    /// state. The packet emission (`DeleteAllActors`, zone-in bundle)
-    /// is handled by the session dispatcher that subscribes to this;
-    /// we return `Ok` once registries have settled.
+    /// state. Callers must follow this with `send_zone_in_bundle` once
+    /// they are ready to fan the first-render packets to the client;
+    /// `do_zone_change` only settles registries.
     pub async fn do_zone_change(
         &self,
         actor_id: u32,
@@ -334,6 +336,96 @@ impl WorldManager {
             session.is_updates_locked = false;
         }
         Ok(())
+    }
+
+    /// Port of `Player.SendZoneInPackets(world, spawnType)`. This is the
+    /// bundle the client waits on before leaving "Now loading…": zoning
+    /// clear, music/weather/map, the player's self-spawn, an empty
+    /// inventory bracket, and the `/_init` property flags. Without it the
+    /// client has no way to know the server is done placing the actor.
+    ///
+    /// Inventory dump and area-master/director spawns are intentionally
+    /// stubbed — the minimum viable login flow doesn't need them and they
+    /// depend on plumbing that's still in progress (item_packages live on
+    /// the `Player` shape, the registry only holds `Character`).
+    pub async fn send_zone_in_bundle(
+        &self,
+        registry: &ActorRegistry,
+        session_id: u32,
+        spawn_type: u16,
+    ) {
+        let Some(session) = self.session(session_id).await else {
+            tracing::warn!(session = session_id, "send_zone_in_bundle: no session");
+            return;
+        };
+        let Some(client) = self.client(session_id).await else {
+            tracing::warn!(session = session_id, "send_zone_in_bundle: no client");
+            return;
+        };
+        let Some(actor_handle) = registry.by_session(session_id).await else {
+            tracing::warn!(session = session_id, "send_zone_in_bundle: no actor");
+            return;
+        };
+        let Some(zone_arc) = self.zone(session.current_zone_id).await else {
+            tracing::warn!(
+                session = session_id,
+                zone = session.current_zone_id,
+                "send_zone_in_bundle: no zone",
+            );
+            return;
+        };
+
+        let actor_id = actor_handle.actor_id;
+        let (actor_name, display_name_id, main_state, position, rotation) = {
+            let c = actor_handle.character.read().await;
+            (
+                c.base.display_name().to_string(),
+                c.base.display_name_id,
+                c.base.current_main_state as u8,
+                c.base.position(),
+                c.base.rotation,
+            )
+        };
+        let (zone_actor_id, region_id, bgm_day, class_name) = {
+            let z = zone_arc.read().await;
+            (
+                z.core.actor_id,
+                z.core.region_id as u32,
+                z.core.bgm_day,
+                z.core.class_name.clone(),
+            )
+        };
+
+        let packets: Vec<Vec<u8>> = vec![
+            tx::actor::build_set_actor_is_zoning(actor_id, false).to_bytes(),
+            tx::misc::build_set_dalamud(actor_id, 0).to_bytes(),
+            tx::misc::build_set_music(actor_id, bgm_day, 0x01).to_bytes(),
+            tx::misc::build_set_weather(actor_id, 1, 1).to_bytes(),
+            tx::misc::build_set_map(actor_id, zone_actor_id, region_id).to_bytes(),
+            tx::actor::build_add_actor(actor_id, 8).to_bytes(),
+            tx::actor::build_set_actor_speed_default(actor_id).to_bytes(),
+            tx::actor::build_set_actor_position(
+                actor_id, -1, position.x, position.y, position.z, rotation, spawn_type, true,
+            )
+            .to_bytes(),
+            tx::actor::build_set_actor_name(actor_id, display_name_id, &actor_name).to_bytes(),
+            tx::actor::build_set_actor_state(actor_id, main_state, 0).to_bytes(),
+            tx::actor::build_set_actor_is_zoning(actor_id, false).to_bytes(),
+            tx::actor::build_actor_instantiate(actor_id, 0, 0, &actor_name, &class_name).to_bytes(),
+            tx::actor_inventory::build_inventory_begin_change(actor_id, true).to_bytes(),
+            tx::actor_inventory::build_inventory_end_change(actor_id).to_bytes(),
+            tx::actor::build_actor_property_init(actor_id).to_bytes(),
+        ];
+
+        for bytes in packets {
+            client.send_bytes(bytes).await;
+        }
+        tracing::info!(
+            session = session_id,
+            actor = actor_id,
+            zone = zone_actor_id,
+            "zone-in bundle dispatched",
+        );
     }
 
     /// Lightweight port of `DoSeamlessZoneChange`. Used when the player

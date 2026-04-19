@@ -11,10 +11,10 @@
 
 use std::future::Future;
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use rusqlite::named_params;
+use rusqlite::{TransactionBehavior, named_params};
 use tokio_rusqlite::Connection;
 
 use crate::migrations;
@@ -61,6 +61,9 @@ pub async fn open_or_create(path: impl AsRef<Path>) -> Result<Connection> {
         c.pragma_update(None, "journal_mode", "WAL")?;
         c.pragma_update(None, "foreign_keys", "ON")?;
         c.pragma_update(None, "synchronous", "NORMAL")?;
+        // 60s busy window lets concurrent server processes wait on each
+        // other during the startup migration pass instead of failing fast.
+        c.busy_timeout(Duration::from_secs(60))?;
         Ok::<(), rusqlite::Error>(())
     })
     .await
@@ -82,10 +85,13 @@ pub async fn open_or_create(path: impl AsRef<Path>) -> Result<Connection> {
 }
 
 /// Apply every bundled migration that isn't already recorded in
-/// `schema_migrations`. Each migration runs inside its own transaction
-/// and is recorded on success; a failure rolls back and surfaces the
-/// error so the server process aborts rather than limping on with a
-/// half-seeded DB.
+/// `schema_migrations`. The whole pass runs under one `BEGIN IMMEDIATE`
+/// transaction so that the 4 Garlemald servers racing on the same SQLite
+/// file at boot serialise on the writer lock instead of double-applying a
+/// migration (which produced `UNIQUE constraint failed` on
+/// `schema_migrations.name`) or failing fast with `database is locked`.
+/// The applied-set is re-read *inside* the lock, so once one process
+/// finishes the others observe the new rows and no-op the pass.
 pub async fn apply_migrations(conn: &Connection) -> Result<()> {
     conn.call(|c| {
         c.execute_batch(SCHEMA_MIGRATIONS_DDL)?;
@@ -94,46 +100,46 @@ pub async fn apply_migrations(conn: &Connection) -> Result<()> {
     .await
     .context("creating schema_migrations table")?;
 
-    let applied: std::collections::HashSet<String> = conn
-        .call(|c| {
-            let mut stmt = c.prepare("SELECT name FROM schema_migrations")?;
-            let rows: Vec<String> = stmt
-                .query_map([], |r| r.get::<_, String>(0))?
-                .collect::<rusqlite::Result<_>>()?;
-            Ok::<_, rusqlite::Error>(rows.into_iter().collect())
-        })
-        .await
-        .context("reading schema_migrations")?;
-
     let total = migrations::count();
-    let mut applied_now = 0usize;
-    for migration in migrations::iter() {
-        if applied.contains(migration.name) {
-            continue;
-        }
-        let started = Instant::now();
-        let name = migration.name.to_string();
-        let sql = migration.sql;
-        let moved_name = name.clone();
-        conn.call(move |c| {
-            let tx = c.transaction()?;
-            tx.execute_batch(&sql)?;
-            tx.execute(
-                "INSERT INTO schema_migrations(name) VALUES(:n)",
-                named_params! { ":n": moved_name },
-            )?;
+    let migrations: Vec<(String, String)> = migrations::iter()
+        .map(|m| (m.name.to_string(), m.sql))
+        .collect();
+
+    let applied_now = conn
+        .call(move |c| {
+            let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+            let applied: std::collections::HashSet<String> = {
+                let mut stmt = tx.prepare("SELECT name FROM schema_migrations")?;
+                stmt.query_map([], |r| r.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<_>>()?
+            };
+
+            let mut count = 0usize;
+            for (name, sql) in &migrations {
+                if applied.contains(name) {
+                    continue;
+                }
+                let started = Instant::now();
+                tx.execute_batch(sql)?;
+                tx.execute(
+                    "INSERT INTO schema_migrations(name) VALUES(:n)",
+                    named_params! { ":n": name },
+                )?;
+                tracing::info!(
+                    migration = %name,
+                    took_ms = started.elapsed().as_millis() as u64,
+                    "migration applied",
+                );
+                count += 1;
+            }
+
             tx.commit()?;
-            Ok::<(), rusqlite::Error>(())
+            Ok::<usize, rusqlite::Error>(count)
         })
         .await
-        .with_context(|| format!("applying migration {name}"))?;
-        tracing::info!(
-            migration = %name,
-            took_ms = started.elapsed().as_millis() as u64,
-            "migration applied",
-        );
-        applied_now += 1;
-    }
+        .context("applying migration batch")?;
+
     tracing::info!(
         total_bundled = total,
         newly_applied = applied_now,

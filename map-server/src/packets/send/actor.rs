@@ -310,21 +310,43 @@ pub fn build_set_event_status(
     SubPacket::new(OP_SET_EVENT_STATUS, actor_id, data)
 }
 
-/// 0x0137 SetActorPropertyPacket — skeleton. The full C# builder is a small
-/// DSL for packing typed k/v pairs across many kinds of actor state. Phase 7
-/// ports the happy-path "just set this one value" usage.
+/// 0x0137 SetActorPropertyPacket — byte 0 is the running length written last,
+/// then each AddXxx call emits `(type_tag, u32 id, value)`, and finally
+/// AddTarget appends `(0x82 + name_len, ascii name)` for the non-array /
+/// isMore=false case. Matches `Map Server/Packets/Send/Actor/SetActorPropetyPacket.cs`.
 pub fn build_set_actor_property_u32(actor_id: u32, target: &str, id: u32, value: u32) -> SubPacket {
     let mut data = body(0xA8);
     let mut c = Cursor::new(&mut data[..]);
-    // Target string prefix — the C# builder writes a length byte then the
-    // string bytes, flagged with 0xA4 + len for the "property container"
-    // header. We replicate the simple single-write path.
-    let tbytes = target.as_bytes();
-    c.write_u8(0xA4u8 + tbytes.len() as u8).unwrap();
-    c.write_all(tbytes).unwrap();
-    c.write_u8(4).unwrap(); // type tag = 4 (u32)
+    c.set_position(1);
+    c.write_u8(4).unwrap();
     c.write_u32::<LittleEndian>(id).unwrap();
     c.write_u32::<LittleEndian>(value).unwrap();
+    let tbytes = target.as_bytes();
+    c.write_u8(0x82u8 + tbytes.len() as u8).unwrap();
+    c.write_all(tbytes).unwrap();
+    let running_total = 9 + 1 + tbytes.len();
+    data[0] = running_total as u8;
+    SubPacket::new(OP_SET_ACTOR_PROPERTY, actor_id, data)
+}
+
+/// 0x0137 SetActorPropertyPacket for the `/_init` target. Emits the exact
+/// three byte flags that Meteor's `Actor.GetInitPackets()` pushes — they tell
+/// the client the actor is fully initialised and safe to render, which is
+/// the last signal the client waits for before leaving "Now loading…".
+pub fn build_actor_property_init(actor_id: u32) -> SubPacket {
+    let mut data = body(0xA8);
+    let mut c = Cursor::new(&mut data[..]);
+    c.set_position(1);
+    for (id, value) in [(0xE14B0CA8u32, 1u8), (0x2138FD71, 1), (0xFBFBCFB1, 1)] {
+        c.write_u8(1).unwrap();
+        c.write_u32::<LittleEndian>(id).unwrap();
+        c.write_u8(value).unwrap();
+    }
+    let target = b"/_init";
+    c.write_u8(0x82u8 + target.len() as u8).unwrap();
+    c.write_all(target).unwrap();
+    let running_total = 3 * 6 + 1 + target.len();
+    data[0] = running_total as u8;
     SubPacket::new(OP_SET_ACTOR_PROPERTY, actor_id, data)
 }
 
