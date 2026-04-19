@@ -119,10 +119,31 @@ impl PacketProcessor {
         let rotation = loaded.rotation;
         let class_slot = loaded.parameter_save.state_main_skill[0] as usize;
         let class_slot_safe = class_slot.min(3);
-        let hp = loaded.parameter_save.hp[class_slot_safe];
-        let hp_max = loaded.parameter_save.hp_max[class_slot_safe];
-        let mp = loaded.parameter_save.mp;
+        // `characters_parametersave` stores a single hp/hpMax value (not
+        // per-class), and `load_parameter_save` writes it into `hp[0]`
+        // regardless of current class — matching C# `LoadPlayerCharacter`
+        // in Project Meteor's `Map Server/Database.cs:858`. Reading
+        // `hp[class_slot]` for a non-PUG character hit the default-zero
+        // slots, delivering `hp=0 hpMax=0` to the client and flipping its
+        // CharaBase into a death-nameplate path that indexes the
+        // uninitialised death-depictor config — the nil-index at
+        // `DepictionJudge:judgeNameplate() line 900`. Always read index 0.
+        let _ = class_slot_safe;
+        let hp_max = loaded.parameter_save.hp_max[0];
         let mp_max = loaded.parameter_save.mp_max;
+        // Seed the ModifierMap with the DB's stored max HP / MP so
+        // `Character::calculate_base_stats` (port of C#
+        // `Character.CalculateBaseStats` in `chara.rs`) has non-zero
+        // `Modifier::Hp` / `Modifier::Mp` values to project into the
+        // character's HP/MP pools. For Project Meteor the equivalent
+        // wiring lives in equip/trait handlers that accumulate stats
+        // into the modifier map; we're not there yet, so the lobby's
+        // `characters_parametersave` row (`hp=1900 hpMax=1000`) is the
+        // single source of truth at login. Current HP and MP are then
+        // set by `calculate_base_stats` from the Hp/Mp modifiers, so we
+        // don't need to plumb them through the processor separately.
+        let hp = hp_max;
+        let mp = mp_max;
 
         tracing::info!(
             name = %loaded.name,
@@ -156,10 +177,31 @@ impl PacketProcessor {
         // ScriptBind LuaParams stay on the non-director path.
         character.base.zone_id = zone_id;
         character.chara.class = class_slot as i16;
+        // Seed the battle-modifier map with the DB max values, then run
+        // `calculate_base_stats` — port of C# `Character.CalculateBaseStats`
+        // (`actor/chara.rs:113`) which reads `Modifier::Hp` / `HpPercent`
+        // / `Mp` / `MpPercent` and projects them onto the char's HP/MP
+        // pools. For a fresh Project-Meteor-style login the modifier map
+        // is otherwise empty, so without this seed `calculate_base_stats`
+        // would leave HP/MP at zero and the client would snap into
+        // death-nameplate mode during its first `_onUpdateWork` tick.
+        // The `hp`/`mp`/`max_hp`/`max_mp` assignments below are redundant
+        // with what `calculate_base_stats` writes, but they keep the
+        // character's pools consistent if any future refactor bypasses
+        // the recalc path.
         character.chara.hp = hp;
         character.chara.max_hp = hp_max;
         character.chara.mp = mp;
         character.chara.max_mp = mp_max;
+        character.chara.mods.set(
+            crate::actor::modifier::Modifier::Hp,
+            hp_max as f64,
+        );
+        character.chara.mods.set(
+            crate::actor::modifier::Modifier::Mp,
+            mp_max as f64,
+        );
+        character.calculate_base_stats();
         // Pack the DB appearance rows into the 28-slot table the client
         // expects in `SetActorAppearancePacket`. Without these the zone-in
         // bundle can't render the avatar and the client hangs at Now

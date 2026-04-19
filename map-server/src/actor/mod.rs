@@ -279,6 +279,7 @@ impl Character {
             event_session: crate::event::EventSession::default(),
         }
     }
+
 }
 
 // ---------------------------------------------------------------------------

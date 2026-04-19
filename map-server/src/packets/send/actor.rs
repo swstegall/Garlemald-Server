@@ -564,28 +564,19 @@ pub fn build_player_property_init(
     // state partially uninitialised.
     b.add_byte("charaWork.battleSave.negotiationFlag[0]", 1);
 
-    // Project Meteor's Player ctor pre-binds the first 16 command slots
-    // (`charaWork.command[0..15] = 0xA0F00000 | commandId`). These are
-    // the starter hotbar abilities — all u32. `GetInitPackets` emits
-    // each non-zero slot. The client reads `charaWork.command[i]` to
-    // resolve icon + name + cooldown for each slot; nameplate code can
-    // walk the command table to decide whether to draw ability
-    // ornaments. Without these the walk terminates on a nil lookup.
-    let starter_commands: [u32; 16] = [
-        21001, 21001, 21002, 12004, 21005, 21006, 21007, 12009, 12010, 12005, 12007, 12011,
-        22012, 22013, 29497, 22015,
-    ];
-    for (i, cmd) in starter_commands.iter().enumerate() {
-        b.add_int(
-            &format!("charaWork.command[{}]", i),
-            0xA0F0_0000 | *cmd,
-        );
-    }
-    // `commandAcquired[27150 - 26000]` — one specific commandAcquired slot
-    // Project Meteor's Player ctor flips to true.
+    // Project Meteor's Player ctor pre-binds `charaWork.command[0..15]`
+    // with 16 starter commands (`0xA0F00000 | id`). Emitting those caused
+    // the 1.23b client to advance *past* the DepictionJudge nameplate
+    // error but fail a step later in `ActionMenuWidget:addSlot()` —
+    // `DesktopWidget:isStackIntoActionMenu()` line 12448 calls
+    // `processCanFireWithoutTarget` on a nil command, which means the
+    // id->command lookup in the client's own data archive returned nil
+    // for at least one of our bound ids. Leaving the command slots
+    // unpopulated takes the ActionMenu down an empty-slot branch instead
+    // of an invalid-slot branch. We still emit `commandAcquired` and
+    // `additionalCommandAcquired` because those are plain flag arrays
+    // that don't require the client to resolve any command id.
     b.add_byte("charaWork.commandAcquired[1150]", 1);
-    // C# also flips every slot in `additionalCommandAcquired[0..35]` to
-    // true. Array length is 36.
     for i in 0..36 {
         b.add_byte(&format!("charaWork.additionalCommandAcquired[{}]", i), 1);
     }
