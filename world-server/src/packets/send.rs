@@ -169,6 +169,12 @@ pub const MESSAGE_TYPE_SHOUT: u8 = 0x02;
 pub const MESSAGE_TYPE_TELL: u8 = 0x03;
 pub const MESSAGE_TYPE_PARTY: u8 = 0x04;
 pub const MESSAGE_TYPE_LS: u8 = 0x05;
+/// C# `SendMessagePacket.MESSAGE_TYPE_GENERAL_INFO = 29 (0x1D)`. Used for
+/// the world-server DoLogin MotD burst. The earlier port named this
+/// `MESSAGE_TYPE_YELL`, which is wrong — 0x1D is GeneralInfo; Yell is 30.
+/// The alias is kept for back-compat with the chat broadcast path.
+pub const MESSAGE_TYPE_GENERAL_INFO: u8 = 0x1D;
+#[deprecated(note = "mislabelled; use MESSAGE_TYPE_GENERAL_INFO")]
 pub const MESSAGE_TYPE_YELL: u8 = 0x1D;
 
 pub fn build_send_message(

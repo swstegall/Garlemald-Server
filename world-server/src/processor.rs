@@ -150,6 +150,42 @@ impl PacketProcessor {
             return Ok(());
         }
 
+        // LanguageCode (0x0006) — C# `World Server/PacketProcessor.cs`
+        // intercepts this before forwarding and runs
+        // `WorldMaster.DoLogin(session)`, which fans out the MotD banner,
+        // party/retainer/linkshell group packets, and the "active
+        // linkshell" packet. The client expects this completion signal
+        // from the world server half of the handshake — without it the
+        // login finalisation on the client side stalls even though the
+        // map-server zone-in bundle lands cleanly.
+        //
+        // The full DoLogin also synchs retainer state and every
+        // linkshell the player belongs to; for a fresh character those
+        // collections are empty, so the MotD burst alone is enough to
+        // satisfy the world-login side of the handshake. We still
+        // forward the subpacket below so the map server's 0x0006
+        // handler (which triggers `do_zone_change` + zone-in bundle)
+        // runs on its own.
+        if sub.game_message.opcode == 0x0006 {
+            let motd_lines = [
+                "-------- Login Message --------",
+                "Welcome to Garlemald!",
+                "Welcome to Eorzea!",
+                "Here is a test Message of the Day from the World Server!",
+            ];
+            for line in motd_lines {
+                let packet = tx::build_send_message(
+                    target,
+                    target,
+                    tx::MESSAGE_TYPE_GENERAL_INFO,
+                    "",
+                    line,
+                );
+                session.client.send_bytes(packet.to_bytes()).await;
+            }
+            tracing::info!(session = target, "DoLogin MotD dispatched");
+        }
+
         // Group creation notification — currently just logged; the full
         // SynchGroupWorkValues fanout ships with Phase 4 alongside the Map
         // Server's group-work encoder.
