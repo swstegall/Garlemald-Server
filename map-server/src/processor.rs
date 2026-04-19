@@ -27,7 +27,8 @@ use crate::packets::opcodes::{
 };
 use crate::packets::receive::{
     AchievementProgressRequestPacket, AddRemoveSocialPacket, ChatMessagePacket, EventStartPacket,
-    EventUpdatePacket, LanguageCodePacket, SessionBeginRequest, UpdatePlayerPositionPacket,
+    EventUpdatePacket, LanguageCodePacket, PingPacket, SessionBeginRequest,
+    UpdatePlayerPositionPacket,
 };
 use crate::packets::send as tx;
 use crate::runtime::actor_registry::{ActorHandle, ActorKindTag, ActorRegistry};
@@ -196,6 +197,24 @@ impl PacketProcessor {
         Ok(())
     }
 
+    /// Game-message opcode 0x0001 — client ping. The 1.23b client sends these
+    /// once per second after zone-in and treats a missing reply as a lost
+    /// connection, tearing down with error 40000 (communication timeout).
+    /// Mirrors `Map Server/PacketProcessor.cs` case 0x0001: parse the u32
+    /// `time`, echo it back in a PongPacket.
+    async fn handle_gm_ping(
+        &self,
+        client: &ClientHandle,
+        session_id: u32,
+        data: &[u8],
+    ) -> Result<()> {
+        let ticks = PingPacket::parse(data).map(|p| p.time).unwrap_or(0);
+        let reply = tx::build_pong(session_id, ticks);
+        tracing::debug!(session = session_id, ticks, "pong sent");
+        client.send_bytes(reply.to_bytes()).await;
+        Ok(())
+    }
+
     /// Game-message opcode 0x0002 — the client's "I'm here, ack me" frame.
     /// Mirrors C# `Map/PacketProcessor.cs` case 0x0002: reply with the 0x10-
     /// byte `_0x2Packet` that has source id at offset 0x8, wrapped as a
@@ -269,6 +288,7 @@ impl PacketProcessor {
         let source = sub.header.source_id;
 
         match opcode {
+            OP_PONG_RESPONSE => self.handle_gm_ping(client, source, &sub.data).await?,
             OP_HANDSHAKE_RESPONSE => self.handle_gm_handshake_ack(client, source).await?,
             OP_RX_LANGUAGE_CODE => self.handle_language_code(source, &sub.data).await?,
             OP_RX_UPDATE_PLAYER_POSITION => self.handle_update_position(source, &sub.data).await?,

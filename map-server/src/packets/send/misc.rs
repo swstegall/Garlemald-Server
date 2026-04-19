@@ -11,38 +11,47 @@ use common::subpacket::SubPacket;
 use super::super::opcodes::*;
 use super::{body, write_padded_ascii};
 
-/// 0x0005 SetMap — loads a zone/region map on the client side.
-pub fn build_set_map(actor_id: u32, map_id: u32, region_id: u32) -> SubPacket {
+/// 0x0005 SetMap — loads a zone/region map on the client side. Wire layout
+/// mirrors `Map Server/Packets/Send/SetMapPacket.cs`: `region_id` first,
+/// `zone_actor_id` second, then the magic 0x28 at offset 0x08. The C# param
+/// names are misleading — its `mapID` parameter actually receives `zone.regionId`
+/// and its `regionID` receives `zone.actorId`. Built as a game-message subpacket
+/// (the C# `new SubPacket(OPCODE, ...)` overload defaults to `isGameMessage=true`).
+pub fn build_set_map(actor_id: u32, region_id: u32, zone_actor_id: u32) -> SubPacket {
     let mut data = body(0x30);
     let mut c = Cursor::new(&mut data[..]);
-    c.write_u32::<LittleEndian>(map_id).unwrap();
     c.write_u32::<LittleEndian>(region_id).unwrap();
-    SubPacket::new_with_flag(false, OP_SET_MAP, actor_id, data)
+    c.write_u32::<LittleEndian>(zone_actor_id).unwrap();
+    c.write_u32::<LittleEndian>(0x28).unwrap();
+    SubPacket::new(OP_SET_MAP, actor_id, data)
 }
 
-/// 0x000C SetMusic.
+/// 0x000C SetMusic. Built as a game-message subpacket — the C# `new SubPacket(
+/// OPCODE, ...)` overload defaults to `isGameMessage=true`, so the client
+/// expects a type=0x03 frame with the opcode in the game-message header.
 pub fn build_set_music(actor_id: u32, music_id: u16, music_track_mode: u16) -> SubPacket {
     let mut data = body(0x28);
     let mut c = Cursor::new(&mut data[..]);
     c.write_u16::<LittleEndian>(music_id).unwrap();
     c.write_u16::<LittleEndian>(music_track_mode).unwrap();
-    SubPacket::new_with_flag(false, OP_SET_MUSIC, actor_id, data)
+    SubPacket::new(OP_SET_MUSIC, actor_id, data)
 }
 
-/// 0x000D SetWeather.
+/// 0x000D SetWeather. Game-message subpacket (same reasoning as SetMusic).
 pub fn build_set_weather(actor_id: u32, weather_id: u16, transition_time: u16) -> SubPacket {
     let mut data = body(0x28);
     let mut c = Cursor::new(&mut data[..]);
     c.write_u16::<LittleEndian>(weather_id).unwrap();
     c.write_u16::<LittleEndian>(transition_time).unwrap();
-    SubPacket::new_with_flag(false, OP_SET_WEATHER, actor_id, data)
+    SubPacket::new(OP_SET_WEATHER, actor_id, data)
 }
 
 /// 0x0010 SetDalamud — gating for Dalamud features, one signed byte.
+/// Game-message subpacket (same reasoning as SetMusic).
 pub fn build_set_dalamud(actor_id: u32, dalamud_level: i8) -> SubPacket {
     let mut data = body(0x28);
     data[0] = dalamud_level as u8;
-    SubPacket::new_with_flag(false, OP_SET_DALAMUD, actor_id, data)
+    SubPacket::new(OP_SET_DALAMUD, actor_id, data)
 }
 
 // --- Game messages / chat ---------------------------------------------------

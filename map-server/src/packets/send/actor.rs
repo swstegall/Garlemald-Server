@@ -27,24 +27,47 @@ pub fn build_remove_actor(actor_id: u32) -> SubPacket {
     SubPacket::new(OP_REMOVE_ACTOR, actor_id, data)
 }
 
-/// 0x00CC ActorInstantiatePacket — script-backed event NPC spawn.
+/// 0x00CC ActorInstantiatePacket — the "script-bind" packet that tells the
+/// client which Lua class to attach to an actor. Without a valid
+/// `lua_params` list starting with the class path string (e.g.
+/// `"/Chara/Player/Player_work"`), the client exits Now Loading but fails
+/// to initialise the actor's script state and raises error 40000 before
+/// the game UI comes up.
+///
+/// Wire layout mirrors `Map Server/Packets/Send/Actor/ActorInstantiatePacket.cs`:
+/// - offset 0x00: `value1` (i16) — usually 0 (instance id hint)
+/// - offset 0x02: `value2` (i16) — hardcoded 0x3040 for players in the C#
+///   reference; the earlier port passed 0 here, which the client treats as
+///   an invalid instantiation and aborts
+/// - offset 0x04..0x24: `object_name` (actor name, e.g. `_pc00000001`)
+/// - offset 0x24..0x44: `class_name` (e.g. `Player`)
+/// - offset 0x44+    : Lua params stream (type byte + value), no count prefix
 pub fn build_actor_instantiate(
     actor_id: u32,
     value1: i16,
     value2: i16,
     object_name: &str,
     class_name: &str,
+    lua_params: &[common::luaparam::LuaParam],
 ) -> SubPacket {
     let mut data = body(0x128);
     let mut c = Cursor::new(&mut data[..]);
     c.write_i16::<LittleEndian>(value1).unwrap();
     c.write_i16::<LittleEndian>(value2).unwrap();
     write_padded_ascii(&mut c, object_name, 0x20);
+    c.set_position(0x24);
     write_padded_ascii(&mut c, class_name, 0x20);
+    c.set_position(0x44);
+    common::luaparam::write_lua_params(&mut c, lua_params).unwrap();
     SubPacket::new(OP_ACTOR_INSTANTIATE, actor_id, data)
 }
 
-/// 0x00CE SetActorPositionPacket.
+/// 0x00CE SetActorPositionPacket. C# seeks to offset 0x24 before writing
+/// `spawnType` + `isZoningPlayer` — the floats stop at 0x18 but the u16
+/// tail lives at 0x24/0x26. Writing them contiguously after the rotation
+/// floats (as the earlier port did) puts spawn_type at 0x18 and leaves
+/// 0x24 zero, which the client reads as SPAWNTYPE_FADEIN and ignores the
+/// intended login spawn — a subtle desync that can trip later state checks.
 #[allow(clippy::too_many_arguments)]
 pub fn build_set_actor_position(
     actor_id: u32,
@@ -64,6 +87,7 @@ pub fn build_set_actor_position(
     c.write_f32::<LittleEndian>(y).unwrap();
     c.write_f32::<LittleEndian>(z).unwrap();
     c.write_f32::<LittleEndian>(rotation).unwrap();
+    c.set_position(0x24);
     c.write_u16::<LittleEndian>(spawn_type).unwrap();
     c.write_u16::<LittleEndian>(is_zoning_player as u16)
         .unwrap();

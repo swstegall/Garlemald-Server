@@ -386,15 +386,31 @@ impl WorldManager {
                 c.base.rotation,
             )
         };
-        let (zone_actor_id, region_id, bgm_day, class_name) = {
+        let (zone_actor_id, region_id, bgm_day) = {
             let z = zone_arc.read().await;
-            (
-                z.core.actor_id,
-                z.core.region_id as u32,
-                z.core.bgm_day,
-                z.core.class_name.clone(),
-            )
+            (z.core.actor_id, z.core.region_id as u32, z.core.bgm_day)
         };
+
+        // The "script-bind" for the player — mirrors
+        // `Map Server/Actors/Chara/Player/Player.cs` `CreateScriptBindPacket`
+        // for the self-view (IsMyPlayer=true, loginInitDirector==null):
+        //   class_path, true, false, false, true, 0, false, timers[20], true
+        // Timers default to `new uint[20]`, so 20 UInt32(0)s. Without this
+        // list the client can't bind `Player_work` to the avatar and
+        // aborts shortly after Now Loading with error 40000.
+        let player_actor_name = format!("_pc{:08}", actor_id);
+        let player_class_name = "Player";
+        let mut script_bind_params: Vec<common::luaparam::LuaParam> = vec![
+            common::luaparam::LuaParam::String("/Chara/Player/Player_work".to_string()),
+            common::luaparam::LuaParam::True,
+            common::luaparam::LuaParam::False,
+            common::luaparam::LuaParam::False,
+            common::luaparam::LuaParam::True,
+            common::luaparam::LuaParam::Int32(0),
+            common::luaparam::LuaParam::False,
+        ];
+        script_bind_params.extend((0..20).map(|_| common::luaparam::LuaParam::UInt32(0)));
+        script_bind_params.push(common::luaparam::LuaParam::True);
 
         // Every subpacket crosses the world-server proxy; its reader
         // (`world-server/src/server.rs`) drops subpackets whose
@@ -405,7 +421,7 @@ impl WorldManager {
             tx::misc::build_set_dalamud(actor_id, 0),
             tx::misc::build_set_music(actor_id, bgm_day, 0x01),
             tx::misc::build_set_weather(actor_id, 1, 1),
-            tx::misc::build_set_map(actor_id, zone_actor_id, region_id),
+            tx::misc::build_set_map(actor_id, region_id, zone_actor_id),
             tx::actor::build_add_actor(actor_id, 8),
             tx::actor::build_set_actor_speed_default(actor_id),
             tx::actor::build_set_actor_position(
@@ -414,7 +430,14 @@ impl WorldManager {
             tx::actor::build_set_actor_name(actor_id, display_name_id, &actor_name),
             tx::actor::build_set_actor_state(actor_id, main_state, 0),
             tx::actor::build_set_actor_is_zoning(actor_id, false),
-            tx::actor::build_actor_instantiate(actor_id, 0, 0, &actor_name, &class_name),
+            tx::actor::build_actor_instantiate(
+                actor_id,
+                0,
+                0x3040,
+                &player_actor_name,
+                player_class_name,
+                &script_bind_params,
+            ),
             tx::actor_inventory::build_inventory_begin_change(actor_id, true),
             tx::actor_inventory::build_inventory_end_change(actor_id),
             tx::actor::build_actor_property_init(actor_id),

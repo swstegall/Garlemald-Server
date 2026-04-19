@@ -20,13 +20,21 @@ pub fn build_ping_response(actor_id: u32) -> SubPacket {
     SubPacket::new_with_flag(false, OP_PONG, 0, data)
 }
 
-/// OP_PONG_RESPONSE (0x0001) — client ping.
-pub fn build_pong(actor_id: u32, ping_ticks: u32) -> SubPacket {
+/// OP_PONG_RESPONSE (0x0001) — server reply to the client's game-message Ping.
+/// Mirrors `Map Server/Packets/Send/PongPacket.cs`: a 0x40-byte game-message
+/// subpacket with `pingTicks` at offset 0x00 and the magic constant 0x14D
+/// at offset 0x04. Wrap as `SubPacket::new(..)` (game-message form) so the
+/// client's game-message reader sees opcode 0x0001; set `target_id` to the
+/// session so the world-server's proxy router forwards it back to the
+/// client instead of dropping it.
+pub fn build_pong(session_id: u32, ping_ticks: u32) -> SubPacket {
     let mut data = body(0x40);
     let mut c = Cursor::new(&mut data[..]);
-    c.write_u32::<LittleEndian>(actor_id).unwrap();
     c.write_u32::<LittleEndian>(ping_ticks).unwrap();
-    SubPacket::new_with_flag(false, OP_PONG_RESPONSE, actor_id, data)
+    c.write_u32::<LittleEndian>(0x14D).unwrap();
+    let mut sub = SubPacket::new(OP_PONG_RESPONSE, session_id, data);
+    sub.set_target_id(session_id);
+    sub
 }
 
 /// OP_HANDSHAKE_RESPONSE (0x0002) — 40-byte canned blob with actor id patched
