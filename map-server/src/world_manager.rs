@@ -493,6 +493,7 @@ impl WorldManager {
         };
         let has_login_director = login_director_actor_id != 0;
         let login_director_spec = session.login_director.clone();
+        let pending_kick_event = session.pending_kick_event.clone();
         let (zone_actor_id, region_id, bgm_day, zone_name, zone_class_path, zone_class_name) = {
             let z = zone_arc.read().await;
             (
@@ -627,6 +628,28 @@ impl WorldManager {
                 name = %director_actor_name,
                 "login director spawn packets prepended"
             );
+            // C# `onBeginLogin` calls `player:KickEvent(director,
+            // "noticeEvent", true)` right after `StartDirector(true)` —
+            // this is the packet that actually fires the intro cutscene
+            // on the client. Without it the director exists in the
+            // client's actor table but nothing tells it to play the
+            // opening event. Emit the KickEventPacket here (eventType=5,
+            // which matches `Player.KickEvent` vs KickEventSpecial).
+            if let Some(kick) = &pending_kick_event {
+                subpackets.push(tx::events::build_kick_event(
+                    kick.trigger_actor_id,
+                    kick.owner_actor_id,
+                    &kick.event_name,
+                    5,
+                    &[],
+                ));
+                tracing::info!(
+                    trigger = kick.trigger_actor_id,
+                    owner = kick.owner_actor_id,
+                    event = %kick.event_name,
+                    "KickEventPacket appended after director spawn"
+                );
+            }
         }
         subpackets.extend(vec![
             tx::actor::build_set_actor_is_zoning(actor_id, false),

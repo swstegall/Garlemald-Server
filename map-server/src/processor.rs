@@ -481,6 +481,33 @@ impl PacketProcessor {
                     "SetPos applied (tutorial spawn position)"
                 );
             }
+            LC::KickEvent {
+                player_id,
+                actor_id,
+                trigger,
+                args: _,
+            } => {
+                // Capture onto the session so send_zone_in_bundle can
+                // emit the KickEventPacket after the director spawn.
+                // C# `Player.KickEvent` runs with `eventType = 5` —
+                // that specific value triggers the cutscene dispatcher
+                // inside the 1.23b client. The `actor_id` is the owner
+                // (the director actor we just spawned).
+                if let Some(mut snap) = self.world.session(handle.session_id).await {
+                    snap.pending_kick_event = Some(crate::data::PendingKickEvent {
+                        trigger_actor_id: player_id,
+                        owner_actor_id: actor_id,
+                        event_name: trigger.clone(),
+                    });
+                    self.world.upsert_session(snap).await;
+                }
+                tracing::info!(
+                    player = player_id,
+                    target = actor_id,
+                    %trigger,
+                    "KickEvent captured (will emit KickEventPacket after director spawn)"
+                );
+            }
             LC::AddQuest {
                 player_id,
                 quest_id,

@@ -45,6 +45,12 @@ pub struct Session {
     /// and which actor id to reference in the player's ScriptBind
     /// LuaParam list. `None` → no director (non-tutorial login).
     pub login_director: Option<LoginDirectorSpec>,
+    /// Pending `KickEvent` captured during `onBeginLogin`. The tutorial
+    /// flow calls `player:KickEvent(director, "noticeEvent", true)`
+    /// AFTER the director is spawned — `zone_in_bundle` emits the
+    /// corresponding `KickEventPacket` as the final step so the client
+    /// dispatches the event on the freshly-spawned director actor.
+    pub pending_kick_event: Option<PendingKickEvent>,
 }
 
 #[derive(Debug, Clone)]
@@ -53,6 +59,13 @@ pub struct LoginDirectorSpec {
     pub zone_actor_id: u32,
     pub class_path: String,
     pub class_name: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingKickEvent {
+    pub trigger_actor_id: u32,
+    pub owner_actor_id: u32,
+    pub event_name: String,
 }
 
 impl Session {

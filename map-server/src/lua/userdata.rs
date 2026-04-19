@@ -512,12 +512,28 @@ impl UserData for LuaPlayer {
         );
         methods.add_method(
             "KickEvent",
-            |_, this, (_actor, trigger, _args): (Value, String, mlua::MultiValue)| {
+            |_, this, (target, trigger, _args): (Value, String, mlua::MultiValue)| {
+                // Extract the target actor id from the userdata the
+                // script passed in (usually a `LuaDirectorHandle`). On
+                // the tutorial path this is the `OpeningDirector`, and
+                // the resulting `KickEventPacket` is what tells the
+                // client to start the intro cutscene on that actor.
+                let target_actor_id = match &target {
+                    Value::UserData(ud) => ud
+                        .borrow::<LuaDirectorHandle>()
+                        .ok()
+                        .map(|h| h.actor_id)
+                        .or_else(|| {
+                            ud.borrow::<LuaActor>().ok().map(|a| a.actor_id)
+                        })
+                        .unwrap_or(this.snapshot.current_event_owner),
+                    _ => this.snapshot.current_event_owner,
+                };
                 push(
                     &this.queue,
                     LuaCommand::KickEvent {
                         player_id: this.snapshot.actor_id,
-                        actor_id: this.snapshot.current_event_owner,
+                        actor_id: target_actor_id,
                         trigger,
                         args: Vec::new(),
                     },
