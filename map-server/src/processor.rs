@@ -149,6 +149,12 @@ impl PacketProcessor {
         character.base.position_y = spawn.y;
         character.base.position_z = spawn.z;
         character.base.rotation = rotation;
+        // `base.zone_id` feeds `player:GetZoneID()` from Lua. Without
+        // setting it here it defaults to 0 and the tutorial branch in
+        // `player.lua:onBeginLogin` (`... and player:GetZoneID() == 193`)
+        // evaluates false — so `SetLoginDirector` never fires and the
+        // ScriptBind LuaParams stay on the non-director path.
+        character.base.zone_id = zone_id;
         character.chara.class = class_slot as i16;
         character.chara.hp = hp;
         character.chara.max_hp = hp_max;
@@ -268,8 +274,6 @@ impl PacketProcessor {
         snap.language_code = lang;
         snap.destination_spawn_type = 0x1;
         let zone = snap.current_zone_id;
-        let spawn = Vector3::new(snap.destination_x, snap.destination_y, snap.destination_z);
-        let rotation = snap.destination_rot;
         self.world.upsert_session(snap).await;
 
         let actor_id = handle.actor_id;
@@ -350,6 +354,20 @@ impl PacketProcessor {
             }
         }
 
+        // Capture the post-Lua spawn position — `SetPos` commands from
+        // the tutorial-zone `onBeginLogin` path overwrite the DB
+        // position with the cutscene-canonical coordinates, and the
+        // zone change needs the updated values to stage the player at
+        // the right spot before `send_zone_in_bundle` renders them.
+        let (spawn, rotation) = if let Some(snap) = self.world.session(session_id).await {
+            (
+                Vector3::new(snap.destination_x, snap.destination_y, snap.destination_z),
+                snap.destination_rot,
+            )
+        } else {
+            (Vector3::default(), 0.0)
+        };
+
         if let Err(e) = self
             .world
             .do_zone_change(actor_id, session_id, zone, spawn, rotation)
@@ -387,6 +405,46 @@ impl PacketProcessor {
                 tracing::info!(
                     player = player_id,
                     "SetLoginDirector applied (ScriptBind LuaParams will use tutorial variant)"
+                );
+            }
+            // `player.lua:onBeginLogin` for tutorial zones sets the
+            // canonical cutscene-spawn position via four
+            // `player.positionX/Y/Z/rotation = …` assignments, each of
+            // which fires one `SetPos` command carrying the running
+            // state. Apply these to the Character so the subsequent
+            // zone-in bundle's `SetActorPosition` packet matches the
+            // tutorial spawn (zone 193: `0.016, 10.35, -36.91, 0.025`).
+            // The Session's destination-pos is also refreshed so
+            // `do_zone_change` sees the updated location.
+            LC::SetPos {
+                actor_id,
+                zone_id: _,
+                x,
+                y,
+                z,
+                rotation,
+            } => {
+                {
+                    let mut c = handle.character.write().await;
+                    c.base.position_x = x;
+                    c.base.position_y = y;
+                    c.base.position_z = z;
+                    c.base.rotation = rotation;
+                }
+                if let Some(mut snap) = self.world.session(handle.session_id).await {
+                    snap.destination_x = x;
+                    snap.destination_y = y;
+                    snap.destination_z = z;
+                    snap.destination_rot = rotation;
+                    self.world.upsert_session(snap).await;
+                }
+                tracing::debug!(
+                    actor = actor_id,
+                    x,
+                    y,
+                    z,
+                    rotation,
+                    "SetPos applied (tutorial spawn position)"
                 );
             }
             LC::AddQuest {
