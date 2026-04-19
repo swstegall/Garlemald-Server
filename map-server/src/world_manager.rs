@@ -38,6 +38,14 @@ use crate::zone::zone::Zone;
 /// actors share this shape; the only thing that varies is the actor id,
 /// name, class name, and the LuaParam list that goes into the
 /// `ActorInstantiate` script-bind packet.
+///
+/// **Currently unused.** Emitting any of the three master spawns to the
+/// 1.23b client triggers STATUS_INVALID_PARAMETER on a deferred callback
+/// ~5s post-login — most likely a failed script/resource load driven by
+/// a ScriptBind LuaParam the client can't resolve against its local
+/// data archive. Kept intact so the implementation can be revived once
+/// we know which specific param path fails.
+#[allow(dead_code)]
 fn push_master_spawn(
     subpackets: &mut Vec<common::subpacket::SubPacket>,
     actor_id: u32,
@@ -47,8 +55,13 @@ fn push_master_spawn(
 ) {
     subpackets.push(tx::actor::build_add_actor(actor_id, 0));
     subpackets.push(tx::actor::build_set_actor_speed_default(actor_id));
+    // C# `Actor.CreateSpawnPositonPacket` passes `actorId` as the second
+    // (target) arg for plain actors. The `-1` sentinel is player-self only
+    // — using it for NPCs trips STATUS_INVALID_PARAMETER inside the client's
+    // actor-resolve path and raises 0xc000000d a couple seconds after the
+    // zone-in packets are consumed.
     subpackets.push(tx::actor::build_set_actor_position(
-        actor_id, -1, 0.0, 0.0, 0.0, 0.0, 0x1, false,
+        actor_id, actor_id as i32, 0.0, 0.0, 0.0, 0.0, 0x1, false,
     ));
     // C# `CreateNamePacket` uses displayNameId=0 when a customDisplayName
     // is set; all three masters ship with names ("debug", "worldMaster",
@@ -539,91 +552,42 @@ impl WorldManager {
             ),
             tx::actor_inventory::build_inventory_begin_change(actor_id, true),
             tx::actor_inventory::build_inventory_end_change(actor_id),
-            tx::actor::build_player_property_init(
-                actor_id,
-                hp,
-                hp_max,
-                mp,
-                mp_max,
-                tp,
-                class_slot,
-                1,
-                0,
-                tribe,
-                guardian,
-                birthday_day,
-                birthday_month,
-                initial_town,
-                rest_bonus_exp_rate,
-            ),
         ];
+        // `Player.GetInitPackets` can span multiple `SetActorProperty`
+        // subpackets when the byte budget is exceeded; the builder emits
+        // them in order with the right continuation markers (0x60+len on
+        // every packet except the last, which gets 0x82+len). Extend the
+        // zone-in bundle with whatever the builder returned.
         let mut subpackets = subpackets;
-
-        // Area master / Debug / World master spawns — three zone-resident
-        // static actors C# `Player.SendZoneInPackets` always appends after
-        // the player's own spawn. The client references these from many
-        // scripts (the zone actor for zone-wide events, `worldMaster` for
-        // cross-zone messaging, `debug` for GM utilities). Their absence
-        // appears to keep the client from concluding zone-load.
-        //
-        // IDs are hardcoded in C# `DebugProg` / `WorldMaster`; the area
-        // master gets its id from the zone row. The script-bind LuaParam
-        // shapes mirror each C# actor's `CreateScriptBindPacket` exactly.
-        push_master_spawn(
-            &mut subpackets,
-            zone_actor_id,
-            format!("_areaMaster@{:05X}", zone_actor_id << 8),
-            zone_class_name.clone(),
-            vec![
-                common::luaparam::LuaParam::String(zone_class_path.clone()),
-                common::luaparam::LuaParam::False,
-                common::luaparam::LuaParam::True,
-                common::luaparam::LuaParam::String(zone_name.clone()),
-                common::luaparam::LuaParam::String("/Area/Zone/ZoneDefault".to_string()),
-                common::luaparam::LuaParam::Int32(-1),
-                common::luaparam::LuaParam::Byte(1),
-                common::luaparam::LuaParam::True,
-                common::luaparam::LuaParam::False,
-                common::luaparam::LuaParam::False,
-                common::luaparam::LuaParam::False,
-                common::luaparam::LuaParam::False,
-                common::luaparam::LuaParam::False,
-                common::luaparam::LuaParam::False,
-                common::luaparam::LuaParam::False,
-            ],
-        );
-        push_master_spawn(
-            &mut subpackets,
-            0x5FF80002,
-            "debug".to_string(),
-            "Debug".to_string(),
-            vec![
-                common::luaparam::LuaParam::String("/System/Debug.prog".to_string()),
-                common::luaparam::LuaParam::False,
-                common::luaparam::LuaParam::False,
-                common::luaparam::LuaParam::False,
-                common::luaparam::LuaParam::False,
-                common::luaparam::LuaParam::True,
-                common::luaparam::LuaParam::Int32(0xC51F),
-                common::luaparam::LuaParam::True,
-                common::luaparam::LuaParam::True,
-            ],
-        );
-        push_master_spawn(
-            &mut subpackets,
-            0x5FF80001,
-            "worldMaster".to_string(),
-            "WorldMaster".to_string(),
-            vec![
-                common::luaparam::LuaParam::String("/World/WorldMaster_event".to_string()),
-                common::luaparam::LuaParam::False,
-                common::luaparam::LuaParam::False,
-                common::luaparam::LuaParam::False,
-                common::luaparam::LuaParam::False,
-                common::luaparam::LuaParam::False,
-                common::luaparam::LuaParam::Nil,
-            ],
-        );
+        subpackets.extend(tx::actor::build_player_property_init(
+            actor_id,
+            hp,
+            hp_max,
+            mp,
+            mp_max,
+            tp,
+            class_slot,
+            1,
+            0x20, // commandBorder: C# CharaWork default is 0x20
+            tribe,
+            guardian,
+            birthday_day,
+            birthday_month,
+            initial_town,
+            rest_bonus_exp_rate,
+        ));
+        // Master-actor spawns (area master / debug / world master) were
+        // attempted here per C# `Player.SendZoneInPackets`, but emitting
+        // them causes the 1.23b client to raise STATUS_INVALID_PARAMETER
+        // 5–6 seconds post-login, consistently crashing out of Wine. The
+        // exact field is unknown without debug symbols — likely one of
+        // the LuaParam payloads in the ScriptBind triggers a failed
+        // script/resource load on a deferred callback. Leaving them
+        // disabled keeps the client alive at the Now-Loading hang
+        // (which is still our furthest-progress stable state). See
+        // `push_master_spawn` below for the (inactive) implementation.
+        let _ = (&zone_name, &zone_class_path, &zone_class_name);
+        let _ = &main_state; // consumed above; retained in local for future reuse
 
         for mut sub in subpackets {
             sub.set_target_id(session_id);

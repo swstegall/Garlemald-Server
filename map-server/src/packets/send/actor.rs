@@ -374,33 +374,120 @@ pub fn build_actor_property_init(actor_id: u32) -> SubPacket {
     SubPacket::new(OP_SET_ACTOR_PROPERTY, actor_id, data)
 }
 
+/// Property-packet builder that mirrors C# `ActorPropertyPacketUtil` +
+/// `SetActorPropetyPacket`. Callers stage property writes via
+/// `add_byte / add_short / add_int`; when a single packet would exceed the
+/// 0x7D byte budget (including the 1-byte target marker + target path),
+/// `flush_if_needed` seals the current packet with the "more follows"
+/// target marker (`0x60 + len`) and starts a fresh one. The final packet
+/// gets the "done" marker (`0x82 + len`) via `done()`. Property ids are
+/// the Murmur2 hash of the `/` path string, matching the C# reflection
+/// path.
+pub struct ActorPropertyPacketBuilder<'a> {
+    actor_id: u32,
+    target: &'a str,
+    packets: Vec<SubPacket>,
+    /// Staged bytes for the current packet, starting at offset 1 (offset
+    /// 0 reserves one byte for the running-total header `runningByteTotal`).
+    buf: Vec<u8>,
+}
+
+impl<'a> ActorPropertyPacketBuilder<'a> {
+    const MAX_BYTES: usize = 0x7D;
+
+    pub fn new(actor_id: u32, target: &'a str) -> Self {
+        Self {
+            actor_id,
+            target,
+            packets: Vec::new(),
+            buf: Vec::new(),
+        }
+    }
+
+    fn target_marker_cost(&self) -> usize {
+        1 + self.target.len()
+    }
+
+    /// Seal the current packet with the given target marker byte.
+    fn seal_current(&mut self, marker: u8) {
+        let running_total = self.buf.len() + self.target_marker_cost();
+        // Allocate the 0xA8-sized body with zero padding beyond the used
+        // range — matches the fixed C# PACKET_SIZE.
+        let mut data = body(0xA8);
+        data[0] = running_total as u8;
+        data[1..1 + self.buf.len()].copy_from_slice(&self.buf);
+        let target_start = 1 + self.buf.len();
+        data[target_start] = marker;
+        data[target_start + 1..target_start + 1 + self.target.len()]
+            .copy_from_slice(self.target.as_bytes());
+        self.packets
+            .push(SubPacket::new(OP_SET_ACTOR_PROPERTY, self.actor_id, data));
+        self.buf.clear();
+    }
+
+    /// If `needed` more bytes wouldn't fit in the current packet, seal it
+    /// with the "more follows" marker (`0x60 + len`) and start a fresh
+    /// staging buffer.
+    fn flush_if_needed(&mut self, needed: usize) {
+        if self.buf.len() + needed + self.target_marker_cost() > Self::MAX_BYTES {
+            let marker = 0x60u8 + self.target.len() as u8;
+            self.seal_current(marker);
+        }
+    }
+
+    /// Stage a 1-byte property (`AddByte`). Type byte 1, id u32 LE, value u8.
+    pub fn add_byte(&mut self, name: &str, value: u8) {
+        self.flush_if_needed(6);
+        let id = common::utils::murmur_hash2(name, 0);
+        self.buf.push(1);
+        self.buf.extend_from_slice(&id.to_le_bytes());
+        self.buf.push(value);
+    }
+
+    /// Stage a 2-byte property (`AddShort`). Type byte 2, id u32 LE, value u16.
+    pub fn add_short(&mut self, name: &str, value: u16) {
+        self.flush_if_needed(7);
+        let id = common::utils::murmur_hash2(name, 0);
+        self.buf.push(2);
+        self.buf.extend_from_slice(&id.to_le_bytes());
+        self.buf.extend_from_slice(&value.to_le_bytes());
+    }
+
+    /// Stage a 4-byte property (`AddInt`). Type byte 4, id u32 LE, value u32.
+    pub fn add_int(&mut self, name: &str, value: u32) {
+        self.flush_if_needed(9);
+        let id = common::utils::murmur_hash2(name, 0);
+        self.buf.push(4);
+        self.buf.extend_from_slice(&id.to_le_bytes());
+        self.buf.extend_from_slice(&value.to_le_bytes());
+    }
+
+    /// Stage a 4-byte float (`AddBuffer` with a 4-byte payload). C# writes
+    /// the buffer length as the type byte (4) and the float's IEEE-754
+    /// bytes as the value — same wire shape as `AddInt`.
+    pub fn add_float(&mut self, name: &str, value: f32) {
+        self.add_int(name, value.to_bits());
+    }
+
+    /// Seal the final packet with the "done" marker (`0x82 + len`) and
+    /// return the full packet list.
+    pub fn done(mut self) -> Vec<SubPacket> {
+        let marker = 0x82u8 + self.target.len() as u8;
+        self.seal_current(marker);
+        self.packets
+    }
+}
+
 /// Player-specific `/_init` property dump, modelled on C#
-/// `Player.GetInitPackets()` + `ActorPropertyPacketUtil`. The 1.23b client
-/// treats the minimal Actor init (3 anonymous flags) as enough to render a
-/// generic NPC, but the Player UI needs HP/MP/class info before it will
-/// leave "Now Loading" and instantiate the HUD. Property ids are the
-/// Murmur2 hash of the path string; the byte prefixes match
-/// `SetActorPropetyPacket.AddByte/AddShort/AddInt`.
-///
-/// Fields and field widths follow the C# reflection path:
-/// - `charaWork.parameterSave.hp[0]`                 u16 (AddShort, type 2)
-/// - `charaWork.parameterSave.hpMax[0]`              u16
-/// - `charaWork.parameterSave.mp`                    u16
-/// - `charaWork.parameterSave.mpMax`                 u16
-/// - `charaWork.parameterTemp.tp`                    u16
-/// - `charaWork.parameterSave.state_mainSkill[0]`    u8 (AddByte, type 1)
-/// - `charaWork.parameterSave.state_mainSkillLevel`  u8
-/// - `charaWork.commandBorder`                       u8
-/// - `playerWork.tribe`                              u8
-/// - `playerWork.guardian`                           u8
-/// - `playerWork.birthdayDay`                        u8
-/// - `playerWork.birthdayMonth`                      u8
-/// - `playerWork.initialTown`                        u8
-/// - `playerWork.restBonusExpRate`                   i32 (AddInt, type 4)
-///
-/// Total wire cost: 9×AddByte (54) + 5×AddShort (35) + 1×AddInt (9) +
-/// target marker (7) = 105 bytes. Stays under the C# MAXBYTES=125 limit
-/// so it all fits in a single packet.
+/// `Player.GetInitPackets()` + `ActorPropertyPacketUtil`. Emits the
+/// "always-sent" property set for a fresh character: HP/MP/class state,
+/// command categories (forced 1 for 0..64), command-slot compatibilities
+/// (forced true for 0..40), `otherClassAbilityCount`/`giftCount` sentinel
+/// values the C# code hardcodes, the `depictionJudge` constant, and the
+/// player profile fields. Properties are packed across multiple
+/// `SetActorProperty` subpackets when the MAXBYTES cap is exceeded —
+/// the first N packets carry the "more follows" target marker and the
+/// last carries the "done" marker.
 #[allow(clippy::too_many_arguments)]
 pub fn build_player_property_init(
     actor_id: u32,
@@ -418,63 +505,85 @@ pub fn build_player_property_init(
     birthday_month: u8,
     initial_town: u8,
     rest_bonus_exp_rate: i32,
-) -> SubPacket {
-    let mut data = body(0xA8);
-    let mut c = Cursor::new(&mut data[..]);
-    c.set_position(1);
+) -> Vec<SubPacket> {
+    let mut b = ActorPropertyPacketBuilder::new(actor_id, "/_init");
 
-    // AddShort(id, value) — type=2, then u32 id, then u16 value. 7 bytes.
-    let add_short = |c: &mut Cursor<&mut [u8]>, name: &str, value: u16| {
-        let id = common::utils::murmur_hash2(name, 0);
-        c.write_u8(2).unwrap();
-        c.write_u32::<LittleEndian>(id).unwrap();
-        c.write_u16::<LittleEndian>(value).unwrap();
-    };
-    // AddByte(id, value) — type=1, u32 id, u8 value. 6 bytes.
-    let add_byte = |c: &mut Cursor<&mut [u8]>, name: &str, value: u8| {
-        let id = common::utils::murmur_hash2(name, 0);
-        c.write_u8(1).unwrap();
-        c.write_u32::<LittleEndian>(id).unwrap();
-        c.write_u8(value).unwrap();
-    };
-    // AddInt(id, value) — type=4, u32 id, u32 value. 9 bytes.
-    let add_int = |c: &mut Cursor<&mut [u8]>, name: &str, value: u32| {
-        let id = common::utils::murmur_hash2(name, 0);
-        c.write_u8(4).unwrap();
-        c.write_u32::<LittleEndian>(id).unwrap();
-        c.write_u32::<LittleEndian>(value).unwrap();
-    };
+    // Base charaWork state. `bazaarTax` is a byte; `potencial` is a
+    // float in C# (default 6.6f) — emitted via AddBuffer(4) which shares
+    // the wire shape with AddInt.
+    b.add_byte("charaWork.eventSave.bazaarTax", 0);
+    b.add_float("charaWork.battleSave.potencial", 6.6);
 
-    add_short(&mut c, "charaWork.parameterSave.hp[0]", hp);
-    add_short(&mut c, "charaWork.parameterSave.hpMax[0]", hp_max);
-    add_short(&mut c, "charaWork.parameterSave.mp", mp);
-    add_short(&mut c, "charaWork.parameterSave.mpMax", mp_max);
-    add_short(&mut c, "charaWork.parameterTemp.tp", tp);
-    add_byte(&mut c, "charaWork.parameterSave.state_mainSkill[0]", main_skill);
-    add_byte(
-        &mut c,
-        "charaWork.parameterSave.state_mainSkillLevel",
-        main_skill_level,
-    );
-    add_byte(&mut c, "charaWork.commandBorder", command_border);
-    add_byte(&mut c, "playerWork.tribe", tribe);
-    add_byte(&mut c, "playerWork.guardian", guardian);
-    add_byte(&mut c, "playerWork.birthdayDay", birthday_day);
-    add_byte(&mut c, "playerWork.birthdayMonth", birthday_month);
-    add_byte(&mut c, "playerWork.initialTown", initial_town);
-    add_int(
-        &mut c,
-        "playerWork.restBonusExpRate",
-        rest_bonus_exp_rate as u32,
+    // Parameters (HP/MP/class).
+    b.add_short("charaWork.parameterSave.hp[0]", hp);
+    b.add_short("charaWork.parameterSave.hpMax[0]", hp_max);
+    b.add_short("charaWork.parameterSave.mp", mp);
+    b.add_short("charaWork.parameterSave.mpMax", mp_max);
+    b.add_short("charaWork.parameterTemp.tp", tp);
+    b.add_byte("charaWork.parameterSave.state_mainSkill[0]", main_skill);
+    b.add_byte("charaWork.parameterSave.state_mainSkillLevel", main_skill_level);
+
+    // Cast gauge defaults are floats (C# `float[] castGauge_speed = { 1.0f, 0.25f }`).
+    b.add_float("charaWork.battleTemp.castGauge_speed[0]", 1.0);
+    b.add_float("charaWork.battleTemp.castGauge_speed[1]", 0.25);
+    // `skillPoint` is int[] per C# BattleSave.
+    let skill_slot = main_skill.saturating_sub(1);
+    b.add_int(
+        &format!("charaWork.battleSave.skillPoint[{}]", skill_slot),
+        0,
     );
 
-    let target = b"/_init";
-    c.write_u8(0x82u8 + target.len() as u8).unwrap();
-    c.write_all(target).unwrap();
+    b.add_byte("charaWork.commandBorder", command_border);
+    // `negotiationFlag` is bool[] — serialized as byte.
+    b.add_byte("charaWork.battleSave.negotiationFlag[0]", 0);
 
-    let running_total = 5 * 7 + 9 * 6 + 1 * 9 + 1 + target.len();
-    data[0] = running_total as u8;
-    SubPacket::new(OP_SET_ACTOR_PROPERTY, actor_id, data)
+    // C# forces `commandCategory[i] = 1` for all 64 slots. byte[].
+    for i in 0..64 {
+        b.add_byte(&format!("charaWork.commandCategory[{}]", i), 1);
+    }
+    // C# forces `commandSlot_compatibility[i] = true` for all 40 slots. bool[].
+    for i in 0..40 {
+        b.add_byte(
+            &format!("charaWork.parameterSave.commandSlot_compatibility[{}]", i),
+            1,
+        );
+    }
+
+    // Force-control defaults C# hardcodes. `forceControl_float_*` is
+    // float[] (defaults {1.0, 1.0, 0.0, 0.0}); `forceControl_int16_*` is
+    // short[] (defaults {-1, -1}).
+    b.add_float(
+        "charaWork.parameterTemp.forceControl_float_forClientSelf[0]",
+        1.0,
+    );
+    b.add_float(
+        "charaWork.parameterTemp.forceControl_float_forClientSelf[1]",
+        1.0,
+    );
+    b.add_short(
+        "charaWork.parameterTemp.forceControl_int16_forClientSelf[0]",
+        0xFFFF,
+    );
+    b.add_short(
+        "charaWork.parameterTemp.forceControl_int16_forClientSelf[1]",
+        0xFFFF,
+    );
+    // byte[2] sentinel values C# sets before AddProperty.
+    b.add_byte("charaWork.parameterTemp.otherClassAbilityCount[0]", 4);
+    b.add_byte("charaWork.parameterTemp.otherClassAbilityCount[1]", 5);
+    b.add_byte("charaWork.parameterTemp.giftCount[1]", 5);
+    // `depictionJudge` is a uint in C# (default 0xA0F50911).
+    b.add_int("charaWork.depictionJudge", 0xA0F50911);
+
+    // Player profile. `restBonusExpRate` is int, rest are bytes.
+    b.add_int("playerWork.restBonusExpRate", rest_bonus_exp_rate as u32);
+    b.add_byte("playerWork.tribe", tribe);
+    b.add_byte("playerWork.guardian", guardian);
+    b.add_byte("playerWork.birthdayMonth", birthday_month);
+    b.add_byte("playerWork.birthdayDay", birthday_day);
+    b.add_byte("playerWork.initialTown", initial_town);
+
+    b.done()
 }
 
 use std::io::Write as _;
