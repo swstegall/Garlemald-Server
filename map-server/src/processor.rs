@@ -386,6 +386,44 @@ impl PacketProcessor {
             zone,
             "language code received; login zone-in dispatched",
         );
+
+        // C# `Map/PacketProcessor.cs` case 0x0006 runs `onBeginLogin` →
+        // `DoZoneIn(isLogin=true, 0x1)` → `onLogin`, in that order. Missing
+        // the `onLogin` step left fresh characters stuck at Now Loading
+        // with an empty inventory because `initClassItems`/`initRaceItems`
+        // never ran. We call it best-effort: if the script errors partway
+        // through (e.g. on an unsupported `charaWork` property access),
+        // commands queued before the error are still applied.
+        if let Some(ref engine) = self.lua {
+            let script = engine.resolver().player();
+            if script.exists() {
+                let snapshot = {
+                    let c = handle.character.read().await;
+                    build_player_snapshot_for_login(&c)
+                };
+                let result = engine.call_player_hook_best_effort(&script, "onLogin", snapshot);
+                let cmd_count = result.commands.len();
+                for cmd in result.commands {
+                    self.apply_login_lua_command(&handle, cmd).await;
+                }
+                match result.error {
+                    None => tracing::info!(
+                        session = session_id,
+                        actor = actor_id,
+                        commands = cmd_count,
+                        "onLogin lua hook ran"
+                    ),
+                    Some(e) => tracing::warn!(
+                        error = %e,
+                        session = session_id,
+                        actor = actor_id,
+                        commands = cmd_count,
+                        "onLogin lua hook errored; applied partial commands"
+                    ),
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -546,6 +584,39 @@ impl PacketProcessor {
                 quest_id,
             } => {
                 tracing::debug!(player = player_id, quest = quest_id, "AddQuest (stub)");
+            }
+            // `onLogin` → `initClassItems` / `initRaceItems` emit these for
+            // brand-new characters. Full persistence + inventory packet
+            // emission lands with the phase-8 item pipeline; logging here
+            // confirms the hook traversed its full class/race branches so
+            // the follow-on `SavePlayTime` / `SendMessage` steps also ran.
+            LC::AddItem {
+                actor_id,
+                item_package,
+                item_id,
+                quantity,
+            } => {
+                tracing::info!(
+                    actor = actor_id,
+                    package = item_package,
+                    item = item_id,
+                    qty = quantity,
+                    "AddItem captured (onLogin init items; persistence deferred)"
+                );
+            }
+            LC::SendMessage {
+                actor_id,
+                message_type,
+                sender,
+                text,
+            } => {
+                tracing::info!(
+                    actor = actor_id,
+                    kind = format!("0x{:02X}", message_type),
+                    %sender,
+                    %text,
+                    "SendMessage captured (login-hook sys message; packet emit deferred)"
+                );
             }
             LC::SetHomePoint {
                 player_id,

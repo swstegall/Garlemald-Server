@@ -20,6 +20,7 @@ use crate::processor::PacketProcessor;
 #[tokio::main]
 async fn main() -> Result<()> {
     common::logging::init("[LOBBY]");
+    common::packet_log::init("[LOBBY]");
 
     tracing::info!("==================================");
     tracing::info!("Garlemald: Lobby Server");

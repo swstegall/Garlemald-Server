@@ -22,6 +22,7 @@ use crate::world_master::WorldMaster;
 #[tokio::main]
 async fn main() -> Result<()> {
     common::logging::init("[WORLD]");
+    common::packet_log::init("[WORLD]");
 
     tracing::info!("==================================");
     tracing::info!("Garlemald: World Server");

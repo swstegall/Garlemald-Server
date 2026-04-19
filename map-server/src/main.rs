@@ -39,6 +39,7 @@ use crate::world_manager::WorldManager;
 #[tokio::main]
 async fn main() -> Result<()> {
     common::logging::init("[MAP]  ");
+    common::packet_log::init("[MAP]  ");
 
     tracing::info!("==================================");
     tracing::info!("Garlemald: Map Server");

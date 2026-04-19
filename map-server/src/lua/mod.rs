@@ -190,6 +190,60 @@ impl LuaEngine {
         })
     }
 
+    /// Variant of [`call_player_hook`] that keeps any commands the script
+    /// emitted *before* it errored out. Side effects queued up to the point
+    /// of the error are still valid — for `onLogin` in particular the
+    /// opening `player:SendMessage(...)` and any `AddItems` that ran
+    /// before an unsupported `charaWork` index aborted the frame should
+    /// still reach `apply_login_lua_command`. Discarding them on error was
+    /// the bug that made partial progress look like a total no-op.
+    pub fn call_player_hook_best_effort(
+        &self,
+        script_path: &Path,
+        function_name: &str,
+        snapshot: userdata::PlayerSnapshot,
+    ) -> PartialLuaCallResult {
+        let (lua, queue) = match self.load_script(script_path) {
+            Ok(pair) => pair,
+            Err(e) => {
+                return PartialLuaCallResult {
+                    commands: Vec::new(),
+                    error: Some(e),
+                };
+            }
+        };
+        let globals = lua.globals();
+        let f: Function = match globals.get(function_name) {
+            Ok(f) => f,
+            Err(e) => {
+                return PartialLuaCallResult {
+                    commands: Vec::new(),
+                    error: Some(anyhow::anyhow!(
+                        "{function_name} not in {}: {e}",
+                        script_path.display()
+                    )),
+                };
+            }
+        };
+        let player = userdata::LuaPlayer {
+            snapshot,
+            queue: queue.clone(),
+        };
+        let user_data = match lua.create_userdata(player) {
+            Ok(ud) => ud,
+            Err(e) => {
+                return PartialLuaCallResult {
+                    commands: CommandQueue::drain(&queue),
+                    error: Some(anyhow::anyhow!("create_userdata(LuaPlayer): {e}")),
+                };
+            }
+        };
+        let call = f.call::<Value>(user_data);
+        let commands = CommandQueue::drain(&queue);
+        let error = call.err().map(|e| anyhow::anyhow!("{function_name}: {e}"));
+        PartialLuaCallResult { commands, error }
+    }
+
     /// NPC-specific helper: try the unique-override script first, then fall
     /// back to the base-class script. Mirrors the C# `CallLuaFunctionNpc`.
     pub fn call_npc(
@@ -287,6 +341,15 @@ impl LuaEngine {
 pub struct LuaCallResult {
     pub value: Value,
     pub commands: Vec<LuaCommand>,
+}
+
+/// Partial result from [`LuaEngine::call_player_hook_best_effort`]. Carries
+/// any commands queued before the frame errored so the caller can still
+/// apply them. `error = None` means the hook ran cleanly to completion.
+#[derive(Debug)]
+pub struct PartialLuaCallResult {
+    pub commands: Vec<LuaCommand>,
+    pub error: Option<anyhow::Error>,
 }
 
 #[cfg(test)]

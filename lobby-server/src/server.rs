@@ -57,6 +57,7 @@ async fn handle_connection(
             tracing::info!(%peer, user_id = session.current_user_id, "disconnected");
             return Ok(());
         }
+        common::packet_log::log_inbound(peer, &buffer[pending..pending + n]);
         let bytes_in = pending + n;
         tracing::trace!(%peer, bytes = n, total = bytes_in, "socket read");
 
@@ -101,6 +102,9 @@ async fn send_reply(
         }
     };
     let len = bytes.len();
+    if let Ok(peer) = socket.peer_addr() {
+        common::packet_log::log_outbound(peer, &bytes);
+    }
     socket.write_all(&bytes).await?;
     tracing::trace!(bytes = len, "reply sent");
     Ok(())

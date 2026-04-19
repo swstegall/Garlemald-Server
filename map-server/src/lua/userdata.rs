@@ -671,11 +671,20 @@ impl UserData for LuaPlayer {
             };
             lua.create_userdata(zone)
         });
-        methods.add_method("GetItemPackage", |_, _, _pkg_code: u16| {
-            // Real retail returns an ItemPackage userdata. Phase 8c
-            // returns nil so scripts can null-check before iterating —
-            // matches C# `null` when the package isn't loaded yet.
-            Ok(Value::Nil)
+        methods.add_method("GetItemPackage", |lua, this, pkg_code: u16| {
+            // Returning nil here made `onLogin`'s `initClassItems` /
+            // `initRaceItems` path immediately abort on the first
+            // `GetItemPackage(0):AddItems(...)` call (nil is not
+            // indexable). Return a real `LuaItemPackage` userdata that
+            // routes `AddItem`/`AddItems` into the command queue so the
+            // hook traverses its full class/race branches and the
+            // subsequent `SavePlayTime` etc. run to completion.
+            let pkg = LuaItemPackage {
+                owner_actor_id: this.snapshot.actor_id,
+                package_code: pkg_code,
+                queue: this.queue.clone(),
+            };
+            lua.create_userdata(pkg)
         });
         methods.add_method("GetQuest", |lua, this, id: u32| {
             // Scripts chain `GetQuest(id):ClearQuestData()` / `:ClearQuestFlags()`
@@ -1132,6 +1141,77 @@ impl UserData for LuaDirectorHandle {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
+/// `player:GetItemPackage(code)` returns one of these. The C# side is an
+/// `ItemPackage` wrapping a live slot array; here we only need to capture
+/// `AddItem`/`AddItems` calls — the wider inventory surface (enumeration,
+/// stacking, bazaar) is deferred to the full phase-8 port. Returning a
+/// real userdata (not `nil`) keeps `player.lua:onLogin`'s
+/// `GetItemPackage(0):AddItems({...})` chain from erroring out the entire
+/// hook the first time it's invoked for a fresh character.
+pub struct LuaItemPackage {
+    pub owner_actor_id: u32,
+    pub package_code: u16,
+    pub queue: Arc<Mutex<CommandQueue>>,
+}
+
+impl UserData for LuaItemPackage {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("AddItem", |_, this, args: mlua::MultiValue| {
+            // `AddItem(catalogId)` or `AddItem(catalogId, qty)`.
+            let mut iter = args.into_iter();
+            let Some(Value::Integer(catalog)) = iter.next() else {
+                return Ok(());
+            };
+            let qty = match iter.next() {
+                Some(Value::Integer(q)) => q as i32,
+                _ => 1,
+            };
+            push(
+                &this.queue,
+                LuaCommand::AddItem {
+                    actor_id: this.owner_actor_id,
+                    item_package: this.package_code,
+                    item_id: catalog as u32,
+                    quantity: qty,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method("AddItems", |_, this, items: mlua::Table| {
+            // `AddItems({id1, id2, …})`. C# auto-infers qty=1 for each
+            // catalog id; we follow suit. Tables with explicit {id, qty}
+            // pairs aren't used by `player.lua` so we don't support them
+            // yet.
+            for pair in items.pairs::<mlua::Value, mlua::Value>() {
+                let Ok((_, v)) = pair else { continue };
+                if let Value::Integer(catalog) = v {
+                    push(
+                        &this.queue,
+                        LuaCommand::AddItem {
+                            actor_id: this.owner_actor_id,
+                            item_package: this.package_code,
+                            item_id: catalog as u32,
+                            quantity: 1,
+                        },
+                    );
+                }
+            }
+            Ok(())
+        });
+        methods.add_method("RemoveItem", |_, this, catalog: u32| {
+            push(
+                &this.queue,
+                LuaCommand::RemoveItem {
+                    actor_id: this.owner_actor_id,
+                    item_package: this.package_code,
+                    server_item_id: catalog as u64,
+                },
+            );
+            Ok(())
+        });
+    }
+}
+
 pub struct LuaQuestHandle {
     pub player_id: u32,
     pub quest_id: u32,

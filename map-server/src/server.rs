@@ -69,10 +69,12 @@ async fn handle_connection(
     // The write task wraps each outbound SubPacket in a BasePacket frame so
     // the world-server (our only inbound peer) can decode it via the same
     // `BasePacket::try_from_buffer` reader it uses for client traffic.
+    let writer_peer = peer;
     tokio::spawn(async move {
         while let Some(bytes) = rx.recv().await {
             let frame = common::wrap_subpackets_in_basepacket(bytes);
             let len = frame.len();
+            common::packet_log::log_outbound(writer_peer, &frame);
             if write.write_all(&frame).await.is_err() {
                 break;
             }
@@ -92,6 +94,7 @@ async fn handle_connection(
             tracing::info!(%peer, client_id = client.session_id, "disconnected");
             return Ok(());
         }
+        common::packet_log::log_inbound(peer, &buffer[pending..pending + n]);
         let bytes_in = pending + n;
         tracing::trace!(%peer, bytes = n, total = bytes_in, "socket read");
 

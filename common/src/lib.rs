@@ -15,6 +15,7 @@ pub mod luaparam;
 pub mod math;
 pub mod migrations;
 pub mod packet;
+pub mod packet_log;
 pub mod subpacket;
 pub mod utils;
 
