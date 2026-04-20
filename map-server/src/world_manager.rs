@@ -1164,15 +1164,31 @@ impl WorldManager {
             }
         }
 
-        // Empty retainer-meeting group sync. Emits the C#-canonical
-        // 4-packet pattern (Header + Begin + X08 + End) using the
-        // rewritten builders that match Meteor's wire layout
-        // (locationCode + sequenceId prefix, fixed 0x30 slots, count
-        // at body offset 0x190). With 0 members we get zeroed slots
-        // and count=0 — matches Meteor's empty-retainer shape.
+        // Solo-party group sync. LPB-decompile of
+        // `DepictionJudge:judgeNameplate()` (file `script/0p635/…`)
+        // shows instruction #7 does
+        //   R4 = myPlayer:getPlayerParty()
+        //   R6 = R4:_getOccupancyGroup()      ← SELF / GETTABLE on R4
+        // with no nil check between them. So the client's nameplate
+        // renderer assumes `getPlayerParty()` is ALWAYS non-nil — even
+        // when the player is soloing. When our group sync omits the
+        // party type, `playerParty` stays nil and the first
+        // `_onUpdateWork` tick trips "attempt to index a nil value".
+        //
+        // Meteor's Asdf capture has one 0x017C header with:
+        //   type_id     = 0x2711        (TYPEID_PARTY)
+        //   group_index = 0x8000_0000_0000_0001  ("solo self-party" marker)
+        //   location    = zone_actor_id (0xC1 for ocn0Battle02)
+        // followed by begin + empty X08 + end. That's enough for the
+        // client to construct a real (empty) party object and
+        // `getPlayerParty()` returns it instead of nil.
         {
-            const GROUP_INDEX: u64 = 0;
-            const GROUP_TYPE_RETAINER: u32 = 0x13881;
+            // Top bit set marks the solo "self-party" per the C#
+            // Party.groupIndex convention; low bits are the actor id
+            // of the leader (the player themselves).
+            const PARTY_SOLO_SELF_FLAG: u64 = 0x8000_0000_0000_0000;
+            const GROUP_TYPE_PARTY: u32 = 0x2711;
+            let group_index: u64 = PARTY_SOLO_SELF_FLAG | (actor_id as u64);
             let location_code = zone_actor_id as u64;
             let sequence_id = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1184,8 +1200,8 @@ impl WorldManager {
                     actor_id,
                     location_code,
                     sequence_id,
-                    GROUP_INDEX,
-                    GROUP_TYPE_RETAINER,
+                    group_index,
+                    GROUP_TYPE_PARTY,
                     0,
                     "",
                     0,
@@ -1194,7 +1210,7 @@ impl WorldManager {
                     actor_id,
                     location_code,
                     sequence_id,
-                    GROUP_INDEX,
+                    group_index,
                     0,
                 ),
                 tx::groups::build_group_members_x08(
@@ -1208,7 +1224,7 @@ impl WorldManager {
                     actor_id,
                     location_code,
                     sequence_id,
-                    GROUP_INDEX,
+                    group_index,
                 ),
             ];
             for mut sub in group_pkts {
