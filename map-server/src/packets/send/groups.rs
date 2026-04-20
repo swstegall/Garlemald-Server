@@ -67,7 +67,7 @@ pub fn build_group_header(
     sequence_id: u64,
     group_index: u64,
     type_id: u32,
-    localized_name: u32,
+    localized_name: i32,
     group_name: &str,
     member_count: u32,
 ) -> SubPacket {
@@ -87,7 +87,7 @@ pub fn build_group_header(
     {
         let mut c = Cursor::new(&mut data[..]);
         c.set_position(0x40);
-        c.write_u32::<LittleEndian>(localized_name).unwrap();
+        c.write_i32::<LittleEndian>(localized_name).unwrap();
         write_padded_ascii(&mut c, group_name, 0x20);
         c.set_position(0x64);
         c.write_u32::<LittleEndian>(0x6D).unwrap();

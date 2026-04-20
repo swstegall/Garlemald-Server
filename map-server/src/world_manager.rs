@@ -1184,42 +1184,29 @@ impl WorldManager {
             let _ = neighbours;
         }
 
-        // Solo-party group sync. LPB-decompile of
-        // `DepictionJudge:judgeNameplate()` (file `script/0p635/…`)
-        // shows instruction #7 does
-        //   R4 = myPlayer:getPlayerParty()
-        //   R6 = R4:_getOccupancyGroup()      ← SELF / GETTABLE on R4
-        // with no nil check between them. So the client's nameplate
-        // renderer assumes `getPlayerParty()` is ALWAYS non-nil — even
-        // when the player is soloing. When our group sync omits the
-        // party type, `playerParty` stays nil and the first
-        // `_onUpdateWork` tick trips "attempt to index a nil value".
+        // Solo-party group sync. Decompiled
+        // `CharaBaseClass:getPlayerParty` (proto[2] of
+        // `script/729s9/729s989r57y9rr.le.lpb`) is literally
+        //     return self:_getExtendedTemporaryGroup(10001)
+        // and 10001 == 0x2711 == TYPEID_PARTY — so the party object
+        // the client's `DepictionJudge:judgeNameplate` dereferences
+        // is a 0x017C-registered group whose extended-temp key is
+        // the party type id. The nameplate renderer assumes
+        // getPlayerParty() is non-nil and immediately SELFs
+        // `_getOccupancyGroup` on it (proto[0] #7 at line ~907 of
+        // `script/0p635/…`).
         //
-        // Meteor's Asdf capture has one 0x017C header with:
-        //   type_id     = 0x2711        (TYPEID_PARTY)
-        //   group_index = 0x8000_0000_0000_0001  ("solo self-party" marker)
-        //   location    = zone_actor_id (0xC1 for ocn0Battle02)
-        // followed by begin + empty X08 + end. That's enough for the
-        // client to construct a real (empty) party object and
-        // `getPlayerParty()` returns it instead of nil.
-        // Solo-party group sync — TEMPORARILY GATED. Emitting the
-        // 4-packet bundle with type=PARTY/group=0x8000…0001 byte-for-
-        // byte matches Meteor's Asdf 0x017C (verified with offsets
-        // against the ffxivclassic wiki's 0x17C/D/E/F docs), yet the
-        // 1.23b Wine client hard-crashes <1s after receiving the
-        // bundle — a harder failure than the prior DepictionJudge
-        // soft-crash. Something in the sync is still off (packet
-        // order relative to ScriptBind, chat-channel fields,
-        // sequenceId monotonicity, or a second "numMembers" write
-        // position the wiki lists but Meteor's source skips). Gated
-        // until we can observe what a solo Meteor session DOES send
-        // on a fresh character — Asdf's trace may be post-party-
-        // state rather than the true zero-state we need.
-        const EMIT_SOLO_PARTY_SYNC: bool = false;
-        if EMIT_SOLO_PARTY_SYNC {
-            // Top bit set marks the solo "self-party" per the C#
-            // Party.groupIndex convention; low bits are the actor id
-            // of the leader (the player themselves).
+        // Byte-diff against Meteor's Asdf 0x017C/D/E/F surfaced
+        // three field-level misses from the first stab:
+        //   1. 0x017C localizedNameId = -1, not 0 (wiki: "-1 if
+        //      custom name used", and our custom name is "" so it
+        //      still counts).
+        //   2. 0x017D numMembers = 1, not 0 (the solo party has
+        //      ONE member — the player themselves).
+        //   3. 0x017F member[0] populated with actor_id + is_online
+        //      + player's name. Empty X08 is what the client treats
+        //      as malformed and hard-crashes on.
+        {
             const PARTY_SOLO_SELF_FLAG: u64 = 0x8000_0000_0000_0000;
             const GROUP_TYPE_PARTY: u32 = 0x2711;
             let group_index: u64 = PARTY_SOLO_SELF_FLAG | (actor_id as u64);
@@ -1228,6 +1215,19 @@ impl WorldManager {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or_default();
+            // Single-member roster: the player themselves. Matches
+            // `GroupMember` struct shape (localized_name=-1 ⇒ use
+            // custom name; flag1=false = not leader flag; is_online=
+            // true since they're obviously logged in).
+            let self_member = tx::groups::GroupMember {
+                actor_id,
+                localized_name: -1,
+                unknown2: 0,
+                flag1: false,
+                is_online: true,
+                name: actor_name.clone(),
+            };
+            let members = [self_member];
             let mut offset = 0usize;
             let group_pkts = vec![
                 tx::groups::build_group_header(
@@ -1236,22 +1236,22 @@ impl WorldManager {
                     sequence_id,
                     group_index,
                     GROUP_TYPE_PARTY,
-                    0,
+                    -1,
                     "",
-                    0,
+                    members.len() as u32,
                 ),
                 tx::groups::build_group_members_begin(
                     actor_id,
                     location_code,
                     sequence_id,
                     group_index,
-                    0,
+                    members.len() as u32,
                 ),
                 tx::groups::build_group_members_x08(
                     actor_id,
                     location_code,
                     sequence_id,
-                    &[],
+                    &members,
                     &mut offset,
                 ),
                 tx::groups::build_group_members_end(
