@@ -301,6 +301,7 @@ async fn spawner_populates_zone_and_ticker_drives_them() {
         registry: &registry,
         actor_classes: &classes,
         battle_class_ids: &battle_ids,
+        npc_appearances: &std::collections::HashMap::new(),
     };
     let spawned = spawn_all_actors(&ctx).await;
     assert_eq!(spawned.len(), 2);

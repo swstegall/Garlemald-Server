@@ -41,6 +41,106 @@ pub struct ZoneRow {
     pub load_nav_mesh: bool,
 }
 
+/// One row of `gamedata_actor_appearance` keyed by actor_class_id.
+/// Mirrors the columns read by Meteor's `Npc.LoadAppearance`.
+#[derive(Debug, Clone, Default)]
+pub struct NpcAppearance {
+    pub base: u32,
+    pub size: u32,
+    pub hair_style: u32,
+    pub hair_highlight_color: u32,
+    pub hair_variation: u32,
+    pub face_type: u8,
+    pub characteristics: u8,
+    pub characteristics_color: u8,
+    pub face_eyebrows: u8,
+    pub face_iris_size: u8,
+    pub face_eye_shape: u8,
+    pub face_nose: u8,
+    pub face_features: u8,
+    pub face_mouth: u8,
+    pub ears: u8,
+    pub hair_color: u32,
+    pub skin_color: u32,
+    pub eye_color: u32,
+    pub voice: u32,
+    pub main_hand: u32,
+    pub off_hand: u32,
+    pub sp_main_hand: u32,
+    pub sp_off_hand: u32,
+    pub throwing: u32,
+    pub pack: u32,
+    pub pouch: u32,
+    pub head: u32,
+    pub body: u32,
+    pub legs: u32,
+    pub hands: u32,
+    pub feet: u32,
+    pub waist: u32,
+    pub neck: u32,
+    pub left_ear: u32,
+    pub right_ear: u32,
+    pub left_index: u32,
+    pub right_index: u32,
+    pub left_finger: u32,
+    pub right_finger: u32,
+}
+
+impl NpcAppearance {
+    /// Pack the per-row columns into the (model_id, appearance_ids[28])
+    /// layout that `SetActorAppearancePacket` (0x00D6) expects. Mirrors
+    /// `Npc.LoadAppearance` at `Actors/Chara/Npc/Npc.cs:362` — the
+    /// slot-index enum lives in `SetActorAppearancePacket.cs:39-60`.
+    pub fn pack(&self) -> (u32, [u32; 28]) {
+        let mut a = [0u32; 28];
+        // 0 SIZE
+        a[0] = self.size;
+        // 1 COLORINFO = skin | hair<<10 | eye<<20
+        a[1] = self.skin_color | (self.hair_color << 10) | (self.eye_color << 20);
+        // 2 FACEINFO — one byte per field, packed LSB-first per C#
+        // `PrimitiveConversion.ToUInt32(GetFaceInfo(...))`. C# packs all
+        // 10 bytes but the u32 only has room for the first 4 — the rest
+        // are silently dropped, matching what the client reads.
+        a[2] = (self.characteristics as u32)
+            | ((self.characteristics_color as u32) << 8)
+            | ((self.face_type as u32) << 16)
+            | ((self.ears as u32) << 24);
+        // 3 HIGHLIGHT_HAIR = highlight | variation<<5 | style<<10
+        a[3] = self.hair_highlight_color
+            | (self.hair_variation << 5)
+            | (self.hair_style << 10);
+        // 4 VOICE
+        a[4] = self.voice;
+        // 5..11 weapons + bag
+        a[5] = self.main_hand;
+        a[6] = self.off_hand;
+        a[7] = self.sp_main_hand;
+        a[8] = self.sp_off_hand;
+        a[9] = self.throwing;
+        a[10] = self.pack;
+        a[11] = self.pouch;
+        // 12..17 gear
+        a[12] = self.head;
+        a[13] = self.body;
+        a[14] = self.legs;
+        a[15] = self.hands;
+        a[16] = self.feet;
+        a[17] = self.waist;
+        // 18 NECK, 19/20 L/R ear
+        a[18] = self.neck;
+        a[19] = self.left_ear;
+        a[20] = self.right_ear;
+        // Meteor writes left/rightIndex into R_INDEXFINGER/L_INDEXFINGER
+        // (indices 25/26) and left/rightFinger into R_RINGFINGER/L_RINGFINGER
+        // (23/24) — port the same mapping to match the wire.
+        a[23] = self.right_finger;
+        a[24] = self.left_finger;
+        a[25] = self.left_index;
+        a[26] = self.right_index;
+        (self.base, a)
+    }
+}
+
 /// One row of `server_zones_privateareas`.
 #[derive(Debug, Clone, Default)]
 pub struct PrivateAreaRow {
@@ -212,6 +312,81 @@ impl Database {
                                 r.get::<_, u8>(7).unwrap_or_default(),
                             ),
                         ))
+                    })?
+                    .collect::<rusqlite::Result<_>>()?;
+                Ok(rows)
+            })
+            .await?;
+        Ok(rows.into_iter().collect())
+    }
+
+    /// Loads `gamedata_actor_appearance` keyed by actor_class_id. Mirrors
+    /// Meteor's `Npc.LoadAppearance` (Actors/Chara/Npc/Npc.cs:316) — the
+    /// table packs per-actor-class model + gear slots that the client
+    /// needs to render NPC avatars. Without this data every populace NPC
+    /// gets a 0x00D6 with model_id=0 and the client derefs nil during
+    /// model load, which on Wine crashes the whole process.
+    pub async fn load_npc_appearances(&self) -> Result<HashMap<u32, NpcAppearance>> {
+        let rows = self
+            .conn
+            .call_db(|c| {
+                let mut stmt = c.prepare(
+                    r"SELECT id, base, size, hairStyle, hairHighlightColor, hairVariation,
+                             faceType, characteristics, characteristicsColor,
+                             faceEyebrows, faceIrisSize, faceEyeShape, faceNose,
+                             faceFeatures, faceMouth, ears,
+                             hairColor, skinColor, eyeColor, voice,
+                             mainHand, offHand, spMainHand, spOffHand, throwing,
+                             pack, pouch,
+                             head, body, legs, hands, feet, waist, neck,
+                             leftEar, rightEar, leftIndex, rightIndex,
+                             leftFinger, rightFinger
+                      FROM gamedata_actor_appearance",
+                )?;
+                let rows: Vec<(u32, NpcAppearance)> = stmt
+                    .query_map([], |r| {
+                        let id: u32 = r.get(0)?;
+                        Ok((id, NpcAppearance {
+                            base:                   r.get(1).unwrap_or(0),
+                            size:                   r.get(2).unwrap_or(0),
+                            hair_style:             r.get(3).unwrap_or(0),
+                            hair_highlight_color:   r.get(4).unwrap_or(0),
+                            hair_variation:         r.get(5).unwrap_or(0),
+                            face_type:              r.get(6).unwrap_or(0),
+                            characteristics:        r.get(7).unwrap_or(0),
+                            characteristics_color:  r.get(8).unwrap_or(0),
+                            face_eyebrows:          r.get(9).unwrap_or(0),
+                            face_iris_size:         r.get(10).unwrap_or(0),
+                            face_eye_shape:         r.get(11).unwrap_or(0),
+                            face_nose:              r.get(12).unwrap_or(0),
+                            face_features:          r.get(13).unwrap_or(0),
+                            face_mouth:             r.get(14).unwrap_or(0),
+                            ears:                   r.get(15).unwrap_or(0),
+                            hair_color:             r.get(16).unwrap_or(0),
+                            skin_color:             r.get(17).unwrap_or(0),
+                            eye_color:              r.get(18).unwrap_or(0),
+                            voice:                  r.get(19).unwrap_or(0),
+                            main_hand:              r.get(20).unwrap_or(0),
+                            off_hand:               r.get(21).unwrap_or(0),
+                            sp_main_hand:           r.get(22).unwrap_or(0),
+                            sp_off_hand:            r.get(23).unwrap_or(0),
+                            throwing:               r.get(24).unwrap_or(0),
+                            pack:                   r.get(25).unwrap_or(0),
+                            pouch:                  r.get(26).unwrap_or(0),
+                            head:                   r.get(27).unwrap_or(0),
+                            body:                   r.get(28).unwrap_or(0),
+                            legs:                   r.get(29).unwrap_or(0),
+                            hands:                  r.get(30).unwrap_or(0),
+                            feet:                   r.get(31).unwrap_or(0),
+                            waist:                  r.get(32).unwrap_or(0),
+                            neck:                   r.get(33).unwrap_or(0),
+                            left_ear:               r.get(34).unwrap_or(0),
+                            right_ear:              r.get(35).unwrap_or(0),
+                            left_index:             r.get(36).unwrap_or(0),
+                            right_index:            r.get(37).unwrap_or(0),
+                            left_finger:            r.get(38).unwrap_or(0),
+                            right_finger:           r.get(39).unwrap_or(0),
+                        }))
                     })?
                     .collect::<rusqlite::Result<_>>()?;
                 Ok(rows)

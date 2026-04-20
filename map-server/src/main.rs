@@ -94,11 +94,17 @@ async fn main() -> Result<()> {
         match db.load_actor_classes().await {
             Ok(classes) => {
                 let battle_ids = std::collections::HashSet::<u32>::new();
+                let npc_appearances = db.load_npc_appearances().await.unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "npc appearances load failed; NPCs will ship with model_id=0");
+                    std::collections::HashMap::new()
+                });
+                tracing::info!(count = npc_appearances.len(), "npc appearances loaded");
                 let ctx = crate::npc::SpawnContext {
                     world: &world,
                     registry: &registry,
                     actor_classes: &classes,
                     battle_class_ids: &battle_ids,
+                    npc_appearances: &npc_appearances,
                 };
                 let spawned = ctx.spawn_all_actors().await;
                 tracing::info!(count = spawned.len(), "npc spawn pass complete");

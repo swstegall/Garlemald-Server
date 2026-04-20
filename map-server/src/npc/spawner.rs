@@ -39,6 +39,13 @@ pub struct SpawnContext<'a> {
     /// Class ids in this set are treated as combat mobs (routed through
     /// `BattleNpc::new`). Anything else becomes a plain `Npc`.
     pub battle_class_ids: &'a std::collections::HashSet<u32>,
+    /// Per-actor-class appearance rows from `gamedata_actor_appearance`.
+    /// Used by `spawn_one` to stamp the 0x00D6 model_id + appearance
+    /// table onto each NPC at spawn time. Empty map = no appearance
+    /// data loaded (Phase-2 server flag); NPCs then spawn with
+    /// model_id=0 and the client's DepictionJudge falls back to the
+    /// actor-class default (but populace avatars won't look right).
+    pub npc_appearances: &'a HashMap<u32, crate::database::NpcAppearance>,
 }
 
 impl SpawnContext<'_> {
@@ -130,7 +137,7 @@ async fn spawn_one(
             ActorKind::BattleNpc,
         )
     } else {
-        let npc = Npc::new(
+        let mut npc = Npc::new(
             actor_number,
             class,
             seed.unique_id.clone(),
@@ -143,6 +150,17 @@ async fn spawn_one(
             seed.animation_id,
             None,
         );
+        // Stamp per-actor-class model_id + packed appearance slots
+        // from `gamedata_actor_appearance`. Populace NPCs ship with
+        // real model/gear ids in that table (e.g. class 1000438 →
+        // modelId=1, body=1091, legs=9248). Without this the 0x00D6
+        // goes out all zeros and the Wine client derefs nil on the
+        // model-lookup path.
+        if let Some(app) = ctx.npc_appearances.get(&class.actor_class_id) {
+            let (model_id, slots) = app.pack();
+            npc.character.chara.model_id = model_id;
+            npc.character.chara.appearance_ids = slots;
+        }
         let id = npc.actor_id();
         (id, npc.character, ActorKindTag::Npc, ActorKind::Npc)
     };
@@ -263,6 +281,7 @@ mod tests {
             registry: &registry,
             actor_classes: &classes,
             battle_class_ids: &battle_ids,
+            npc_appearances: &std::collections::HashMap::new(),
         };
         let spawned = ctx.spawn_zone(100).await;
         assert_eq!(spawned.len(), 2);
@@ -296,6 +315,7 @@ mod tests {
             registry: &registry,
             actor_classes: &classes,
             battle_class_ids: &battle_ids,
+            npc_appearances: &std::collections::HashMap::new(),
         };
         let s = seed(42, "lone_npc", 0.0, 0.0);
         let actor_id = spawn_from_location(&ctx, 100, 1, &s).await;
@@ -319,6 +339,7 @@ mod tests {
             registry: &registry,
             actor_classes: &classes,
             battle_class_ids: &battle_ids,
+            npc_appearances: &std::collections::HashMap::new(),
         };
         let spawned = ctx.spawn_zone(100).await;
         assert!(spawned.is_empty());
