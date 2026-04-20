@@ -742,14 +742,42 @@ impl WorldManager {
             tx::actor::build_set_actor_status_all(actor_id, &[0u16; 20]),
             tx::actor::build_set_actor_icon(actor_id, 0),
             tx::actor::build_set_actor_is_zoning(actor_id, false),
-            tx::actor::build_actor_instantiate(
+        ]);
+        // C# `Player.GetSpawnPackets` order:
+        //   AddActor + 0x132×N + Speed + SpawnPosition + Appearance + Name +
+        //   0xF + State + SubState + InitStatus + Icon + IsZoning +
+        //   **CreatePlayerRelatedPackets** + **ScriptBind (0x00CC)**
+        // where CreatePlayerRelatedPackets emits SetSpecialEventWork +
+        // 3× achievement packets *before* the ActorInstantiate. We were
+        // doing it in the opposite order, which — for the Asdf login —
+        // made `DepictionJudge:judgeNameplate` index the achievement
+        // tables during the first `_onUpdateWork` after ScriptBind and
+        // find them still nil.
+        if current_job != 0 {
+            subpackets.push(tx::player::build_set_current_job(
                 actor_id,
-                0,
-                0x3040,
-                &player_actor_name,
-                player_class_name,
-                &script_bind_params,
-            ),
+                current_job as u32,
+            ));
+        }
+        subpackets.push(tx::player::build_set_special_event_work(actor_id));
+        subpackets.push(tx::player::build_set_achievement_points(actor_id, 0));
+        subpackets.push(tx::player::build_set_latest_achievements(
+            actor_id,
+            &[0u32; 5],
+        ));
+        subpackets.push(tx::player::build_set_completed_achievements(
+            actor_id,
+            &[],
+        ));
+        subpackets.push(tx::actor::build_actor_instantiate(
+            actor_id,
+            0,
+            0x3040,
+            &player_actor_name,
+            player_class_name,
+            &script_bind_params,
+        ));
+        subpackets.extend([
             tx::actor_inventory::build_inventory_begin_change(actor_id, true),
             // Empty-package brackets for the 6 item packages + equipment,
             // matching the C# `Player.SendZoneInPackets` sequence that
@@ -803,44 +831,6 @@ impl WorldManager {
         // them in order with the right continuation markers (0x60+len on
         // every packet except the last, which gets 0x82+len). Extend the
         // zone-in bundle with whatever the builder returned.
-        //
-        // C# `Player.CreatePlayerRelatedPackets` only emits SetCurrentJob
-        // when `currentJob != 0`. Advanced job is 0 by default for a
-        // fresh character — sending SetCurrentJob(0) unconditionally was
-        // a port bug (we were also passing `class_slot` here, which is
-        // the active *class*, not the advanced *job* — distinct fields
-        // in the 1.0 data model).
-        if current_job != 0 {
-            subpackets.push(tx::player::build_set_current_job(
-                actor_id,
-                current_job as u32,
-            ));
-        }
-        // C# `Player.CreatePlayerRelatedPackets` unconditionally emits
-        // `SetSpecialEventWork` for the self-view (inside
-        // `IsMyPlayer(requestingPlayerActorId)`). The client treats its
-        // absence as "special-event state unknown" and stalls the
-        // player's init state machine — one of the reasons "Now Loading"
-        // doesn't dismiss even after the zone-in bundle and the
-        // post-bundle `noticeEvent` KickEvent land.
-        subpackets.push(tx::player::build_set_special_event_work(actor_id));
-        // Three achievement packets follow in C#
-        // `CreatePlayerRelatedPackets`. Omitting them leaves the client's
-        // `achievement.latestAchievement` / `achievement.completed` tables
-        // uninitialised, which surfaces as a `Client Script ERROR:
-        // attempt to index a nil value` the first frame the client's
-        // `DepictionJudge:judgeNameplate()` runs — the nameplate renderer
-        // dereferences achievement state every tick and pops an
-        // "An error has occured. (40000)4" dialog when the read fails.
-        subpackets.push(tx::player::build_set_achievement_points(actor_id, 0));
-        subpackets.push(tx::player::build_set_latest_achievements(
-            actor_id,
-            &[0u32; 5],
-        ));
-        subpackets.push(tx::player::build_set_completed_achievements(
-            actor_id,
-            &[],
-        ));
         subpackets.extend(tx::actor::build_player_property_init(
             actor_id,
             hp,
