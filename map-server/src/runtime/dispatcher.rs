@@ -355,10 +355,16 @@ pub async fn dispatch_area_event(
     }
 }
 
-/// Pump the seven-packet actor-spawn bundle to every Player within
-/// BROADCAST_RADIUS of `actor_id`. Matches the C# `Npc::GetSpawnPackets`
-/// sequence: AddActor + Speed + SpawnPosition + Name + State +
-/// IsZoning + (ScriptBind later once Lua wire-up lands).
+/// Pump the full actor-spawn bundle to every Player within
+/// BROADCAST_RADIUS of `actor_id`. Mirrors C# `Npc::GetSpawnPackets`:
+/// AddActor + Speed + SpawnPosition + **Appearance** + Name + State +
+/// **SubState** + **StatusAll** + **Icon** + IsZoning. Without the
+/// starred packets the client's `DepictionJudge:judgeNameplate` Lua
+/// tries to read appearance/status fields that are still nil on the
+/// neighbouring actor and crashes ~10s after zone-in. ScriptBind
+/// (0x00CC ActorInstantiate) is still deferred — it needs the full
+/// LuaParam bind list and is a follow-up once Lua wire-up for
+/// broadcast spawns lands.
 async fn spawn_bundle_fanout(
     world: &WorldManager,
     registry: &ActorRegistry,
@@ -369,8 +375,10 @@ async fn spawn_bundle_fanout(
     let Some(handle) = registry.get(actor_id).await else {
         return;
     };
-    // Snapshot the character's base state for the spawn bundle.
-    let (name, state, display_name_id, position, rotation) = {
+    // Snapshot the character's base + appearance state for the spawn
+    // bundle. Holding the read lock across the whole snapshot keeps
+    // the fields consistent (position + appearance + status together).
+    let (name, state, display_name_id, position, rotation, model_id, appearance_ids) = {
         let c = handle.character.read().await;
         (
             c.base.display_name().to_string(),
@@ -378,6 +386,8 @@ async fn spawn_bundle_fanout(
             c.base.display_name_id,
             c.base.position(),
             c.base.rotation,
+            c.chara.model_id,
+            c.chara.appearance_ids,
         )
     };
     let packets = [
@@ -387,8 +397,12 @@ async fn spawn_bundle_fanout(
             actor_id, -1, position.x, position.y, position.z, rotation, 1, false,
         )
         .to_bytes(),
+        tx::actor::build_set_actor_appearance(actor_id, model_id, &appearance_ids).to_bytes(),
         tx::actor::build_set_actor_name(actor_id, display_name_id, &name).to_bytes(),
         tx::actor::build_set_actor_state(actor_id, state, 0).to_bytes(),
+        tx::actor::build_set_actor_sub_state(actor_id, 0, 0, 0, 0, 0, 0).to_bytes(),
+        tx::actor::build_set_actor_status_all(actor_id, &[0u16; 20]).to_bytes(),
+        tx::actor::build_set_actor_icon(actor_id, 0).to_bytes(),
         tx::actor::build_set_actor_is_zoning(actor_id, false).to_bytes(),
     ];
     for bytes in packets {
