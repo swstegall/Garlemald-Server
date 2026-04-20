@@ -644,4 +644,67 @@ pub fn build_player_property_init(
     b.done()
 }
 
+/// `charaWork/stateAtQuicklyForAll` emission — base (Chara) variant.
+/// Mirrors C# `Character.PostUpdate` `HpTpMp` branch:
+///   hp[0], hpMax[0], mp, mpMax, parameterTemp.tp
+/// The target path uses `/` separators (not `.`) because the C# emits
+/// this property group under a distinct namespace — the client keys
+/// its nameplate HP-bar table off the slashed name.
+pub fn build_chara_state_at_quickly_for_all(
+    actor_id: u32,
+    hp: u16,
+    hp_max: u16,
+    mp: u16,
+    mp_max: u16,
+    tp: u16,
+) -> Vec<SubPacket> {
+    let mut b = ActorPropertyPacketBuilder::new(actor_id, "charaWork/stateAtQuicklyForAll");
+    b.add_short("charaWork.parameterSave.hp[0]", hp);
+    b.add_short("charaWork.parameterSave.hpMax[0]", hp_max);
+    b.add_short("charaWork.parameterSave.mp", mp);
+    b.add_short("charaWork.parameterSave.mpMax", mp_max);
+    b.add_short("charaWork.parameterTemp.tp", tp);
+    b.done()
+}
+
+/// `charaWork/stateAtQuicklyForAll` emission — Player-override variant.
+/// Mirrors C# `Player.PostUpdate` `HpTpMp` branch which emits a second
+/// pass with the main-skill slot fields on top of the base pass.
+pub fn build_player_state_at_quickly_for_all(
+    actor_id: u32,
+    hp: u16,
+    hp_max: u16,
+    main_skill: u8,
+    main_skill_level: u16,
+) -> Vec<SubPacket> {
+    let mut b = ActorPropertyPacketBuilder::new(actor_id, "charaWork/stateAtQuicklyForAll");
+    b.add_short("charaWork.parameterSave.hp[0]", hp);
+    b.add_short("charaWork.parameterSave.hpMax[0]", hp_max);
+    b.add_byte("charaWork.parameterSave.state_mainSkill[0]", main_skill);
+    b.add_short(
+        "charaWork.parameterSave.state_mainSkillLevel",
+        main_skill_level,
+    );
+    b.done()
+}
+
+/// `charaWork/battleParameter` emission. Mirrors C# `Player.PostUpdate`
+/// `Stats` branch which emits `charaWork.battleTemp.generalParameter[i]`
+/// for each non-zero slot in 0..35. For the Asdf-shape login we emit
+/// the three nameplate-visibility slots (0=NAMEPLATE_SHOWN,
+/// 1=TARGETABLE, 2=NAMEPLATE_SHOWN2, plus 3=STR default 1) that the
+/// client's DepictionJudge:judgeNameplate references every tick.
+pub fn build_battle_parameter(actor_id: u32, general_parameter: &[i16; 35]) -> Vec<SubPacket> {
+    let mut b = ActorPropertyPacketBuilder::new(actor_id, "charaWork/battleParameter");
+    for (i, v) in general_parameter.iter().enumerate() {
+        if *v != 0 {
+            b.add_short(
+                &format!("charaWork.battleTemp.generalParameter[{}]", i),
+                *v as u16,
+            );
+        }
+    }
+    b.done()
+}
+
 use std::io::Write as _;

@@ -125,6 +125,85 @@ fn push_master_spawn(
     ));
 }
 
+/// Emit the 11-packet NPC spawn bundle a single visible actor needs on
+/// a client's zone-in. Mirrors C# `Npc.GetSpawnPackets`:
+///   AddActor + Speed + SpawnPosition + Appearance + Name + State +
+///   SubState + InitStatus + Icon + IsZoning + ScriptBind(0x00CC).
+///
+/// `GetEventConditionPackets` (0x016B) / `GetSetEventStatusPackets`
+/// (0x0136) are still omitted — Meteor only emits them when the NPC
+/// has parsed event-condition entries, and we'll wire that once the
+/// event-table parser lands. The 11-packet bundle alone is enough to
+/// give the client a renderable nameplate.
+fn push_npc_spawn(
+    subpackets: &mut Vec<common::subpacket::SubPacket>,
+    character: &crate::actor::Character,
+) {
+    let actor_id = character.base.actor_id;
+    let display_name = character.base.display_name().to_string();
+    let display_name_id = character.base.display_name_id;
+    let position = character.base.position();
+    let rotation = character.base.rotation;
+    let state = character.base.current_main_state as u8;
+    let model_id = character.chara.model_id;
+    let appearance_ids = character.chara.appearance_ids;
+    let class_path = character.base.class_path.clone();
+    let class_name = character.base.class_name.clone();
+    let actor_name = character.base.actor_name.clone();
+
+    // C# `Npc.CreateScriptBindPacket` passes the 7-param LuaParam tail
+    // `(classPath, false, false, false, false, false, nil)` for a plain
+    // NPC seen by another player. Matches `Player.CreateScriptBindPacket`
+    // non-self branch and the WorldMaster spawn's parameter shape.
+    let script_bind_params = vec![
+        common::luaparam::LuaParam::String(class_path),
+        common::luaparam::LuaParam::False,
+        common::luaparam::LuaParam::False,
+        common::luaparam::LuaParam::False,
+        common::luaparam::LuaParam::False,
+        common::luaparam::LuaParam::False,
+        common::luaparam::LuaParam::Nil,
+    ];
+
+    subpackets.push(tx::actor::build_add_actor(actor_id, 0));
+    subpackets.push(tx::actor::build_set_actor_speed_default(actor_id));
+    subpackets.push(tx::actor::build_set_actor_position(
+        actor_id,
+        actor_id as i32,
+        position.x,
+        position.y,
+        position.z,
+        rotation,
+        0x1,
+        false,
+    ));
+    subpackets.push(tx::actor::build_set_actor_appearance(
+        actor_id,
+        model_id,
+        &appearance_ids,
+    ));
+    subpackets.push(tx::actor::build_set_actor_name(
+        actor_id,
+        display_name_id,
+        &display_name,
+    ));
+    subpackets.push(tx::actor::build_set_actor_state(actor_id, state, 0));
+    subpackets.push(tx::actor::build_set_actor_sub_state(
+        actor_id, 0, 0, 0, 0, 0, 0,
+    ));
+    subpackets.push(tx::actor::build_set_actor_status_all(actor_id, &[0u16; 20]));
+    subpackets.push(tx::actor::build_set_actor_icon(actor_id, 0));
+    subpackets.push(tx::actor::build_set_actor_is_zoning(actor_id, false));
+    subpackets.push(tx::actor::build_actor_instantiate(
+        actor_id,
+        0,
+        0x3040,
+        &actor_name,
+        &class_name,
+        &script_bind_params,
+    ));
+}
+
 /// Outcome of a single `seamless_check` call. Describes what, if anything,
 /// the player's position change triggered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -848,6 +927,44 @@ impl WorldManager {
             initial_town,
             rest_bonus_exp_rate,
         ));
+        // Post-init property emission — C# `PostUpdate` drives these on
+        // the first tick after spawn, but the client's
+        // `DepictionJudge:judgeNameplate` runs BEFORE that tick lands
+        // and reads both /stateAtQuicklyForAll (for nameplate HP/level
+        // bars) and /battleParameter (for nameplate-visibility flags).
+        // Emit them inside the zone-in bundle so those tables are live
+        // before the first `_onUpdateWork` frame.
+        //
+        // Meteor's Asdf [OUT] trace shows exactly one /battleParameter
+        // (15 bytes of properties) + two /stateAtQuicklyForAll packets
+        // — one from `Character.PostUpdate` (hp, hpMax, mp, mpMax, tp)
+        // and one from `Player.PostUpdate` (hp, hpMax, mainSkill,
+        // mainSkillLevel).
+        subpackets.extend(tx::actor::build_chara_state_at_quickly_for_all(
+            actor_id, hp, hp_max, mp, mp_max, tp,
+        ));
+        subpackets.extend(tx::actor::build_player_state_at_quickly_for_all(
+            actor_id,
+            hp,
+            hp_max,
+            class_slot,
+            1,
+        ));
+        // `battleTemp.generalParameter[0..3] = 1` matches C# defaults for
+        // NAMEPLATE_SHOWN (0), TARGETABLE (1), NAMEPLATE_SHOWN2 (2), and
+        // STR (3). Leaving them 0 would still emit an empty
+        // /battleParameter packet (Meteor does that too), but seeding
+        // the nameplate flags lines up with the explicit
+        // `generalParameter[0..3]` setters C# stamps during spawn.
+        let mut general_parameter = [0i16; 35];
+        general_parameter[0] = 1;
+        general_parameter[1] = 1;
+        general_parameter[2] = 1;
+        general_parameter[3] = 1;
+        subpackets.extend(tx::actor::build_battle_parameter(
+            actor_id,
+            &general_parameter,
+        ));
         // Master-actor spawns — C# `Player.SendZoneInPackets` queues
         // `zone.GetSpawnPackets()` + `debugActor.GetSpawnPackets()` +
         // `worldMaster.GetSpawnPackets()` after the player's own init
@@ -972,9 +1089,82 @@ impl WorldManager {
         let _ = &main_state;
         let _ = &login_director_spec;
 
-        for mut sub in subpackets {
+        // Populace NPC spawns. Mirrors C# `Session.UpdateInstance` which
+        // iterates `zone.GetActorsAroundActor(player, 50)` and queues a
+        // full `Npc::GetSpawnPackets` bundle for each neighbour. Without
+        // these, zone 193 (Ocean Battle) is empty and the client's
+        // DepictionJudge iterates an unpopulated nameplate table on its
+        // first `_onUpdateWork` tick.
+        //
+        // We run through the zone's spatial grid, pull each neighbour's
+        // Character via the registry, and emit the 10-packet actor
+        // bundle (AddActor + Speed + Position + Appearance + Name +
+        // State + SubState + StatusAll + Icon + IsZoning) followed by
+        // the ScriptBind (0x00CC) ActorInstantiate. Event-condition
+        // registration (0x016B / 0x0136) is still deferred — Meteor
+        // only emits those for NPCs with parsed event tables, which
+        // we'll wire when Lua event-condition parsing lands.
+        let neighbours: Vec<(u32, crate::zone::area::ActorKind)> = {
+            let z = zone_arc.read().await;
+            z.core
+                .actors_around(actor_id, 50.0)
+                .into_iter()
+                .filter(|a| a.actor_id != actor_id)
+                .map(|a| (a.actor_id, a.kind))
+                .collect()
+        };
+        // Send the main bundle (masters + player packets + inventory +
+        // achievements + ActorInstantiate + property_init) FIRST, then
+        // the per-neighbour NPC spawns, then the empty group sync.
+        for mut sub in std::mem::take(&mut subpackets) {
             sub.set_target_id(session_id);
             client.send_bytes(sub.to_bytes()).await;
+        }
+
+        for (neighbour_id, kind) in neighbours {
+            use crate::zone::area::ActorKind;
+            if !matches!(kind, ActorKind::Npc | ActorKind::BattleNpc | ActorKind::Ally) {
+                continue;
+            }
+            let Some(handle) = registry.get(neighbour_id).await else {
+                continue;
+            };
+            let mut npc_bundle = Vec::new();
+            push_npc_spawn(&mut npc_bundle, &*handle.character.read().await);
+            for mut sub in npc_bundle {
+                sub.set_target_id(session_id);
+                client.send_bytes(sub.to_bytes()).await;
+            }
+        }
+
+        // Empty group sync. C# `Player.SendZoneInPackets` emits a
+        // `SendGroupPackets` pass for each group the player belongs to
+        // (currentContentGroup / currentParty / retainerMeetingGroup).
+        // Packet log shows one 4-packet sync (header + begin + X08 + end)
+        // for an Asdf-shape login; without it the 1.23b client's group
+        // table is nil on the first tick. Emit a minimal retainer-
+        // meeting placeholder (group_id = 0, type = retainer = 0x1388,
+        // zero members) — the X08 body is 440 bytes of zeros which
+        // matches Meteor's "no retainers" shape on the wire.
+        {
+            const GROUP_ID: u64 = 0;
+            const GROUP_TYPE_RETAINER: u16 = 0x1388;
+            let mut group_pkts = vec![
+                tx::groups::build_group_header(actor_id, GROUP_ID, GROUP_TYPE_RETAINER, 0),
+                tx::groups::build_group_members_begin(actor_id, GROUP_ID),
+            ];
+            let mut offset = 0usize;
+            group_pkts.push(tx::groups::build_group_members_x08(
+                actor_id,
+                GROUP_ID,
+                &[],
+                &mut offset,
+            ));
+            group_pkts.push(tx::groups::build_group_members_end(actor_id, GROUP_ID));
+            for mut sub in group_pkts {
+                sub.set_target_id(session_id);
+                client.send_bytes(sub.to_bytes()).await;
+            }
         }
         tracing::info!(
             session = session_id,
