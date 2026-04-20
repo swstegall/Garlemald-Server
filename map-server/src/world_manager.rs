@@ -290,6 +290,33 @@ impl WorldManager {
             "seamless boundaries loaded"
         );
         *self.seamless_boundaries.write().await = seamless;
+        // 5. NPC spawn locations — one row per static actor seeded into
+        // a zone (or a private area inside that zone). Without this the
+        // phase-3 `spawn_all_actors` pass sees an empty seed list on
+        // every zone and no NPCs are ever instantiated, which is what
+        // we were hitting on Asdf-shape logins (`npc spawn pass
+        // complete count=0` in map-server.log even though
+        // `SELECT COUNT(*) FROM server_spawn_locations` returned 999).
+        let spawn_rows = db.load_npc_spawn_locations().await?;
+        let spawn_total = spawn_rows.len();
+        let mut attached = 0usize;
+        let mut missing_zone = 0usize;
+        for row in spawn_rows {
+            let Some(zone_arc) = self.zone(row.zone_id).await else {
+                missing_zone += 1;
+                continue;
+            };
+            let mut z = zone_arc.write().await;
+            if z.add_spawn_location(row).is_ok() {
+                attached += 1;
+            }
+        }
+        tracing::info!(
+            fetched = spawn_total,
+            attached,
+            missing_zone,
+            "npc spawn locations loaded"
+        );
         tracing::info!("world boot-load complete");
         Ok(())
     }
