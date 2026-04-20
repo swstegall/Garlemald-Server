@@ -1148,20 +1148,40 @@ impl WorldManager {
             client.send_bytes(sub.to_bytes()).await;
         }
 
-        for (neighbour_id, kind) in neighbours {
-            use crate::zone::area::ActorKind;
-            if !matches!(kind, ActorKind::Npc | ActorKind::BattleNpc | ActorKind::Ally) {
-                continue;
+        // NPC spawn fanout — TEMPORARILY GATED. With 19 populace NPCs
+        // spawned in zone 193 the Wine client hard-crashes <1s after
+        // the zone-in bundle lands. Decoding the first populace 0x00CC
+        // reveals three shortfalls vs Meteor's reference capture:
+        //   * actor_name is empty (Meteor: `pplStd_ocn0Btl02_01@0C100`)
+        //   * class_path casing: `/Chara/Npc/Populace/PopulaceStandard`
+        //     vs Meteor `/chara/npc/populace/PopulaceStandard`
+        //     (1.x script loader is case-sensitive)
+        //   * missing Int32(actor_class_id) LuaParam at index 6
+        //     (Meteor: `String(path), False×5, Int32(classId), …`)
+        // Gating the fanout keeps the 4 masters-only spawn path that
+        // the 1.x client handles without crashing, so we can verify
+        // the solo-party group sync in isolation. Re-enable once
+        // Npc::CreateScriptBindPacket parity lands
+        // (`Actors/Chara/Npc/Npc.cs:166` in Meteor's source).
+        const EMIT_NPC_SPAWNS: bool = false;
+        if EMIT_NPC_SPAWNS {
+            for (neighbour_id, kind) in neighbours {
+                use crate::zone::area::ActorKind;
+                if !matches!(kind, ActorKind::Npc | ActorKind::BattleNpc | ActorKind::Ally) {
+                    continue;
+                }
+                let Some(handle) = registry.get(neighbour_id).await else {
+                    continue;
+                };
+                let mut npc_bundle = Vec::new();
+                push_npc_spawn(&mut npc_bundle, &*handle.character.read().await);
+                for mut sub in npc_bundle {
+                    sub.set_target_id(session_id);
+                    client.send_bytes(sub.to_bytes()).await;
+                }
             }
-            let Some(handle) = registry.get(neighbour_id).await else {
-                continue;
-            };
-            let mut npc_bundle = Vec::new();
-            push_npc_spawn(&mut npc_bundle, &*handle.character.read().await);
-            for mut sub in npc_bundle {
-                sub.set_target_id(session_id);
-                client.send_bytes(sub.to_bytes()).await;
-            }
+        } else {
+            let _ = neighbours;
         }
 
         // Solo-party group sync. LPB-decompile of
