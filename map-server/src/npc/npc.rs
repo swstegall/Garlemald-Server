@@ -129,6 +129,13 @@ impl Npc {
             .to_string();
         character.base.class_name = class_name.clone();
         character.base.class_path = class_path.clone();
+        // NPCs need an `actor_name` + the gamedata class id for their
+        // 0x00CC ActorInstantiate LuaParam tail. Meteor's `Actor.GenerateActorName`
+        // (`Map Server/Actors/Actor.cs:501`) formats it as
+        //   "<classAbbrev>_<zoneAbbrev>_<numBase63>@<zoneHex:3><privLevel:2>"
+        // The zone name isn't in scope here; the spawner writes it in
+        // after construction via `Npc::set_generated_actor_name`.
+        character.chara.actor_class_id = actor_class.actor_class_id;
 
         let npc_work = NpcWork::new_from_class(
             actor_class.push_command,

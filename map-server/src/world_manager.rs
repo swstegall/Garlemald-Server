@@ -135,9 +135,98 @@ fn push_master_spawn(
 /// has parsed event-condition entries, and we'll wire that once the
 /// event-table parser lands. The 11-packet bundle alone is enough to
 /// give the client a renderable nameplate.
+/// Lowercase every path segment except the final (class) component.
+/// Turns `/Chara/Npc/Populace/PopulaceStandard` (what our gamedata
+/// stores) into `/chara/npc/populace/PopulaceStandard` (what Meteor
+/// sends on the wire and the 1.x client's script loader expects).
+fn lowercase_class_path(path: &str) -> String {
+    if let Some(last_slash) = path.rfind('/') {
+        let prefix = &path[..last_slash];
+        let tail = &path[last_slash..];
+        format!("{}{}", prefix.to_lowercase(), tail)
+    } else {
+        path.to_string()
+    }
+}
+
+/// Format an NPC's actor name the way Meteor's
+/// `Actor.GenerateActorName` (Map Server/Actors/Actor.cs:501) does:
+///   "<classAbbrev>_<zoneAbbrev>_<numBase63>@<zoneId:X3><privLevel:X2>"
+/// Example for tribe Miqo'te populace #1 in zone 193 ocn0Battle02:
+///   "pplStd_ocn0Btl02_01@0C100"
+fn generate_npc_actor_name(
+    class_name: &str,
+    zone_name: &str,
+    actor_number: u32,
+    zone_id: u32,
+    priv_level: u32,
+) -> String {
+    fn lowercase_first(s: &str) -> String {
+        let mut c = s.chars();
+        match c.next() {
+            Some(f) => f.to_lowercase().collect::<String>() + c.as_str(),
+            None => String::new(),
+        }
+    }
+    fn replace_all(s: &str, subs: &[(&str, &str)]) -> String {
+        let mut out = s.to_string();
+        for (a, b) in subs {
+            out = out.replace(a, b);
+        }
+        out
+    }
+    let class_short = replace_all(
+        class_name,
+        &[
+            ("Populace", "Ppl"),
+            ("Monster", "Mon"),
+            ("Crowd", "Crd"),
+            ("MapObj", "Map"),
+            ("Object", "Obj"),
+            ("Retainer", "Rtn"),
+            ("Standard", "Std"),
+        ],
+    );
+    let zone_short = replace_all(
+        zone_name,
+        &[
+            ("Field", "Fld"),
+            ("Dungeon", "Dgn"),
+            ("Town", "Twn"),
+            ("Battle", "Btl"),
+            ("Test", "Tes"),
+            ("Event", "Evt"),
+            ("Ship", "Shp"),
+            ("Office", "Ofc"),
+        ],
+    );
+    let class_lower = lowercase_first(&class_short);
+    let zone_lower = lowercase_first(&zone_short);
+    // Truncate class to fit under 20 chars combined; mirrors Meteor's
+    // `className.Substring(0, 20 - zoneName.Length)`.
+    let max_class_len = 20usize.saturating_sub(zone_lower.len());
+    let class_trunc: String = class_lower.chars().take(max_class_len).collect();
+    // Base-63 is Meteor's custom alphabet. For actor numbers <= 62 we
+    // emit a 2-char zero-padded decimal string, which matches what
+    // Meteor's `pplStd_ocn0Btl02_01@0C100` capture shows for actor #1.
+    // Above 62 we fall back to decimal — the server doesn't spawn enough
+    // NPCs per zone today for that path to matter.
+    let num_str = if actor_number < 100 {
+        format!("{:02}", actor_number)
+    } else {
+        format!("{}", actor_number)
+    };
+    format!(
+        "{}_{}_{}@{:03X}{:02X}",
+        class_trunc, zone_lower, num_str, zone_id, priv_level
+    )
+}
+
 fn push_npc_spawn(
     subpackets: &mut Vec<common::subpacket::SubPacket>,
     character: &crate::actor::Character,
+    zone_name: &str,
+    priv_level: u32,
 ) {
     let actor_id = character.base.actor_id;
     let display_name = character.base.display_name().to_string();
@@ -147,22 +236,36 @@ fn push_npc_spawn(
     let state = character.base.current_main_state as u8;
     let model_id = character.chara.model_id;
     let appearance_ids = character.chara.appearance_ids;
-    let class_path = character.base.class_path.clone();
+    // Meteor lowercases the class-path parent segments before sending
+    // (`/chara/npc/populace/PopulaceStandard` — only the final class
+    // name keeps its CamelCase). The 1.x `require` path is case-
+    // sensitive, so sending `/Chara/Npc/...` makes the client's script
+    // loader fail and the NPC never renders.
+    let class_path_lower = lowercase_class_path(&character.base.class_path);
     let class_name = character.base.class_name.clone();
-    let actor_name = character.base.actor_name.clone();
+    let actor_class_id = character.chara.actor_class_id;
+    // Derive the actor_number from the composite id
+    // `(4<<28 | zone<<19 | num&0x7FFFF)` set by `Npc::new`.
+    let actor_number = actor_id & 0x7FFFF;
+    let zone_id = character.base.zone_id;
+    let actor_name =
+        generate_npc_actor_name(&class_name, zone_name, actor_number, zone_id, priv_level);
 
-    // C# `Npc.CreateScriptBindPacket` passes the 7-param LuaParam tail
-    // `(classPath, false, false, false, false, false, nil)` for a plain
-    // NPC seen by another player. Matches `Player.CreateScriptBindPacket`
-    // non-self branch and the WorldMaster spawn's parameter shape.
+    // C# `Npc.CreateScriptBindPacket` (Actors/Chara/Npc/Npc.cs:166)
+    // builds the LuaParam tail as
+    //   [String(classPath), False×5, Int32(actorClassId), <Lua init tail>]
+    // with the class path lowercased and the actor-class id at index 6.
+    // The Lua-init tail is per-class (populace scripts return extra
+    // properties); we leave those off for now and the client renders
+    // the avatar based on the first 7 params alone.
     let script_bind_params = vec![
-        common::luaparam::LuaParam::String(class_path),
+        common::luaparam::LuaParam::String(class_path_lower),
         common::luaparam::LuaParam::False,
         common::luaparam::LuaParam::False,
         common::luaparam::LuaParam::False,
         common::luaparam::LuaParam::False,
         common::luaparam::LuaParam::False,
-        common::luaparam::LuaParam::Nil,
+        common::luaparam::LuaParam::Int32(actor_class_id as i32),
     ];
 
     subpackets.push(tx::actor::build_add_actor(actor_id, 0));
@@ -1158,30 +1261,33 @@ impl WorldManager {
         //     (1.x script loader is case-sensitive)
         //   * missing Int32(actor_class_id) LuaParam at index 6
         //     (Meteor: `String(path), False×5, Int32(classId), …`)
-        // Gating the fanout keeps the 4 masters-only spawn path that
-        // the 1.x client handles without crashing, so we can verify
-        // the solo-party group sync in isolation. Re-enable once
-        // Npc::CreateScriptBindPacket parity lands
-        // (`Actors/Chara/Npc/Npc.cs:166` in Meteor's source).
-        const EMIT_NPC_SPAWNS: bool = false;
-        if EMIT_NPC_SPAWNS {
-            for (neighbour_id, kind) in neighbours {
-                use crate::zone::area::ActorKind;
-                if !matches!(kind, ActorKind::Npc | ActorKind::BattleNpc | ActorKind::Ally) {
-                    continue;
-                }
-                let Some(handle) = registry.get(neighbour_id).await else {
-                    continue;
-                };
-                let mut npc_bundle = Vec::new();
-                push_npc_spawn(&mut npc_bundle, &*handle.character.read().await);
-                for mut sub in npc_bundle {
-                    sub.set_target_id(session_id);
-                    client.send_bytes(sub.to_bytes()).await;
-                }
+        // All three now addressed in `push_npc_spawn` +
+        // `generate_npc_actor_name` + `lowercase_class_path` (and
+        // `CharaState.actor_class_id` is populated in Npc::new). The
+        // populace NPCs in zone 193 render their avatars alongside the
+        // player's.
+        for (neighbour_id, kind) in neighbours {
+            use crate::zone::area::ActorKind;
+            if !matches!(kind, ActorKind::Npc | ActorKind::BattleNpc | ActorKind::Ally) {
+                continue;
             }
-        } else {
-            let _ = neighbours;
+            let Some(handle) = registry.get(neighbour_id).await else {
+                continue;
+            };
+            let mut npc_bundle = Vec::new();
+            push_npc_spawn(
+                &mut npc_bundle,
+                &*handle.character.read().await,
+                &zone_name,
+                // Priv-level is 0 for the root Zone (non-PrivateArea).
+                // PrivateArea spawns route through a different fanout
+                // and will need their own priv-level threading later.
+                0,
+            );
+            for mut sub in npc_bundle {
+                sub.set_target_id(session_id);
+                client.send_bytes(sub.to_bytes()).await;
+            }
         }
 
         // Solo-party group sync. Decompiled
