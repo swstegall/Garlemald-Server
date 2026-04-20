@@ -337,33 +337,23 @@ impl PacketProcessor {
         if let Some(ref engine) = self.lua {
             let script = engine.resolver().player();
             if script.exists() {
-                // The C# `onBeginLogin` flow is two-pass: the first branch
-                // issues `AddQuest(110001)` when play_time==0, then the
-                // second branch checks `HasQuest(110001)==true` and
-                // attaches the login director. Our Lua call sees a stale
-                // snapshot, so without pre-populating `active_quests`
-                // with the tutorial quest id for a fresh tutorial-zone
-                // character the director branch never fires. Seed the
-                // expected quest based on the initial town / zone so the
-                // second branch evaluates truthy. For tutorial zones:
-                // town 1 → zone 193 → quest 110001
-                // town 2 → zone 166 → quest 110005
-                // town 3 → zone 184 → quest 110009
+                // The login-director branch in `scripts/lua/player.lua` is
+                // gated on `HasQuest(110001) == true`, but the matching
+                // `AddQuest(110001)` in the first half of `onBeginLogin` is
+                // commented out in Meteor's upstream source — so the
+                // director branch is dead code on a canonical Asdf-style
+                // login and no OpeningDirector gets created. A previous
+                // port of this handler seeded the tutorial quest here to
+                // "make the director branch fire," which spawned an extra
+                // Director actor and flipped the Player's ScriptBind
+                // LuaParam list to the 9-param with-director variant.
+                // The client's `DepictionJudge:judgeNameplate` then hit a
+                // nil field ~10s in and bounced the session with the
+                // EventStart-wrapped Lua error report we saw earlier.
+                // Feed the Lua call the real snapshot.
                 let snapshot = {
                     let c = handle.character.read().await;
-                    let mut snap = build_player_snapshot_for_login(&c);
-                    let tutorial_quest = match snap.initial_town {
-                        1 => Some(110001u32),
-                        2 => Some(110005u32),
-                        3 => Some(110009u32),
-                        _ => None,
-                    };
-                    if let Some(q) = tutorial_quest
-                        && !snap.active_quests.contains(&q)
-                    {
-                        snap.active_quests.push(q);
-                    }
-                    snap
+                    build_player_snapshot_for_login(&c)
                 };
                 let snapshot_for_err = snapshot.clone();
                 match engine.call_player_hook(&script, "onBeginLogin", snapshot) {
