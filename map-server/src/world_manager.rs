@@ -779,6 +779,22 @@ impl WorldManager {
             // `equipment.SendUpdate` — ReferencedItemPackage shape with
             // code=0x00FE, size=35. Empty for a fresh character.
             tx::actor_inventory::build_inventory_set_begin(actor_id, 35, 0x00FE),
+        ]);
+        // Meteor's `equipment.SendUpdate` calls SetInitialEquipmentPacket
+        // (0x014E) between the set-begin/set-end brackets, even for a
+        // fully-empty equipment set — the client's DepictionJudge Lua
+        // indexes into the equipment table during nameplate rendering,
+        // and without this packet the table stays nil, which produces
+        // the `DepictionJudge:judgeNameplate [?:900] attempt to index a
+        // nil value` crash ~10s after zone-in. Emit one empty packet
+        // (count=0) for the Asdf-shape login; real populated equipment
+        // lands once we wire `characters_parametersave.weaponX`/gear
+        // slots into this bundle.
+        subpackets.extend(tx::actor_inventory::build_set_initial_equipment(
+            actor_id,
+            &[],
+        ));
+        subpackets.extend([
             tx::actor_inventory::build_inventory_set_end(actor_id),
             tx::actor_inventory::build_inventory_end_change(actor_id),
         ]);

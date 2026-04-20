@@ -274,15 +274,50 @@ pub fn build_linked_item_list_x01(actor_id: u32, position: u16, item: &Inventory
     SubPacket::new(OP_LINKED_ITEM_LIST_X01, actor_id, data)
 }
 
-/// 0x0178 SetInitialEquipmentPacket — 35-slot full-equipment snapshot.
-/// The payload is simply 35 u32 item ids in equip-slot order.
-pub fn build_set_initial_equipment(actor_id: u32, item_ids: &[u32; 35]) -> SubPacket {
-    let mut data = body(0x58);
-    let mut c = Cursor::new(&mut data[..]);
-    for id in item_ids {
-        c.write_u32::<LittleEndian>(*id).unwrap();
+/// 0x014E SetInitialEquipmentPacket — mirrors Meteor's
+/// `SetInitialEquipmentPacket.BuildPackets`. The wire layout is NOT a
+/// 35-slot dense array (the previous port assumed that, using opcode
+/// 0x0178 — a ghost opcode — with 35 u32 slots, which blew past the
+/// 56-byte body and the client silently dropped the packet). Actual
+/// layout per Meteor's C#:
+///
+///   body size = 0x38 (packet 0x58 - 0x20 header)
+///   for each *equipped* slot index `i` in 0..0x17:
+///     u16 slot_index
+///     u32 item_id
+///   seek(0x30) — write u32 count at end of the body
+///
+/// Each packet holds up to 8 (slot, item) pairs + the trailing count.
+/// Emitting one empty packet (count=0, all zero body) is what Meteor
+/// sends for a character with no equipped items, which is what we need
+/// for Asdf-shape logins. Callers that want to populate slots can pass
+/// `(u16, u32)` pairs; we chunk in 8s to match Meteor.
+pub fn build_set_initial_equipment(actor_id: u32, slots: &[(u16, u32)]) -> Vec<SubPacket> {
+    const SLOT_LIMIT: usize = 8;
+    const COUNT_OFFSET: usize = 0x30;
+    let mut packets = Vec::new();
+    let emit_one = |chunk: &[(u16, u32)]| {
+        let mut data = body(0x58);
+        {
+            let mut c = Cursor::new(&mut data[..]);
+            for (slot, item_id) in chunk {
+                c.write_u16::<LittleEndian>(*slot).unwrap();
+                c.write_u32::<LittleEndian>(*item_id).unwrap();
+            }
+        }
+        data[COUNT_OFFSET..COUNT_OFFSET + 4]
+            .copy_from_slice(&(chunk.len() as u32).to_le_bytes());
+        SubPacket::new(0x014E, actor_id, data)
+    };
+
+    if slots.is_empty() {
+        packets.push(emit_one(&[]));
+    } else {
+        for chunk in slots.chunks(SLOT_LIMIT) {
+            packets.push(emit_one(chunk));
+        }
     }
-    SubPacket::new(0x0178, actor_id, data)
+    packets
 }
 
 fn encode_item(item: &InventoryItem) -> Vec<u8> {
