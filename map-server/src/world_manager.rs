@@ -1202,7 +1202,21 @@ impl WorldManager {
         // followed by begin + empty X08 + end. That's enough for the
         // client to construct a real (empty) party object and
         // `getPlayerParty()` returns it instead of nil.
-        {
+        // Solo-party group sync — TEMPORARILY GATED. Emitting the
+        // 4-packet bundle with type=PARTY/group=0x8000…0001 byte-for-
+        // byte matches Meteor's Asdf 0x017C (verified with offsets
+        // against the ffxivclassic wiki's 0x17C/D/E/F docs), yet the
+        // 1.23b Wine client hard-crashes <1s after receiving the
+        // bundle — a harder failure than the prior DepictionJudge
+        // soft-crash. Something in the sync is still off (packet
+        // order relative to ScriptBind, chat-channel fields,
+        // sequenceId monotonicity, or a second "numMembers" write
+        // position the wiki lists but Meteor's source skips). Gated
+        // until we can observe what a solo Meteor session DOES send
+        // on a fresh character — Asdf's trace may be post-party-
+        // state rather than the true zero-state we need.
+        const EMIT_SOLO_PARTY_SYNC: bool = false;
+        if EMIT_SOLO_PARTY_SYNC {
             // Top bit set marks the solo "self-party" per the C#
             // Party.groupIndex convention; low bits are the actor id
             // of the leader (the player themselves).
