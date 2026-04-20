@@ -229,13 +229,40 @@ fn push_npc_spawn(
     priv_level: u32,
 ) {
     let actor_id = character.base.actor_id;
-    let display_name = character.base.display_name().to_string();
+    // Meteor's `Actor.CreateNamePacket` (Map Server/Actors/Actor.cs:153)
+    // branches on `customDisplayName`:
+    //   * customDisplayName != null     → emit (displayNameId=0, name=custom)
+    //   * displayNameId in {0, 0xFFFFFFFF} or customDisplayName != null
+    //                                   → emit custom (possibly "")
+    //   * otherwise                     → emit (displayNameId, "") so the
+    //                                     client looks the name up in
+    //                                     its localized string table.
+    // Our `display_name()` helper falls back to `actor_name` when there is
+    // no custom name, which sent garbage like "_npc@00001" as the custom
+    // override and made the client ignore the valid displayNameId. For
+    // NPCs with a valid displayNameId and no custom name we must emit an
+    // empty custom string so the client pulls the name from its table.
+    let custom_display_name = character.base.custom_display_name.clone();
     let display_name_id = character.base.display_name_id;
+    let (packet_name_id, packet_name) = if !custom_display_name.is_empty() {
+        (0u32, custom_display_name.clone())
+    } else if display_name_id == 0 || display_name_id == 0xFFFF_FFFF {
+        (display_name_id, String::new())
+    } else {
+        (display_name_id, String::new())
+    };
     let position = character.base.position();
     let rotation = character.base.rotation;
     let state = character.base.current_main_state as u8;
     let model_id = character.chara.model_id;
     let appearance_ids = character.chara.appearance_ids;
+    // Meteor stashes the seed's animationId into `currentSubState.motionPack`
+    // (Npc.cs:79), which CreateSubStatePacket then writes at offset 0x06.
+    // We don't have a separate SubState struct; the animation_id lives on
+    // CharaState directly. Truncate to u16 to match the wire (the Meteor
+    // table values 1000..1109 all fit). Missing this was the reason NPCs
+    // rendered in their T-pose instead of their populace motion loop.
+    let motion_pack = character.chara.animation_id as u16;
     // Meteor lowercases the class-path parent segments before sending
     // (`/chara/npc/populace/PopulaceStandard` — only the final class
     // name keeps its CamelCase). The 1.x `require` path is case-
@@ -280,8 +307,25 @@ fn push_npc_spawn(
         common::luaparam::LuaParam::Int32(0),
     ];
 
-    subpackets.push(tx::actor::build_add_actor(actor_id, 0));
+    // Meteor's `Npc.CreateAddActorPacket()` hardcodes flag=8 (see
+    // Map Server/Actors/Chara/Npc/Npc.cs:162). Passing 0 here — as
+    // Area/Director/WorldMaster do — made the client route the
+    // AddActor through the non-actor slot path and mis-bucket every
+    // following NPC subpacket. The previous zero-flag port is the
+    // last-known crash source after Now-Loading with a single
+    // populace spawn bundle: strip just the ActorInstantiate and
+    // the client survived, add it back with flag=0 and Wine dies.
+    subpackets.push(tx::actor::build_add_actor(actor_id, 8));
     subpackets.push(tx::actor::build_set_actor_speed_default(actor_id));
+    // Meteor's `Npc.GetSpawnPackets` (Actors/Chara/Npc/Npc.cs:210)
+    // passes `CreateSpawnPositonPacket(0x0)` — spawn type `FADEIN`,
+    // meaning the actor has always been in the zone and should
+    // fade in place with full capsule collider attached. The prior
+    // port used `0x1` (PLAYERWAKE), which is a warp-in animation
+    // intended for the player's own avatar; under that spawn type
+    // the client skips the collider init path for the actor so the
+    // player walks right through the NPC. SPAWNTYPE constants live
+    // in `SetActorPositionPacket.cs:34-41`.
     subpackets.push(tx::actor::build_set_actor_position(
         actor_id,
         actor_id as i32,
@@ -289,7 +333,7 @@ fn push_npc_spawn(
         position.y,
         position.z,
         rotation,
-        0x1,
+        0x0,
         false,
     ));
     subpackets.push(tx::actor::build_set_actor_appearance(
@@ -297,14 +341,15 @@ fn push_npc_spawn(
         model_id,
         &appearance_ids,
     ));
+    let _ = display_name_id;
     subpackets.push(tx::actor::build_set_actor_name(
         actor_id,
-        display_name_id,
-        &display_name,
+        packet_name_id,
+        &packet_name,
     ));
     subpackets.push(tx::actor::build_set_actor_state(actor_id, state, 0));
     subpackets.push(tx::actor::build_set_actor_sub_state(
-        actor_id, 0, 0, 0, 0, 0, 0,
+        actor_id, 0, 0, 0, 0, 0, motion_pack,
     ));
     subpackets.push(tx::actor::build_set_actor_status_all(actor_id, &[0u16; 20]));
     subpackets.push(tx::actor::build_set_actor_icon(actor_id, 0));
@@ -317,6 +362,32 @@ fn push_npc_spawn(
         &class_name,
         &script_bind_params,
     ));
+    // Meteor's `Session.UpdateInstance` fires `GetInitPackets()` for each
+    // new actor immediately after the spawn bundle (DataObjects/
+    // Session.cs:161). For populace NPCs that init dump is a series of
+    // `SetActorProperty` (0x0137) writes to `charaWork.property[i]` for
+    // every non-zero bit of `actorClass.propertyFlags`, plus baseline
+    // HP/MP/TP and state_mainSkill. Without those writes the 1.x client
+    // keeps the actor's nameplate hidden and treats it as non-collidable
+    // regardless of what SetActorName carries. Populace class 1000438
+    // has propertyFlags = 0x13 (bits 0/1/4) — bit 1 is the nameplate
+    // flag; without it the server's valid displayNameId never surfaces.
+    let property_flags = character.chara.property_flags;
+    let hp = character.chara.hp.max(0) as u16;
+    let hp_max = character.chara.max_hp.max(0) as u16;
+    let mp = character.chara.mp.max(0) as u16;
+    let mp_max = character.chara.max_mp.max(0) as u16;
+    let tp = character.chara.tp;
+    let npc_init = tx::actor::build_npc_property_init(
+        actor_id,
+        property_flags,
+        hp,
+        hp_max,
+        mp,
+        mp_max,
+        tp,
+    );
+    subpackets.extend(npc_init);
 }
 
 /// Outcome of a single `seamless_check` call. Describes what, if anything,
@@ -1263,6 +1334,14 @@ impl WorldManager {
             client.send_bytes(sub.to_bytes()).await;
         }
 
+        // Diagnostic cap on the number of NPC spawns emitted this
+        // fanout. Raised to usize::MAX now that the AddActor flag=8
+        // fix unblocked per-NPC rendering — the remaining 15 populace
+        // in zone 193 should all fan out together. The gate above
+        // still excludes the 4 non-populace (monsters + exit_door).
+        let mut emitted: usize = 0;
+        const NPC_SPAWN_EMIT_CAP: usize = usize::MAX;
+
         // NPC spawn fanout — TEMPORARILY GATED. With 19 populace NPCs
         // spawned in zone 193 the Wine client hard-crashes <1s after
         // the zone-in bundle lands. Decoding the first populace 0x00CC
@@ -1286,10 +1365,57 @@ impl WorldManager {
             let Some(handle) = registry.get(neighbour_id).await else {
                 continue;
             };
+            let character = handle.character.read().await;
+            // Only emit spawns for player-race populace NPCs right
+            // now. Zone 193 also has Monster/Fighter, Monster/Jelly-
+            // fish, and an exit_door (populace class-path but
+            // modelId 11001 = a BG door model). Each of those needs
+            // a different bundle shape:
+            //   * monsters need BattleNpc stats + a Monster-class
+            //     Lua tail (populace's 11-param fallback doesn't
+            //     match MonsterBaseClass._onInit's arity);
+            //   * map-object doors use 0x00D8 SetActorBGProperties
+            //     instead of 0x00D6 SetActorAppearance.
+            // Sending the populace bundle for any of these makes the
+            // Wine client hard-crash after Now-Loading, because the
+            // avatar renderer walks the non-player-race model_id
+            // into a material table that only keys 1..20 and
+            // deref-nils the miss. Stash the non-populace ids behind
+            // a dedicated emitter later; for now the zone loads
+            // without the cutscene trio + door and render succeeds.
+            let class_path_l = character.base.class_path.to_ascii_lowercase();
+            let is_monster = class_path_l.contains("/monster/");
+            let model_id = character.chara.model_id;
+            let bg_range_model = model_id > 20;
+            if !class_path_l.contains("/populace/") || is_monster || bg_range_model {
+                tracing::debug!(
+                    actor_id = format!("0x{:08X}", neighbour_id),
+                    class_path = %character.base.class_path,
+                    model_id,
+                    "skipping non-player-race spawn in zone-in fanout"
+                );
+                continue;
+            }
+            // DIAGNOSTIC stage 2: confirmed the crash lives inside
+            // push_npc_spawn. Now limit to the FIRST populace spawn
+            // to see whether a single NPC already crashes (bad
+            // packet shape somewhere in the 11-subpacket bundle) or
+            // whether the crash needs accumulation across many
+            // NPCs (e.g. some shared resource overflow).
+            if emitted >= NPC_SPAWN_EMIT_CAP {
+                continue;
+            }
+            emitted += 1;
+            tracing::info!(
+                actor_id = format!("0x{:08X}", neighbour_id),
+                class_path = %character.base.class_path,
+                model_id,
+                "DIAGNOSTIC: emitting single NPC spawn bundle"
+            );
             let mut npc_bundle = Vec::new();
             push_npc_spawn(
                 &mut npc_bundle,
-                &*handle.character.read().await,
+                &*character,
                 &zone_name,
                 // Priv-level is 0 for the root Zone (non-PrivateArea).
                 // PrivateArea spawns route through a different fanout

@@ -249,28 +249,46 @@ impl AppearanceFull {
     }
 }
 
-/// Pack the 10 face-feature bytes into a single u32. Mirrors the C#
-/// `CharacterUtils.GetFaceInfo` layout: one byte per field, packed
-/// least-significant-first in the listed order (characteristics at bits 0..8,
-/// characteristicsColor at 8..16, etc.). Only the first four fit in a u32;
-/// the rest are discarded by `PrimitiveConversion.ToUInt32` in the C# path
-/// so the 1.23b client only expects the low-order four bytes.
-fn pack_face_info(
+/// Pack the 10 face-feature bytes into a single u32 bitfield. Mirrors the
+/// C# `CharacterUtils.FaceInfo` struct packed by `PrimitiveConversion.
+/// ToUInt32` (Common Class Lib/Bitfield.cs). Bit layout (LSB-first):
+///   characteristics       5 bits (0..5)
+///   characteristicsColor  3 bits (5..8)
+///   type                  6 bits (8..14)
+///   ears                  2 bits (14..16)
+///   mouth                 2 bits (16..18)
+///   features              2 bits (18..20)
+///   nose                  3 bits (20..23)
+///   eyeShape              3 bits (23..26)
+///   irisSize              1 bit  (26..27)
+///   eyebrows              3 bits (27..30)
+///   unknown               2 bits (30..32)  — left zero
+/// Previous port byte-packed just the first four fields, which sent the
+/// client a face_type of 0 in almost every slot and left mouth/nose/
+/// eye-shape/eyebrows zero — the avatar renderer read those as "no
+/// face" and drew a mannequin head (no eyes, no mouth).
+pub(crate) fn pack_face_info(
     characteristics: u8,
     characteristics_color: u8,
     face_type: u8,
     ears: u8,
-    _face_mouth: u8,
-    _face_features: u8,
-    _face_nose: u8,
-    _face_eye_shape: u8,
-    _face_iris_size: u8,
-    _face_eyebrows: u8,
+    face_mouth: u8,
+    face_features: u8,
+    face_nose: u8,
+    face_eye_shape: u8,
+    face_iris_size: u8,
+    face_eyebrows: u8,
 ) -> u32 {
-    (characteristics as u32)
-        | ((characteristics_color as u32) << 8)
-        | ((face_type as u32) << 16)
-        | ((ears as u32) << 24)
+    (characteristics as u32 & 0x1F)
+        | ((characteristics_color as u32 & 0x7) << 5)
+        | ((face_type as u32 & 0x3F) << 8)
+        | ((ears as u32 & 0x3) << 14)
+        | ((face_mouth as u32 & 0x3) << 16)
+        | ((face_features as u32 & 0x3) << 18)
+        | ((face_nose as u32 & 0x7) << 20)
+        | ((face_eye_shape as u32 & 0x7) << 23)
+        | ((face_iris_size as u32 & 0x1) << 26)
+        | ((face_eyebrows as u32 & 0x7) << 27)
 }
 
 /// Fallback model id when the DB stores the `baseId = 0xFFFFFFFF` sentinel.

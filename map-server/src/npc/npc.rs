@@ -136,6 +136,7 @@ impl Npc {
         // The zone name isn't in scope here; the spawner writes it in
         // after construction via `Npc::set_generated_actor_name`.
         character.chara.actor_class_id = actor_class.actor_class_id;
+        character.chara.property_flags = actor_class.property_flags;
 
         let npc_work = NpcWork::new_from_class(
             actor_class.push_command,

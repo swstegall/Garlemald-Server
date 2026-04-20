@@ -125,6 +125,13 @@ pub struct CharaState {
     /// as the 7th LuaParam on the wire (Meteor
     /// `Actors/Chara/Npc/Npc.cs:197`). Zero for Players.
     pub actor_class_id: u32,
+    /// Bit field mirroring `actorClass.propertyFlags` (Meteor
+    /// `Actors/Chara/Npc/Npc.cs:98`). Each set bit becomes a
+    /// `charaWork.property[i] = 1` entry in `GetInitPackets()`,
+    /// which the 1.x client reads to flip per-actor capabilities
+    /// such as nameplate visibility, collision, and targetability.
+    /// Zero for Players (Player.cs hardcodes its own bit set).
+    pub property_flags: u32,
     /// `playerWork.*` profile fields emitted in the `/_init` property dump
     /// mirrored from C# `Player.GetInitPackets()`. These exist on
     /// CharaState so the zone-in bundle can read them without a second DB
@@ -183,6 +190,7 @@ impl Default for CharaState {
             model_id: 0,
             appearance_ids: [0u32; 28],
             actor_class_id: 0,
+            property_flags: 0,
             tribe: 0,
             guardian: 0,
             birthday_day: 0,

@@ -644,6 +644,55 @@ pub fn build_player_property_init(
     b.done()
 }
 
+/// NPC `/_init` property dump, modelled on C# `Npc.GetInitPackets()`
+/// (Map Server/Actors/Chara/Npc/Npc.cs:228). Emits the populace-baseline
+/// property set: `charaWork.property[i]` for each non-zero bit of
+/// `propertyFlags`, baseline `potencial=1.0`, HP/MP/TP, two state_mainSkill
+/// entries that Meteor's Npc ctor hardcodes (`[0]=3`, `[2]=3`,
+/// `state_mainSkillLevel=1`), and `npcWork.hateType=0`. Without this
+/// dump the 1.x client keeps populace nameplates hidden and treats the
+/// actor as non-collidable — the spawn-bundle SetActorName carries the
+/// right displayNameId but the client only renders the nameplate when
+/// `charaWork.property[1] = 1` has arrived via 0x0137.
+#[allow(clippy::too_many_arguments)]
+pub fn build_npc_property_init(
+    actor_id: u32,
+    property_flags: u32,
+    hp: u16,
+    hp_max: u16,
+    mp: u16,
+    mp_max: u16,
+    tp: u16,
+) -> Vec<SubPacket> {
+    let mut b = ActorPropertyPacketBuilder::new(actor_id, "/_init");
+    // potencial=1.0 — Meteor stamps this in the Npc ctor (line 86).
+    b.add_float("charaWork.battleSave.potencial", 1.0);
+    for i in 0..32u8 {
+        if (property_flags >> i) & 1 != 0 {
+            b.add_byte(&format!("charaWork.property[{i}]"), 1);
+        }
+    }
+    b.add_short("charaWork.parameterSave.hp[0]", hp);
+    b.add_short("charaWork.parameterSave.hpMax[0]", hp_max);
+    b.add_short("charaWork.parameterSave.mp", mp);
+    b.add_short("charaWork.parameterSave.mpMax", mp_max);
+    b.add_short("charaWork.parameterTemp.tp", tp);
+    // Meteor's Npc ctor seeds state_mainSkill[0/2]=3 and mainSkillLevel=1
+    // (line 90-92). The AddProperty call sites are guarded on != 0, so
+    // we only emit [0]/[2]/level and skip [1]/[3].
+    b.add_byte("charaWork.parameterSave.state_mainSkill[0]", 3);
+    b.add_byte("charaWork.parameterSave.state_mainSkill[2]", 3);
+    b.add_byte("charaWork.parameterSave.state_mainSkillLevel", 1);
+    // Meteor's `NpcWork.cs:33` defaults hateType to 1 for populace
+    // (HATE_TYPE_NONE=0 is only set by BattleNpc once it's added to
+    // the hate-table). Sending 0 here tells the 1.x client the actor
+    // is inert — no talk prompt, no capsule collider, player walks
+    // straight through. Non-battle NPCs want hateType=1 so the
+    // client allocates the collider and surfaces the "Talk" prompt.
+    b.add_byte("npcWork.hateType", 1);
+    b.done()
+}
+
 /// `charaWork/stateAtQuicklyForAll` emission — base (Chara) variant.
 /// Mirrors C# `Character.PostUpdate` `HpTpMp` branch:
 ///   hp[0], hpMax[0], mp, mpMax, parameterTemp.tp

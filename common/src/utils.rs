@@ -118,22 +118,33 @@ pub fn murmur_hash2(key: &str, seed: u32) -> u32 {
         len -= 4;
     }
 
+    // Tail handling mirrors Meteor's `Common Class Lib/Utils.cs:214`:
+    // the main loop walks backward in 4-byte chunks starting at `len-4`,
+    // so the bytes it leaves behind are at the START of the string, not
+    // the end. Meteor's switch reads `data[0]`, `data[len-2]`, and
+    // `data[len-1]` where `len` is the tail remainder (1/2/3) that the
+    // fall-through cases reuse — so for tail=3 those are `data[0]`,
+    // `data[1]`, `data[2]`. The earlier port read `data[data_len-2]` /
+    // `data[data_len-1]` which is the END of the string, which means
+    // every property name whose length wasn't a multiple of 4 hashed to
+    // a different u32 than Meteor's reference — the client received
+    // SetActorProperty packets with unknown ids and ignored the
+    // nameplate / HP / collision bits entirely.
     let tail = len as usize;
-    let data_len = data.len();
     match tail {
         3 => {
             h ^= (data[0] as u32) << 16;
-            h ^= (data[data_len.saturating_sub(2)] as u32) << 8;
-            h ^= data[data_len.saturating_sub(1)] as u32;
+            h ^= (data[1] as u32) << 8;
+            h ^= data[2] as u32;
             h = h.wrapping_mul(M);
         }
         2 => {
-            h ^= (data[data_len.saturating_sub(2)] as u32) << 8;
-            h ^= data[data_len.saturating_sub(1)] as u32;
+            h ^= (data[0] as u32) << 8;
+            h ^= data[1] as u32;
             h = h.wrapping_mul(M);
         }
         1 => {
-            h ^= data[data_len.saturating_sub(1)] as u32;
+            h ^= data[0] as u32;
             h = h.wrapping_mul(M);
         }
         _ => {}

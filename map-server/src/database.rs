@@ -97,14 +97,23 @@ impl NpcAppearance {
         a[0] = self.size;
         // 1 COLORINFO = skin | hair<<10 | eye<<20
         a[1] = self.skin_color | (self.hair_color << 10) | (self.eye_color << 20);
-        // 2 FACEINFO — one byte per field, packed LSB-first per C#
-        // `PrimitiveConversion.ToUInt32(GetFaceInfo(...))`. C# packs all
-        // 10 bytes but the u32 only has room for the first 4 — the rest
-        // are silently dropped, matching what the client reads.
-        a[2] = (self.characteristics as u32)
-            | ((self.characteristics_color as u32) << 8)
-            | ((self.face_type as u32) << 16)
-            | ((self.ears as u32) << 24);
+        // 2 FACEINFO — bitfield pack per C# `CharacterUtils.FaceInfo`
+        // (Bitfield.cs:39). Shared implementation with the player path
+        // lives in `gamedata::pack_face_info`. All 10 face bytes fit
+        // into the 32-bit slot (5+3+6+2+2+2+3+3+1+3 = 30 bits; last 2
+        // bits are an "unknown" field left zero).
+        a[2] = crate::gamedata::pack_face_info(
+            self.characteristics,
+            self.characteristics_color,
+            self.face_type,
+            self.ears,
+            self.face_mouth,
+            self.face_features,
+            self.face_nose,
+            self.face_eye_shape,
+            self.face_iris_size,
+            self.face_eyebrows,
+        );
         // 3 HIGHLIGHT_HAIR = highlight | variation<<5 | style<<10
         a[3] = self.hair_highlight_color
             | (self.hair_variation << 5)
