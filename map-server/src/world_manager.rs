@@ -252,12 +252,20 @@ fn push_npc_spawn(
         generate_npc_actor_name(&class_name, zone_name, actor_number, zone_id, priv_level);
 
     // C# `Npc.CreateScriptBindPacket` (Actors/Chara/Npc/Npc.cs:166)
-    // builds the LuaParam tail as
-    //   [String(classPath), False×5, Int32(actorClassId), <Lua init tail>]
-    // with the class path lowercased and the actor-class id at index 6.
-    // The Lua-init tail is per-class (populace scripts return extra
-    // properties); we leave those off for now and the client renders
-    // the avatar based on the first 7 params alone.
+    // has two branches:
+    //   * Lua init returned params → prepend
+    //     [String(classPath), False×5, Int32(actorClassId)] and
+    //     append whatever init() returned.
+    //   * Lua init returned null    → emit the literal fallback from
+    //     line 184: `classPathFake, false×5, 0xF47F6, false, false,
+    //     0, 0`. That's String + 5×False + Int32(classId) + 2×False
+    //     + 2×Int32(0) — 11 params total.
+    // We're still in the no-Lua-init-wired state so we emit the
+    // fallback shape. Earlier emission stopped after the first 7
+    // params, which made the client's `NpcBaseClass:_onInit()` at
+    // line 3580 read a nil where it expects a number and pop an
+    // "attempt to compare number with nil" error. The trailing
+    // False, False, Int32(0), Int32(0) satisfy that comparison.
     let script_bind_params = vec![
         common::luaparam::LuaParam::String(class_path_lower),
         common::luaparam::LuaParam::False,
@@ -266,6 +274,10 @@ fn push_npc_spawn(
         common::luaparam::LuaParam::False,
         common::luaparam::LuaParam::False,
         common::luaparam::LuaParam::Int32(actor_class_id as i32),
+        common::luaparam::LuaParam::False,
+        common::luaparam::LuaParam::False,
+        common::luaparam::LuaParam::Int32(0),
+        common::luaparam::LuaParam::Int32(0),
     ];
 
     subpackets.push(tx::actor::build_add_actor(actor_id, 0));
