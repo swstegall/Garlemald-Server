@@ -1164,35 +1164,27 @@ impl WorldManager {
             }
         }
 
-        // Empty group sync. C# `Player.SendZoneInPackets` emits a
-        // `SendGroupPackets` pass for each group the player belongs to
-        // (currentContentGroup / currentParty / retainerMeetingGroup).
-        // Packet log shows one 4-packet sync (header + begin + X08 + end)
-        // for an Asdf-shape login; without it the 1.23b client's group
-        // table is nil on the first tick. Emit a minimal retainer-
-        // meeting placeholder (group_id = 0, type = retainer = 0x1388,
-        // zero members) — the X08 body is 440 bytes of zeros which
-        // matches Meteor's "no retainers" shape on the wire.
-        {
-            const GROUP_ID: u64 = 0;
-            const GROUP_TYPE_RETAINER: u16 = 0x1388;
-            let mut group_pkts = vec![
-                tx::groups::build_group_header(actor_id, GROUP_ID, GROUP_TYPE_RETAINER, 0),
-                tx::groups::build_group_members_begin(actor_id, GROUP_ID),
-            ];
-            let mut offset = 0usize;
-            group_pkts.push(tx::groups::build_group_members_x08(
-                actor_id,
-                GROUP_ID,
-                &[],
-                &mut offset,
-            ));
-            group_pkts.push(tx::groups::build_group_members_end(actor_id, GROUP_ID));
-            for mut sub in group_pkts {
-                sub.set_target_id(session_id);
-                client.send_bytes(sub.to_bytes()).await;
-            }
-        }
+        // Group sync emission (0x017C header + 0x017D begin + 0x017F X08
+        // + 0x017E end) is INTENTIONALLY omitted here. An earlier attempt
+        // sent a minimal empty retainer-meeting group but the Wine client
+        // hard-crashed within ~1 second of receiving those packets.
+        //
+        // Root cause: garlemald's group-packet builders
+        // (`packets/send/groups.rs`) don't match C# Meteor's on-the-wire
+        // layout. Every Meteor group packet's body starts with
+        // `locationCode (u64) + sequenceId (u64)` (see
+        // `GroupHeaderPacket.buildPacket`, `GroupMembersBeginPacket.buildPacket`,
+        // `GroupMembersX08Packet.buildPacket`, `GroupMembersEndPacket.buildPacket`
+        // in the Meteor source). garlemald writes only `group_id (u64)`
+        // then bespoke fields — a different shape. Sending those packets
+        // to the client makes it attempt to dereference what it reads as
+        // a zone id / sequence id, which for our zero-prefixed payloads
+        // crashes the Wine client's group-table loader.
+        //
+        // Fix lands separately: rework the builders to match Meteor's
+        // `locationCode + sequenceId + …` prefix (and fix the per-member
+        // row layout at 0x30 bytes / slot), then re-enable emission
+        // here.
         tracing::info!(
             session = session_id,
             actor = actor_id,
