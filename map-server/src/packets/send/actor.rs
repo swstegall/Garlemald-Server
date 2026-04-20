@@ -693,6 +693,26 @@ pub fn build_npc_property_init(
     b.done()
 }
 
+/// BattleNpc-only `npcWork/hate` property emission, modelled on Meteor's
+/// `BattleNpc.GetHateTypePacket` (Actors/Chara/Npc/BattleNpc.cs:145).
+/// Always emitted at the tail of the BattleNpc spawn bundle, after the
+/// ScriptBind. Uses the non-`/_init` target "npcWork/hate" so the 1.x
+/// client routes it through its hate-state update path instead of the
+/// boot-property path.
+///
+/// Meteor's implementation conditionally computes hateType based on
+/// `aiContainer.IsEngaged()` + party state, but then ignores that and
+/// hardcodes `npcWork.hateType = 3` on line 161 — effectively a debug
+/// override that keeps all BattleNpcs flagged as ENGAGED_PARTY until
+/// someone tidies that loop. We mirror the same hardcode so the client
+/// sees what Meteor's reference capture ships.
+pub fn build_npc_hate_type_packet(actor_id: u32) -> SubPacket {
+    let mut b = ActorPropertyPacketBuilder::new(actor_id, "npcWork/hate");
+    b.add_byte("npcWork.hateType", 3);
+    let mut packets = b.done();
+    packets.remove(0)
+}
+
 /// `charaWork/stateAtQuicklyForAll` emission — base (Chara) variant.
 /// Mirrors C# `Character.PostUpdate` `HpTpMp` branch:
 ///   hp[0], hpMax[0], mp, mpMax, parameterTemp.tp

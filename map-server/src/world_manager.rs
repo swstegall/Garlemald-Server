@@ -278,21 +278,6 @@ fn push_npc_spawn(
     let actor_name =
         generate_npc_actor_name(&class_name, zone_name, actor_number, zone_id, priv_level);
 
-    // C# `Npc.CreateScriptBindPacket` (Actors/Chara/Npc/Npc.cs:166)
-    // has two branches:
-    //   * Lua init returned params → prepend
-    //     [String(classPath), False×5, Int32(actorClassId)] and
-    //     append whatever init() returned.
-    //   * Lua init returned null    → emit the literal fallback from
-    //     line 184: `classPathFake, false×5, 0xF47F6, false, false,
-    //     0, 0`. That's String + 5×False + Int32(classId) + 2×False
-    //     + 2×Int32(0) — 11 params total.
-    // We're still in the no-Lua-init-wired state so we emit the
-    // fallback shape. Earlier emission stopped after the first 7
-    // params, which made the client's `NpcBaseClass:_onInit()` at
-    // line 3580 read a nil where it expects a number and pop an
-    // "attempt to compare number with nil" error. The trailing
-    // False, False, Int32(0), Int32(0) satisfy that comparison.
     let script_bind_params = vec![
         common::luaparam::LuaParam::String(class_path_lower),
         common::luaparam::LuaParam::False,
@@ -388,6 +373,16 @@ fn push_npc_spawn(
         tp,
     );
     subpackets.extend(npc_init);
+
+    // BattleNpc tail — Meteor's `BattleNpc.GetSpawnPackets` appends
+    // `GetHateTypePacket(player)` (Actors/Chara/Npc/BattleNpc.cs:130).
+    // Currently disabled while we bisect why including monsters in
+    // the fanout fires a mid-Now-Loading "error has occurred" dialog:
+    // either this hate packet or the className fallback shape is the
+    // trigger.
+    // if character.base.class_path.to_ascii_lowercase().contains("/monster/") {
+    //     subpackets.push(tx::actor::build_npc_hate_type_packet(actor_id));
+    // }
 }
 
 /// Outcome of a single `seamless_check` call. Describes what, if anything,
@@ -1366,52 +1361,41 @@ impl WorldManager {
                 continue;
             };
             let character = handle.character.read().await;
-            // Only emit spawns for player-race populace NPCs right
-            // now. Zone 193 also has Monster/Fighter, Monster/Jelly-
-            // fish, and an exit_door (populace class-path but
-            // modelId 11001 = a BG door model). Each of those needs
-            // a different bundle shape:
-            //   * monsters need BattleNpc stats + a Monster-class
-            //     Lua tail (populace's 11-param fallback doesn't
-            //     match MonsterBaseClass._onInit's arity);
-            //   * map-object doors use 0x00D8 SetActorBGProperties
-            //     instead of 0x00D6 SetActorAppearance.
-            // Sending the populace bundle for any of these makes the
-            // Wine client hard-crash after Now-Loading, because the
-            // avatar renderer walks the non-player-race model_id
-            // into a material table that only keys 1..20 and
-            // deref-nils the miss. Stash the non-populace ids behind
-            // a dedicated emitter later; for now the zone loads
-            // without the cutscene trio + door and render succeeds.
+            // Populace + exit_door path only. Attempting to admit
+            // Monster/* classes through this same bundle produced
+            // three failure modes during the last bisect session:
+            //   * real classNames         → client tunnels 3 error
+            //                               EventStarts after Now-
+            //                               Loading (owner=3 log)
+            //   * populace classNameFake  → client soft-errors
+            //                               DURING Now-Loading with
+            //                               the hateType property
+            //                               pack appended
+            //   * populace classNameFake,
+            //     no hateType pack        → Wine hard-crashes
+            // Conclusion: monsters need more than a classname swap
+            // and a hateType packet. Likely they want the real
+            // BattleNpc bundle shape (stats, modifiers, genus data)
+            // plus a matched property-init block that the client's
+            // populace Lua doesn't assume away. Leaving that behind
+            // this gate so populace keeps rendering while the
+            // BattleNpc spawn pipeline is ported properly.
             let class_path_l = character.base.class_path.to_ascii_lowercase();
-            let is_monster = class_path_l.contains("/monster/");
+            let is_populace = class_path_l.contains("/populace/");
             let model_id = character.chara.model_id;
-            let bg_range_model = model_id > 20;
-            if !class_path_l.contains("/populace/") || is_monster || bg_range_model {
+            if !is_populace {
                 tracing::debug!(
                     actor_id = format!("0x{:08X}", neighbour_id),
                     class_path = %character.base.class_path,
                     model_id,
-                    "skipping non-player-race spawn in zone-in fanout"
+                    "skipping non-populace spawn in zone-in fanout"
                 );
                 continue;
             }
-            // DIAGNOSTIC stage 2: confirmed the crash lives inside
-            // push_npc_spawn. Now limit to the FIRST populace spawn
-            // to see whether a single NPC already crashes (bad
-            // packet shape somewhere in the 11-subpacket bundle) or
-            // whether the crash needs accumulation across many
-            // NPCs (e.g. some shared resource overflow).
             if emitted >= NPC_SPAWN_EMIT_CAP {
                 continue;
             }
             emitted += 1;
-            tracing::info!(
-                actor_id = format!("0x{:08X}", neighbour_id),
-                class_path = %character.base.class_path,
-                model_id,
-                "DIAGNOSTIC: emitting single NPC spawn bundle"
-            );
             let mut npc_bundle = Vec::new();
             push_npc_spawn(
                 &mut npc_bundle,
