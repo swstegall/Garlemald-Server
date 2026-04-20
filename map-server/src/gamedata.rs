@@ -274,14 +274,35 @@ fn pack_face_info(
 }
 
 /// Fallback model id when the DB stores the `baseId = 0xFFFFFFFF` sentinel.
-/// Mirrors C# `CharacterUtils.GetTribeModel` at a coarse level — the full
-/// 14-entry table can ride a later pass once the tribe enum is ported.
+/// Full port of C# `CharacterUtils.GetTribeModel` — model ids are tiny
+/// integers (1..9) that index into the client's player-race model table.
+/// The earlier stub returned 0x10000001 for every tribe, which is a
+/// non-existent model id; the client couldn't resolve it so no player
+/// avatars rendered, including the player's own character.
 fn tribe_default_model(tribe: u8) -> u32 {
-    // Hyur Midlander Male. Conservative default — most other tribes render
-    // fine with this as a placeholder, though the avatar won't look right.
-    // Matches the pattern the C# server uses at boot (`modelId = 0x10000001`).
-    let _ = tribe;
-    0x10000001
+    match tribe {
+        // Hyur Midlander Male
+        1 => 1,
+        // Hyur Midlander Female
+        2 => 2,
+        // Hyur Highlander Male
+        3 => 9,
+        // Elezen Male (Wildwood, Duskwight)
+        4 | 6 => 3,
+        // Elezen Female
+        5 | 7 => 4,
+        // Lalafell Male (Plainsfolk, Dunesfolk)
+        8 | 10 => 5,
+        // Lalafell Female
+        9 | 11 => 6,
+        // Miqo'te Female (Seeker, Keeper)
+        12 | 13 => 8,
+        // Roegadyn Male (Sea Wolves, Hellsguard)
+        14 | 15 => 7,
+        // Unknown tribe — fall back to Hyur Midlander Male so we still
+        // send a renderable avatar rather than a client-nil lookup.
+        _ => 1,
+    }
 }
 
 #[derive(Debug, Clone, Default)]
