@@ -1164,27 +1164,58 @@ impl WorldManager {
             }
         }
 
-        // Group sync emission (0x017C header + 0x017D begin + 0x017F X08
-        // + 0x017E end) is INTENTIONALLY omitted here. An earlier attempt
-        // sent a minimal empty retainer-meeting group but the Wine client
-        // hard-crashed within ~1 second of receiving those packets.
-        //
-        // Root cause: garlemald's group-packet builders
-        // (`packets/send/groups.rs`) don't match C# Meteor's on-the-wire
-        // layout. Every Meteor group packet's body starts with
-        // `locationCode (u64) + sequenceId (u64)` (see
-        // `GroupHeaderPacket.buildPacket`, `GroupMembersBeginPacket.buildPacket`,
-        // `GroupMembersX08Packet.buildPacket`, `GroupMembersEndPacket.buildPacket`
-        // in the Meteor source). garlemald writes only `group_id (u64)`
-        // then bespoke fields — a different shape. Sending those packets
-        // to the client makes it attempt to dereference what it reads as
-        // a zone id / sequence id, which for our zero-prefixed payloads
-        // crashes the Wine client's group-table loader.
-        //
-        // Fix lands separately: rework the builders to match Meteor's
-        // `locationCode + sequenceId + …` prefix (and fix the per-member
-        // row layout at 0x30 bytes / slot), then re-enable emission
-        // here.
+        // Empty retainer-meeting group sync. Emits the C#-canonical
+        // 4-packet pattern (Header + Begin + X08 + End) using the
+        // rewritten builders that match Meteor's wire layout
+        // (locationCode + sequenceId prefix, fixed 0x30 slots, count
+        // at body offset 0x190). With 0 members we get zeroed slots
+        // and count=0 — matches Meteor's empty-retainer shape.
+        {
+            const GROUP_INDEX: u64 = 0;
+            const GROUP_TYPE_RETAINER: u32 = 0x13881;
+            let location_code = zone_actor_id as u64;
+            let sequence_id = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or_default();
+            let mut offset = 0usize;
+            let group_pkts = vec![
+                tx::groups::build_group_header(
+                    actor_id,
+                    location_code,
+                    sequence_id,
+                    GROUP_INDEX,
+                    GROUP_TYPE_RETAINER,
+                    0,
+                    "",
+                    0,
+                ),
+                tx::groups::build_group_members_begin(
+                    actor_id,
+                    location_code,
+                    sequence_id,
+                    GROUP_INDEX,
+                    0,
+                ),
+                tx::groups::build_group_members_x08(
+                    actor_id,
+                    location_code,
+                    sequence_id,
+                    &[],
+                    &mut offset,
+                ),
+                tx::groups::build_group_members_end(
+                    actor_id,
+                    location_code,
+                    sequence_id,
+                    GROUP_INDEX,
+                ),
+            ];
+            for mut sub in group_pkts {
+                sub.set_target_id(session_id);
+                client.send_bytes(sub.to_bytes()).await;
+            }
+        }
         tracing::info!(
             session = session_id,
             actor = actor_id,

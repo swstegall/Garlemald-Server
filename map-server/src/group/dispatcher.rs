@@ -169,6 +169,11 @@ async fn broadcast_member_list(
         return;
     };
     let session_id = handle.session_id;
+    let location_code = handle.zone_id as u64;
+    let sequence_id = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or_default();
     let Some(client) = world.client(session_id).await else {
         return;
     };
@@ -177,16 +182,31 @@ async fn broadcast_member_list(
     };
     let members_refs = build_member_refs(recipient_actor_id, &members, resolver);
 
-    // 1. Header.
+    // 1. Header. C# `GroupHeaderPacket.buildPacket` takes the group
+    // object and emits `locationCode + sequenceId + groupIndex + typeId
+    // + localizedName + groupName + member_count`. We don't track a
+    // group's display name or linkshell localized-id yet, so we pass
+    // empty + 0 for those. Payload still lands in the Meteor-expected
+    // slots.
     let header = tx::build_group_header(
         session_id,
+        location_code,
+        sequence_id,
         group_id,
-        type_id.bits() as u16,
-        members_refs.len() as u16,
+        type_id.bits() as u32,
+        0,
+        "",
+        members_refs.len() as u32,
     );
     client.send_bytes(header.to_bytes()).await;
     // 2. Begin.
-    let begin = tx::build_group_members_begin(session_id, group_id);
+    let begin = tx::build_group_members_begin(
+        session_id,
+        location_code,
+        sequence_id,
+        group_id,
+        members_refs.len() as u32,
+    );
     client.send_bytes(begin.to_bytes()).await;
     // 3. Chunked body.
     let mut offset = 0usize;
@@ -197,36 +217,68 @@ async fn broadcast_member_list(
             break;
         }
         let sub = match (kind, bucket) {
-            (GroupKind::Party, ChunkBucket::X08) => {
-                tx::build_group_members_x08(session_id, group_id, &members_refs, &mut offset)
-            }
-            (GroupKind::Party, ChunkBucket::X16) => {
-                tx::build_group_members_x16(session_id, group_id, &members_refs, &mut offset)
-            }
-            (GroupKind::Party, ChunkBucket::X32) => {
-                tx::build_group_members_x32(session_id, group_id, &members_refs, &mut offset)
-            }
-            (GroupKind::Party, ChunkBucket::X64) => {
-                tx::build_group_members_x64(session_id, group_id, &members_refs, &mut offset)
-            }
-            (_, ChunkBucket::X08) => {
-                tx::build_content_members_x08(session_id, group_id, &members_refs, &mut offset)
-            }
-            (_, ChunkBucket::X16) => {
-                tx::build_content_members_x16(session_id, group_id, &members_refs, &mut offset)
-            }
-            (_, ChunkBucket::X32) => {
-                tx::build_content_members_x32(session_id, group_id, &members_refs, &mut offset)
-            }
-            (_, ChunkBucket::X64) => {
-                tx::build_content_members_x64(session_id, group_id, &members_refs, &mut offset)
-            }
+            (GroupKind::Party, ChunkBucket::X08) => tx::build_group_members_x08(
+                session_id,
+                location_code,
+                sequence_id,
+                &members_refs,
+                &mut offset,
+            ),
+            (GroupKind::Party, ChunkBucket::X16) => tx::build_group_members_x16(
+                session_id,
+                location_code,
+                sequence_id,
+                &members_refs,
+                &mut offset,
+            ),
+            (GroupKind::Party, ChunkBucket::X32) => tx::build_group_members_x32(
+                session_id,
+                location_code,
+                sequence_id,
+                &members_refs,
+                &mut offset,
+            ),
+            (GroupKind::Party, ChunkBucket::X64) => tx::build_group_members_x64(
+                session_id,
+                location_code,
+                sequence_id,
+                &members_refs,
+                &mut offset,
+            ),
+            (_, ChunkBucket::X08) => tx::build_content_members_x08(
+                session_id,
+                location_code,
+                sequence_id,
+                &members_refs,
+                &mut offset,
+            ),
+            (_, ChunkBucket::X16) => tx::build_content_members_x16(
+                session_id,
+                location_code,
+                sequence_id,
+                &members_refs,
+                &mut offset,
+            ),
+            (_, ChunkBucket::X32) => tx::build_content_members_x32(
+                session_id,
+                location_code,
+                sequence_id,
+                &members_refs,
+                &mut offset,
+            ),
+            (_, ChunkBucket::X64) => tx::build_content_members_x64(
+                session_id,
+                location_code,
+                sequence_id,
+                &members_refs,
+                &mut offset,
+            ),
             _ => break,
         };
         client.send_bytes(sub.to_bytes()).await;
     }
     // 4. End.
-    let end = tx::build_group_members_end(session_id, group_id);
+    let end = tx::build_group_members_end(session_id, location_code, sequence_id, group_id);
     client.send_bytes(end.to_bytes()).await;
 }
 
@@ -257,16 +309,17 @@ fn build_member_refs(
 fn to_wire(r: &GroupMemberRef) -> tx::groups::GroupMember {
     tx::groups::GroupMember {
         actor_id: r.actor_id,
-        ally_actor_id: 0,
+        // Not tracked server-side yet — Meteor's C# `GroupMember`
+        // populates `localizedName` + `unknown2` from the group entry
+        // (retainer title / linkshell flags). Zero is safe for an
+        // empty/party row; re-visit when retainer/LS persistence lands.
+        localized_name: 0,
+        unknown2: 0,
+        flag1: r.is_leader,
+        // Players are presumed online when broadcast; the PartyWork
+        // flow already filters offline members upstream.
+        is_online: true,
         name: r.name.clone(),
-        class_or_job: 0,
-        level: r.level as u8,
-        hp: 0,
-        hp_max: 0,
-        mp: 0,
-        mp_max: 0,
-        current_zone_id: 0,
-        leader_flags: if r.is_leader { 1 } else { 0 },
     }
 }
 
