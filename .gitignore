@@ -10,3 +10,4 @@ Cargo.lock
 *.db-shm
 *.sqlite
 *.sqlite3
+/data-backups/
