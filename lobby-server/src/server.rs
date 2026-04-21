@@ -95,6 +95,18 @@ async fn send_reply(
         Reply::Raw(bytes) => bytes,
         Reply::Encrypted(subs) => {
             let mut packet = BasePacket::create_from_subpackets(&subs, true, false)?;
+            // Diagnostic: dump the plaintext bytes before encryption, so we can
+            // diff against a reference capture without having to decrypt. Only
+            // runs when GARLEMALD_PACKET_LOG_PLAINTEXT=1.
+            if std::env::var_os("GARLEMALD_PACKET_LOG_PLAINTEXT").is_some()
+                && let Ok(peer) = socket.peer_addr()
+            {
+                let plain = packet.to_bytes();
+                common::packet_log::log_outbound_named(
+                    &format!("plaintext {peer}"),
+                    &plain,
+                );
+            }
             if let Some(bf) = session.blowfish.as_ref() {
                 packet.encrypt(bf)?;
             }

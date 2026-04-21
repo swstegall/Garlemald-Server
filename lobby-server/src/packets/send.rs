@@ -36,6 +36,20 @@ fn write_padded_ascii<W: Write>(w: &mut W, s: &str, width: usize) {
     }
 }
 
+/// Replicates C#'s `BinaryWriter.Write7BitEncodedInt`, which is what
+/// `BinaryWriter.Write(String)` emits as the length prefix before the UTF-8
+/// body. Needed because the lobby's character-list entry embeds the CharaInfo
+/// base64 blob via `binWriter.Write(CharaInfo.BuildForCharaList(...))`, not as
+/// a raw byte array — so the on-wire payload has a leading varint length the
+/// client is reading to know how many bytes to consume.
+fn write_csharp_string_length<W: Write>(w: &mut W, mut len: usize) {
+    while len >= 0x80 {
+        w.write_u8(((len as u8) & 0x7F) | 0x80).unwrap();
+        len >>= 7;
+    }
+    w.write_u8(len as u8).unwrap();
+}
+
 fn write_list_header(
     c: &mut Cursor<&mut [u8]>,
     sequence: u64,
@@ -247,8 +261,19 @@ pub fn character_list_packets(
     let mut total = 0usize;
 
     // The 'NEW' placeholder slot bumps the apparent count by one when the
-    // roster has room for another character. Matches the C# math.
-    let num_characters = if characters.len() >= 8 { 8 } else { characters.len() + 1 };
+    // roster has room for another character. Matches the C# math. Gated on
+    // GARLEMALD_SUPPRESS_NEW_SLOT=1 for debugging the Character Select crash
+    // — when that env var is set AND we already have a character, skip the
+    // placeholder so the client only sees the real entries.
+    let suppress_placeholder = std::env::var_os("GARLEMALD_SUPPRESS_NEW_SLOT").is_some()
+        && !characters.is_empty();
+    let num_characters = if characters.len() >= 8 {
+        8
+    } else if suppress_placeholder {
+        characters.len()
+    } else {
+        characters.len() + 1
+    };
 
     for chara in characters.iter().take(8) {
         let appearance = appearance_lookup(chara.id);
@@ -298,7 +323,9 @@ pub fn character_list_packets(
             write_padded_ascii(&mut c, &world_name, 0x0E);
 
             let appearance_blob = chara_info::build_for_chara_list(chara, &appearance);
-            c.write_all(appearance_blob.as_bytes()).unwrap();
+            let blob_bytes = appearance_blob.as_bytes();
+            write_csharp_string_length(&mut c, blob_bytes.len());
+            c.write_all(blob_bytes).unwrap();
         }
 
         char_count += 1;
@@ -313,7 +340,7 @@ pub fn character_list_packets(
     }
 
     // 'NEW' placeholder if there's still a slot.
-    if characters.len() < 8 {
+    if characters.len() < 8 && !suppress_placeholder {
         if char_count.is_multiple_of(MAX as usize) {
             let mut buf = vec![0u8; CAPACITY];
             {
