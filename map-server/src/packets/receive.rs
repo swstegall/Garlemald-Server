@@ -367,7 +367,20 @@ pub struct EventStartPacket {
     /// offset 0x11; bounded by the packet body length.
     pub event_name: String,
     pub lua_params: Vec<LuaParam>,
+    /// When the client catches a Lua runtime error it re-purposes
+    /// `EventStartPacket` as an error tunnel. `serverCodes == 0x3980_0010`
+    /// (the `unknown` field per Meteor's parser) signals that the body
+    /// carries an 0x80-byte ASCII error message instead of an event
+    /// payload. Parsed opportunistically so the server can log the real
+    /// Lua trace rather than just `owner actor missing owner=3`.
+    /// See Meteor `Map Server/Packets/Receive/Events/EventStartPacket.cs`
+    /// for the original (commented-out) branch.
+    pub client_script_error: Option<String>,
 }
+
+/// Marker that distinguishes a real EventStart from the client's Lua
+/// error tunnel. Lives in the `unknown` u32 slot (offset 0x0C).
+const CLIENT_SCRIPT_ERROR_MARKER: u32 = 0x3980_0010;
 
 impl EventStartPacket {
     pub fn parse(data: &[u8]) -> Result<Self> {
@@ -376,6 +389,34 @@ impl EventStartPacket {
         let owner_actor_id = c.read_u32::<LittleEndian>()?;
         let server_codes = c.read_u32::<LittleEndian>()?;
         let unknown = c.read_u32::<LittleEndian>()?;
+
+        if unknown == CLIENT_SCRIPT_ERROR_MARKER {
+            // Meteor `EventStartPacket.cs` commented-out branch:
+            //   errorIndex = actorID  // trigger_actor_id
+            //   errorNum   = scriptOwnerActorID  // owner_actor_id
+            //   error      = ReadBytes(0x80)
+            // We keep the trigger/owner slots in the struct's usual
+            // fields (they become the error index / count) and surface
+            // the ASCII tail as `client_script_error` for downstream
+            // logging.
+            let pos = c.position() as usize;
+            let end = (pos + 0x80).min(data.len());
+            let raw = &data[pos..end];
+            let msg = String::from_utf8_lossy(raw)
+                .trim_end_matches(char::from(0))
+                .to_string();
+            return Ok(Self {
+                trigger_actor_id,
+                owner_actor_id,
+                server_codes,
+                unknown,
+                event_type: 0,
+                event_name: String::new(),
+                lua_params: Vec::new(),
+                client_script_error: Some(msg),
+            });
+        }
+
         let event_type = c.read_u8()?;
         // Matches the C# parser: read null-term ASCII for the event name,
         // then — if the next byte isn't 0x01 — decode the LuaParam tail.
@@ -394,6 +435,7 @@ impl EventStartPacket {
             event_type,
             event_name,
             lua_params,
+            client_script_error: None,
         })
     }
 }

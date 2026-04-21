@@ -861,6 +861,24 @@ impl PacketProcessor {
                 return Ok(());
             }
         };
+
+        // Client Lua error tunnel — the 1.x client re-purposes EventStart
+        // with `unknown == 0x39800010` to ship a Lua stack trace up to
+        // the server (Meteor `EventStartPacket.cs` has the commented-out
+        // branch). Surface the trace in the log and stop — there's no
+        // event to dispatch and calling `start_event` on the session
+        // would record a phantom "owner actor missing" entry.
+        if let Some(err_text) = pkt.client_script_error.as_deref() {
+            tracing::warn!(
+                session = session_id,
+                error_index = pkt.trigger_actor_id,
+                error_num = pkt.owner_actor_id,
+                lua_error = %err_text,
+                "client Lua error reported via EventStart tunnel",
+            );
+            return Ok(());
+        }
+
         let Some(handle) = self.registry.by_session(session_id).await else {
             return Ok(());
         };

@@ -10,6 +10,7 @@
 #![allow(dead_code)]
 
 pub mod chara;
+pub mod event_conditions;
 pub mod modifier;
 pub mod player;
 pub mod quest;
@@ -56,6 +57,13 @@ pub struct BaseActor {
     pub class_path: String,
     pub class_name: String,
     pub is_at_spawn: bool,
+    /// Parsed event conditions (talk / notice / emote / push). NPC-only;
+    /// players leave this empty. Populated in `Npc::new` from
+    /// `ActorClass::event_conditions`. Consumed by `push_npc_spawn` to
+    /// fan the matching `SetTalkEventCondition` / `SetNoticeEventCondition`
+    /// / `SetEmoteEventCondition` / push-variant packets so the client
+    /// lights up each condition's trigger before the `ScriptBind`.
+    pub event_conditions: event_conditions::EventConditionList,
 }
 
 impl BaseActor {

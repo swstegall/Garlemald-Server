@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 
 use crate::actor::Character;
+use crate::actor::event_conditions::parse_event_conditions;
 
 use super::actor_class::ActorClass;
 use super::npc_work::NpcWork;
@@ -45,9 +46,11 @@ impl std::ops::BitOr for NpcSpawnType {
     }
 }
 
-/// Parsed form of `ActorClass::event_conditions`. Keys are packet opcodes
-/// or event names; values are Lua function names. The real content files
-/// are JSON — we parse opportunistically and store the flat map.
+/// Back-compat alias — the old flat map isn't populated anywhere but
+/// stays exported so downstream code that only looked at it by name
+/// doesn't break. New callers should read
+/// `crate::actor::event_conditions::EventConditionList` (also re-exported
+/// as `EventConditionList` from this module for convenience).
 pub type EventConditionMap = HashMap<String, String>;
 
 // ---------------------------------------------------------------------------
@@ -75,10 +78,6 @@ pub struct Npc {
     pub is_map_obj: bool,
     pub layout: u32,
     pub instance: u32,
-
-    /// Parsed event-condition table. Populated lazily via
-    /// `load_event_conditions`.
-    pub event_conditions: EventConditionMap,
 }
 
 impl Npc {
@@ -145,7 +144,24 @@ impl Npc {
         );
 
         let is_map_obj = Self::class_id_is_map_obj(actor_class.actor_class_id);
-        let mut me = Self {
+        // Parse the `ActorClass::event_conditions` JSON blob into the
+        // typed struct and stash it on `BaseActor` so the zone-in
+        // spawn emitter can fan the right SetXxxEventCondition packets
+        // per trigger. Parse failures leave the list empty, which
+        // matches the C# `eventConditions == null` branch in
+        // `Actor.GetEventConditionPackets`.
+        if !actor_class.event_conditions.is_empty() {
+            match parse_event_conditions(&actor_class.event_conditions) {
+                Ok(list) => character.base.event_conditions = list,
+                Err(err) => tracing::debug!(
+                    actor_class = actor_class.actor_class_id,
+                    %err,
+                    "event_conditions parse failed"
+                ),
+            }
+        }
+
+        Self {
             character,
             actor_class_id: actor_class.actor_class_id,
             unique_id: unique_id.into(),
@@ -156,12 +172,7 @@ impl Npc {
             is_map_obj,
             layout: 0,
             instance: 0,
-            event_conditions: EventConditionMap::new(),
-        };
-        if !actor_class.event_conditions.is_empty() {
-            me.load_event_conditions(&actor_class.event_conditions);
         }
-        me
     }
 
     /// `Npc(actorNumber, ActorClass, uniqueId, spawnedArea, posX, posY,
@@ -199,20 +210,6 @@ impl Npc {
         me
     }
 
-    /// Port of `LoadEventConditions(jsonBlob)`. The C# uses Json.NET to
-    /// deserialize into an `EventList`. We take a more pragmatic tack:
-    /// the JSON is a flat object of `"opcode_or_key" → "functionName"`
-    /// pairs, which is what the scripts actually consume.
-    pub fn load_event_conditions(&mut self, blob: &str) {
-        let trimmed = blob.trim();
-        if trimmed.is_empty() || trimmed == "{}" {
-            return;
-        }
-        if let Ok(map) = parse_event_conditions(trimmed) {
-            self.event_conditions = map;
-        }
-    }
-
     pub fn is_map_object(&self) -> bool {
         self.is_map_obj
     }
@@ -244,70 +241,6 @@ impl Npc {
         let hex = format!("{actor_number:05X}");
         self.character.base.actor_name = format!("_npc@{}", hex);
     }
-}
-
-// ---------------------------------------------------------------------------
-// Minimal JSON parser for the event_conditions blob. The real C# payload
-// has `{ opcode: "fn", opcode2: "fn2" }` shapes; we parse the outer-most
-// object and accept string values only. Anything more exotic falls back
-// to an empty map — the caller handles that case gracefully.
-// ---------------------------------------------------------------------------
-
-fn parse_event_conditions(s: &str) -> Result<EventConditionMap, &'static str> {
-    let s = s.trim();
-    if !s.starts_with('{') || !s.ends_with('}') {
-        return Err("not an object");
-    }
-    let inner = &s[1..s.len() - 1];
-    let mut out = EventConditionMap::new();
-    for entry in split_top_level(inner, ',') {
-        let entry = entry.trim();
-        if entry.is_empty() {
-            continue;
-        }
-        let (key, value) = entry.split_once(':').ok_or("missing colon")?;
-        let key = strip_quotes(key.trim());
-        let value = strip_quotes(value.trim());
-        out.insert(key.to_string(), value.to_string());
-    }
-    Ok(out)
-}
-
-fn strip_quotes(s: &str) -> &str {
-    if s.len() >= 2
-        && let Some(inner) = s.strip_prefix('"').and_then(|t| t.strip_suffix('"'))
-    {
-        inner
-    } else if s.len() >= 2
-        && let Some(inner) = s.strip_prefix('\'').and_then(|t| t.strip_suffix('\''))
-    {
-        inner
-    } else {
-        s
-    }
-}
-
-/// Split on `sep` characters that aren't nested inside braces/brackets/
-/// quoted strings. Good enough for the event-condition payloads we see.
-fn split_top_level(s: &str, sep: char) -> Vec<&str> {
-    let mut out = Vec::new();
-    let mut depth = 0i32;
-    let mut in_quote = false;
-    let mut start = 0usize;
-    for (i, c) in s.char_indices() {
-        match c {
-            '"' => in_quote = !in_quote,
-            '{' | '[' if !in_quote => depth += 1,
-            '}' | ']' if !in_quote => depth -= 1,
-            x if x == sep && !in_quote && depth == 0 => {
-                out.push(&s[start..i]);
-                start = i + c.len_utf8();
-            }
-            _ => {}
-        }
-    }
-    out.push(&s[start..]);
-    out
 }
 
 #[cfg(test)]
@@ -345,21 +278,73 @@ mod tests {
         assert!(npc.is_map_object());
     }
 
+    fn class_with_events(blob: &str) -> ActorClass {
+        ActorClass::new(
+            1_001_234,
+            "/Chara/Npc/Populace/PopulaceStandard",
+            100,
+            0b1010,
+            blob,
+            0,
+            0,
+            0,
+        )
+    }
+
     #[test]
-    fn event_conditions_parse_flat_object() {
-        let blob = r#"{"204": "onTalk", "30": "onTrade"}"#;
-        let mut npc = Npc::new(1, &class(), "x", 100, 0.0, 0.0, 0.0, 0.0, 0, 0, None);
-        npc.load_event_conditions(blob);
-        assert_eq!(npc.event_conditions.get("204"), Some(&"onTalk".to_string()));
-        assert_eq!(npc.event_conditions.get("30"), Some(&"onTrade".to_string()));
+    fn event_conditions_parse_monster_notice_only() {
+        // Verbatim from `gamedata_actor_class` row for the Limsa-opening
+        // jellyfish (class 2205403). Populated by Npc::new from the
+        // ActorClass's JSON field; landed on BaseActor for the spawn
+        // emitter to consume.
+        let blob = r#"{
+            "talkEventConditions": [],
+            "noticeEventConditions": [
+                {"unknown1": 0, "unknown2": 1, "conditionName": "noticeEvent"}
+            ],
+            "emoteEventConditions": [],
+            "pushWithCircleEventConditions": []
+        }"#;
+        let c = class_with_events(blob);
+        let npc = Npc::new(1, &c, "x", 100, 0.0, 0.0, 0.0, 0.0, 0, 0, None);
+        let ec = &npc.character.base.event_conditions;
+        assert_eq!(ec.notice.len(), 1);
+        assert_eq!(ec.notice[0].condition_name, "noticeEvent");
+        assert_eq!(ec.notice[0].unknown2, 1);
+        assert!(ec.talk.is_empty());
+    }
+
+    #[test]
+    fn event_conditions_parse_push_with_stringified_primitives() {
+        // Verbatim from the door-trigger class 1090025 — demonstrates
+        // Meteor's stringified `radius` / `outwards` / `silent` values.
+        let blob = r#"{
+            "talkEventConditions": [],
+            "noticeEventConditions": [
+                {"unknown1": 0, "unknown2": 1, "conditionName": "noticeEvent"}
+            ],
+            "pushWithCircleEventConditions": [
+                {"radius": "2.0", "outwards": "false", "silent": "false", "conditionName": "pushDefault"}
+            ]
+        }"#;
+        let c = class_with_events(blob);
+        let npc = Npc::new(1, &c, "x", 100, 0.0, 0.0, 0.0, 0.0, 0, 0, None);
+        let ec = &npc.character.base.event_conditions;
+        assert_eq!(ec.push_circle.len(), 1);
+        let pc = &ec.push_circle[0];
+        assert_eq!(pc.condition_name, "pushDefault");
+        assert!((pc.radius - 2.0).abs() < 1e-6);
+        assert!(!pc.outwards);
+        assert!(!pc.silent);
     }
 
     #[test]
     fn event_conditions_empty_blob_is_noop() {
-        let mut npc = Npc::new(1, &class(), "x", 100, 0.0, 0.0, 0.0, 0.0, 0, 0, None);
-        npc.load_event_conditions("");
-        npc.load_event_conditions("{}");
-        assert!(npc.event_conditions.is_empty());
+        for blob in ["", "{}"] {
+            let c = class_with_events(blob);
+            let npc = Npc::new(1, &c, "x", 100, 0.0, 0.0, 0.0, 0.0, 0, 0, None);
+            assert!(npc.character.base.event_conditions.is_empty());
+        }
     }
 
     #[test]

@@ -700,15 +700,21 @@ pub fn build_npc_property_init(
 /// client routes it through its hate-state update path instead of the
 /// boot-property path.
 ///
-/// Meteor's implementation conditionally computes hateType based on
-/// `aiContainer.IsEngaged()` + party state, but then ignores that and
-/// hardcodes `npcWork.hateType = 3` on line 161 — effectively a debug
-/// override that keeps all BattleNpcs flagged as ENGAGED_PARTY until
-/// someone tidies that loop. We mirror the same hardcode so the client
-/// sees what Meteor's reference capture ships.
+/// Sends `HATE_TYPE_NONE (0)` for passive monsters. Meteor's C# also
+/// *computes* 0 for passive NPCs (no engagement, no party), but then
+/// unconditionally overrides to `3` (HATE_TYPE_ENGAGED_PARTY) on
+/// `BattleNpc.cs:160` — a dev-time debug leftover. Honouring that
+/// hardcode made the 1.23b client's `DepictionJudge:judgeNameplate()`
+/// try to resolve the monster's `_getOccupancyGroup()` (which is only
+/// populated for claimed mobs engaged by a party); with the group nil
+/// the nameplate judge hit "attempt to compare number with nil" and
+/// tunneled 3 `Client Script ERROR` EventStarts back — surfacing in the
+/// client as three "An error has occurred" popups on zone-in. Sending 0
+/// routes the judge through the passive-nameplate branch, which doesn't
+/// dereference party state.
 pub fn build_npc_hate_type_packet(actor_id: u32) -> SubPacket {
     let mut b = ActorPropertyPacketBuilder::new(actor_id, "npcWork/hate");
-    b.add_byte("npcWork.hateType", 3);
+    b.add_byte("npcWork.hateType", 0);
     let mut packets = b.done();
     packets.remove(0)
 }

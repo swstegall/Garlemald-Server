@@ -27,6 +27,10 @@ pub use actor_class::ActorClass;
 pub use ally::Ally;
 pub use battle_npc::{BattleNpc, DetectionType, KindredType, ModifierLayer};
 pub use mob_modifier::{MobModifier, MobModifierMap};
+pub use crate::actor::event_conditions::{
+    EmoteCondition, EventConditionList, NoticeCondition, PushBoxCondition, PushCircleCondition,
+    PushFanCondition, TalkCondition,
+};
 pub use npc::{EventConditionMap, Npc};
 pub use npc_work::{HATE_TYPE_ENGAGED, HATE_TYPE_ENGAGED_PARTY, HATE_TYPE_NONE, NpcWork};
 pub use pet::Pet;

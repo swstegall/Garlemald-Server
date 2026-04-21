@@ -279,7 +279,7 @@ fn push_npc_spawn(
         generate_npc_actor_name(&class_name, zone_name, actor_number, zone_id, priv_level);
 
     let script_bind_params = vec![
-        common::luaparam::LuaParam::String(class_path_lower),
+        common::luaparam::LuaParam::String(class_path_lower.clone()),
         common::luaparam::LuaParam::False,
         common::luaparam::LuaParam::False,
         common::luaparam::LuaParam::False,
@@ -292,6 +292,8 @@ fn push_npc_spawn(
         common::luaparam::LuaParam::Int32(0),
     ];
 
+    let is_monster = class_path_lower.contains("/monster/");
+
     // Meteor's `Npc.CreateAddActorPacket()` hardcodes flag=8 (see
     // Map Server/Actors/Chara/Npc/Npc.cs:162). Passing 0 here — as
     // Area/Director/WorldMaster do — made the client route the
@@ -301,6 +303,18 @@ fn push_npc_spawn(
     // populace spawn bundle: strip just the ActorInstantiate and
     // the client survived, add it back with flag=0 and Wine dies.
     subpackets.push(tx::actor::build_add_actor(actor_id, 8));
+    // Meteor's `Actor.GetSpawnPackets` (Actor.cs:321-333) emits
+    // `GetEventConditionPackets()` immediately after `AddActor`, before
+    // `Speed`/`Position`. Without these writes, a later
+    // `KickEventPacket(conditionName)` is ignored by the 1.23b client —
+    // for the 3 Limsa-opening monsters that means their
+    // `noticeEvent` trigger fires unbound and the client tunnels an
+    // error EventStart that we have no handler for, surfacing as
+    // "An error has occurred" popups on zone-in.
+    subpackets.extend(tx::actor_events::build_event_condition_packets(
+        actor_id,
+        &character.base.event_conditions,
+    ));
     subpackets.push(tx::actor::build_set_actor_speed_default(actor_id));
     // Meteor's `Npc.GetSpawnPackets` (Actors/Chara/Npc/Npc.cs:210)
     // passes `CreateSpawnPositonPacket(0x0)` — spawn type `FADEIN`,
@@ -357,7 +371,27 @@ fn push_npc_spawn(
     // regardless of what SetActorName carries. Populace class 1000438
     // has propertyFlags = 0x13 (bits 0/1/4) — bit 1 is the nameplate
     // flag; without it the server's valid displayNameId never surfaces.
-    let property_flags = character.chara.property_flags;
+    //
+    // Monster-path actors (class 2205403 jellyfish / 2290001/2 fighter
+    // openings etc.) ship `propertyFlags = 0x17` — populace bits plus
+    // bit 2 (PROPERTY_TARGETABLE / solid-collision). When we spawn them
+    // through the populace pipeline (no BattleNpc stat backing), the
+    // client's `DepictionJudge:judgeNameplate()` takes its BattleNpc-
+    // aware branch on bit 2 and then tries to compare numbers against
+    // fields that a real BattleNpc spawn would populate — but we only
+    // sent populace init state. Observed error dump (2026-04-21):
+    //   attempt to compare number with nil
+    //   01>DepictionJudge:judgeNameplate() [?:900]
+    //     program => CharaBaseClass:_onUpdateWork() [?:5685]
+    // Masking bit 2 off for `/monster/` actors routes the client
+    // through the populace nameplate path and suppresses the three
+    // "An error has occurred" popups. Bit 2 needs to come back the
+    // moment these actors spawn through the real BattleNpc pipeline.
+    let property_flags = if is_monster {
+        character.chara.property_flags & !(1u32 << 2)
+    } else {
+        character.chara.property_flags
+    };
     let hp = character.chara.hp.max(0) as u16;
     let hp_max = character.chara.max_hp.max(0) as u16;
     let mp = character.chara.mp.max(0) as u16;
@@ -374,15 +408,13 @@ fn push_npc_spawn(
     );
     subpackets.extend(npc_init);
 
-    // BattleNpc tail — Meteor's `BattleNpc.GetSpawnPackets` appends
-    // `GetHateTypePacket(player)` (Actors/Chara/Npc/BattleNpc.cs:130).
-    // Currently disabled while we bisect why including monsters in
-    // the fanout fires a mid-Now-Loading "error has occurred" dialog:
-    // either this hate packet or the className fallback shape is the
-    // trigger.
-    // if character.base.class_path.to_ascii_lowercase().contains("/monster/") {
-    //     subpackets.push(tx::actor::build_npc_hate_type_packet(actor_id));
-    // }
+    // BattleNpc `/npcWork/hate` tail is load-bearing — omitting it
+    // for monster-path actors Wine-hard-crashes on zone-in (confirmed
+    // 2026-04-21). Keep the emission; it stays at `hateType = 0` so
+    // the client routes the nameplate judge through the passive path.
+    if is_monster {
+        subpackets.push(tx::actor::build_npc_hate_type_packet(actor_id));
+    }
 }
 
 /// Outcome of a single `seamless_check` call. Describes what, if anything,
@@ -1331,27 +1363,21 @@ impl WorldManager {
 
         // Diagnostic cap on the number of NPC spawns emitted this
         // fanout. Raised to usize::MAX now that the AddActor flag=8
-        // fix unblocked per-NPC rendering — the remaining 15 populace
-        // in zone 193 should all fan out together. The gate above
-        // still excludes the 4 non-populace (monsters + exit_door).
+        // fix unblocked per-NPC rendering.
         let mut emitted: usize = 0;
         const NPC_SPAWN_EMIT_CAP: usize = usize::MAX;
 
-        // NPC spawn fanout — TEMPORARILY GATED. With 19 populace NPCs
-        // spawned in zone 193 the Wine client hard-crashes <1s after
-        // the zone-in bundle lands. Decoding the first populace 0x00CC
-        // reveals three shortfalls vs Meteor's reference capture:
-        //   * actor_name is empty (Meteor: `pplStd_ocn0Btl02_01@0C100`)
-        //   * class_path casing: `/Chara/Npc/Populace/PopulaceStandard`
-        //     vs Meteor `/chara/npc/populace/PopulaceStandard`
-        //     (1.x script loader is case-sensitive)
-        //   * missing Int32(actor_class_id) LuaParam at index 6
-        //     (Meteor: `String(path), False×5, Int32(classId), …`)
-        // All three now addressed in `push_npc_spawn` +
-        // `generate_npc_actor_name` + `lowercase_class_path` (and
-        // `CharaState.actor_class_id` is populated in Npc::new). The
-        // populace NPCs in zone 193 render their avatars alongside the
-        // player's.
+        // NPC spawn fanout.
+        //
+        // Monsters (`/Chara/Npc/Monster/...`) previously gated here. Re-
+        // enabled 2026-04-21 after character-select crash resolution
+        // invalidated the 2026-04-20 bisect. In Meteor `server_spawn_
+        // locations` rows (even monster-class ones) instantiate as
+        // plain `Npc`, not `BattleNpc` — only `server_battlenpc_spawn_
+        // locations` routes through `BattleNpc::new` (Area.cs:485 vs
+        // WorldManager.cs:622). So the 3 Limsa-opening monster actors
+        // (opening_jelly, opening_yshtola, opening_stahlmann) go
+        // through the same populace pipeline.
         for (neighbour_id, kind) in neighbours {
             use crate::zone::area::ActorKind;
             if !matches!(kind, ActorKind::Npc | ActorKind::BattleNpc | ActorKind::Ally) {
@@ -1361,37 +1387,6 @@ impl WorldManager {
                 continue;
             };
             let character = handle.character.read().await;
-            // Populace + exit_door path only. Attempting to admit
-            // Monster/* classes through this same bundle produced
-            // three failure modes during the last bisect session:
-            //   * real classNames         → client tunnels 3 error
-            //                               EventStarts after Now-
-            //                               Loading (owner=3 log)
-            //   * populace classNameFake  → client soft-errors
-            //                               DURING Now-Loading with
-            //                               the hateType property
-            //                               pack appended
-            //   * populace classNameFake,
-            //     no hateType pack        → Wine hard-crashes
-            // Conclusion: monsters need more than a classname swap
-            // and a hateType packet. Likely they want the real
-            // BattleNpc bundle shape (stats, modifiers, genus data)
-            // plus a matched property-init block that the client's
-            // populace Lua doesn't assume away. Leaving that behind
-            // this gate so populace keeps rendering while the
-            // BattleNpc spawn pipeline is ported properly.
-            let class_path_l = character.base.class_path.to_ascii_lowercase();
-            let is_populace = class_path_l.contains("/populace/");
-            let model_id = character.chara.model_id;
-            if !is_populace {
-                tracing::debug!(
-                    actor_id = format!("0x{:08X}", neighbour_id),
-                    class_path = %character.base.class_path,
-                    model_id,
-                    "skipping non-populace spawn in zone-in fanout"
-                );
-                continue;
-            }
             if emitted >= NPC_SPAWN_EMIT_CAP {
                 continue;
             }
