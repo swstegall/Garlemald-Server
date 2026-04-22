@@ -122,6 +122,57 @@ pub enum LuaCommand {
         player_id: u32,
         quest_id: u32,
     },
+    /// `quest:ClearQuestData()` / `data:ClearData()` — reset every flag +
+    /// counter on the live quest.
+    QuestClearData {
+        player_id: u32,
+        quest_id: u32,
+    },
+    /// `quest:ClearQuestFlags()` — zero the flag bitfield but leave
+    /// counters intact. Matches Meteor's `Quest.ClearQuestFlags()`.
+    QuestClearFlags {
+        player_id: u32,
+        quest_id: u32,
+    },
+    /// `quest:SetQuestFlag(bit)` / `data:SetFlag(bit)`.
+    QuestSetFlag {
+        player_id: u32,
+        quest_id: u32,
+        bit: u8,
+    },
+    /// `data:ClearFlag(bit)`.
+    QuestClearFlag {
+        player_id: u32,
+        quest_id: u32,
+        bit: u8,
+    },
+    /// `data:SetCounter(idx, value)` — value is 0..=65535.
+    QuestSetCounter {
+        player_id: u32,
+        quest_id: u32,
+        idx: u8,
+        value: u16,
+    },
+    /// `data:IncCounter(idx)` — wraps at 65_536.
+    QuestIncCounter {
+        player_id: u32,
+        quest_id: u32,
+        idx: u8,
+    },
+    /// `data:DecCounter(idx)` — wraps at 0.
+    QuestDecCounter {
+        player_id: u32,
+        quest_id: u32,
+        idx: u8,
+    },
+    /// `quest:StartSequence(sequence)` — flips Dirty; the dispatcher
+    /// fires `onStateChange(player, quest, sequence)` after the current
+    /// script finishes so its side effects land after the mutation.
+    QuestStartSequence {
+        player_id: u32,
+        quest_id: u32,
+        sequence: u32,
+    },
     SetHomePoint {
         player_id: u32,
         homepoint: u32,

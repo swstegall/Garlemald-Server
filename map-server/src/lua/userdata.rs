@@ -180,6 +180,18 @@ impl UserData for LuaNpc {
     }
 }
 
+/// One row of `PlayerSnapshot::active_quest_states` — a frozen view of a
+/// [`crate::actor::quest::Quest`] so Lua handles can answer getters
+/// without going back to the Rust side. Mutations still flow through
+/// the command queue.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct QuestStateSnapshot {
+    pub quest_id: u32,
+    pub sequence: u32,
+    pub flags: u32,
+    pub counters: [u16; 3],
+}
+
 // ---------------------------------------------------------------------------
 // LuaPlayer — the big one. Stores a rich snapshot so scripts can read every
 // field they previously asked the C# Player for.
@@ -232,6 +244,12 @@ pub struct PlayerSnapshot {
     pub completed_quests: Vec<u32>,
     /// Active quest ids.
     pub active_quests: Vec<u32>,
+    /// Per-active-quest state — `(quest_id, sequence, flags, counters)`
+    /// snapshotted at build time so [`LuaQuestHandle`] / [`LuaQuestDataHandle`]
+    /// can answer getters without a round-trip back to the Rust side.
+    /// Kept in the same order as [`active_quests`], so binary or linear
+    /// lookup by id is cheap.
+    pub active_quest_states: Vec<QuestStateSnapshot>,
     /// Unlocked aetheryte node ids.
     pub unlocked_aetherytes: Vec<u32>,
     /// Trait ids the player has learned.
@@ -249,14 +267,31 @@ pub struct PlayerSnapshot {
 impl From<&crate::actor::Player> for PlayerSnapshot {
     fn from(p: &crate::actor::Player) -> Self {
         let active_quests: Vec<u32> = p
-            .helpers
+            .character
             .quest_journal
             .slots
             .iter()
             .flatten()
             .map(|q| q.quest_id())
             .collect();
-        let completed_quests: Vec<u32> = p.helpers.quest_journal.iter_completed().collect();
+        let active_quest_states: Vec<QuestStateSnapshot> = p
+            .character
+            .quest_journal
+            .slots
+            .iter()
+            .flatten()
+            .map(|q| QuestStateSnapshot {
+                quest_id: q.quest_id(),
+                sequence: q.get_sequence(),
+                flags: q.get_flags(),
+                counters: [
+                    q.get_counter(0),
+                    q.get_counter(1),
+                    q.get_counter(2),
+                ],
+            })
+            .collect();
+        let completed_quests: Vec<u32> = p.character.quest_journal.iter_completed().collect();
         let unlocked_aetherytes: Vec<u32> = p.helpers.unlocked_aetherytes.iter().copied().collect();
         let traits: Vec<u16> = p.helpers.traits.iter().map(|t| t.id).collect();
         let inventory: Vec<(u32, i32)> = p
@@ -306,6 +341,7 @@ impl From<&crate::actor::Player> for PlayerSnapshot {
             current_event_type: p.player.current_event_type,
             completed_quests,
             active_quests,
+            active_quest_states,
             unlocked_aetherytes,
             traits,
             inventory,
@@ -746,17 +782,31 @@ impl UserData for LuaPlayer {
             lua.create_userdata(pkg)
         });
         methods.add_method("GetQuest", |lua, this, id: u32| {
-            // Scripts chain `GetQuest(id):ClearQuestData()` / `:ClearQuestFlags()`
-            // (e.g. the tutorial cleanup in battlenpc.lua `onBeginLogin`).
-            // Returning an integer or nil here would error on the method
-            // call; return a `LuaQuestHandle` userdata so the chain runs.
-            // If the player doesn't have the quest, still return a handle
-            // — the C# behaviour is similarly lenient (method no-ops on
-            // missing quest).
+            // Scripts chain `GetQuest(id):SetQuestFlag(...)` /
+            // `:GetData():IncCounter(...)` etc. If the player doesn't have
+            // the quest we still return a handle — Meteor's behaviour is
+            // similarly lenient (the mutations no-op on missing quest in
+            // the processor). Populate the snapshot fields from the live
+            // per-quest state so getters give real answers.
+            let state = this
+                .snapshot
+                .active_quest_states
+                .iter()
+                .find(|s| s.quest_id == id)
+                .copied()
+                .unwrap_or(QuestStateSnapshot {
+                    quest_id: id,
+                    sequence: 0,
+                    flags: 0,
+                    counters: [0; 3],
+                });
             let handle = LuaQuestHandle {
                 player_id: this.snapshot.actor_id,
                 quest_id: id,
                 has_quest: this.snapshot.active_quests.contains(&id),
+                sequence: state.sequence,
+                flags: state.flags,
+                counters: state.counters,
                 queue: this.queue.clone(),
             };
             lua.create_userdata(handle)
@@ -1293,10 +1343,22 @@ impl UserData for LuaItemPackage {
     }
 }
 
+/// `player:GetQuest(id)` return value. Carries a snapshot of the live
+/// quest's flags/counters/sequence taken when the userdata was created,
+/// so getters like `GetQuestFlag(bit)` return a useful value without
+/// needing a round-trip through the command queue. Mutations enqueue
+/// `LuaCommand::Quest*` variants the processor applies after the script
+/// returns — the Rust-side `Quest` is the source of truth.
 pub struct LuaQuestHandle {
     pub player_id: u32,
     pub quest_id: u32,
     pub has_quest: bool,
+    /// Mirror of `Quest.sequence` at the time the handle was built.
+    pub sequence: u32,
+    /// Mirror of `QuestData.flags`.
+    pub flags: u32,
+    /// Mirror of `QuestData.counters`.
+    pub counters: [u16; 3],
     pub queue: Arc<Mutex<CommandQueue>>,
 }
 
@@ -1304,27 +1366,254 @@ impl UserData for LuaQuestHandle {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("GetQuestId", |_, this, _: ()| Ok(this.quest_id));
         methods.add_method("HasQuest", |_, this, _: ()| Ok(this.has_quest));
-        methods.add_method("ClearQuestData", |_, _this, _: ()| Ok(()));
-        methods.add_method("ClearQuestFlags", |_, _this, _: ()| Ok(()));
-        methods.add_method(
-            "SetQuestFlag",
-            |_, _this, _args: mlua::MultiValue| Ok(()),
-        );
-        methods.add_method(
-            "GetQuestFlag",
-            |_, _this, _slot: Option<u32>| Ok(false),
-        );
-        methods.add_method(
-            "SetQuestData",
-            |_, _this, _args: mlua::MultiValue| Ok(()),
-        );
-        methods.add_method(
-            "GetQuestData",
-            |_, _this, _slot: Option<u32>| Ok(Value::Nil),
-        );
+        methods.add_method("GetSequence", |_, this, _: ()| Ok(this.sequence));
+
+        // --- Mutations queued as LuaCommand::Quest* --------------------
+        methods.add_method("ClearQuestData", |_, this, _: ()| {
+            push(
+                &this.queue,
+                LuaCommand::QuestClearData {
+                    player_id: this.player_id,
+                    quest_id: this.quest_id,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method("ClearQuestFlags", |_, this, _: ()| {
+            push(
+                &this.queue,
+                LuaCommand::QuestClearFlags {
+                    player_id: this.player_id,
+                    quest_id: this.quest_id,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method("SetQuestFlag", |_, this, args: mlua::MultiValue| {
+            // `SetQuestFlag(bit)` — the C# 2-arg form `SetQuestFlag(bit, value)`
+            // treats `value=false` as a clear; scripts overwhelmingly use the
+            // single-arg set form. Accept both for parity.
+            let mut iter = args.into_iter();
+            let Some(Value::Integer(bit)) = iter.next() else {
+                return Ok(());
+            };
+            let set = match iter.next() {
+                Some(Value::Boolean(b)) => b,
+                Some(Value::Nil) | None => true,
+                _ => true,
+            };
+            let bit = bit as u8;
+            let cmd = if set {
+                LuaCommand::QuestSetFlag {
+                    player_id: this.player_id,
+                    quest_id: this.quest_id,
+                    bit,
+                }
+            } else {
+                LuaCommand::QuestClearFlag {
+                    player_id: this.player_id,
+                    quest_id: this.quest_id,
+                    bit,
+                }
+            };
+            push(&this.queue, cmd);
+            Ok(())
+        });
+        methods.add_method("GetQuestFlag", |_, this, bit: Option<u32>| {
+            let bit = bit.unwrap_or(0) as u8;
+            if bit >= 32 {
+                return Ok(false);
+            }
+            Ok((this.flags & (1u32 << bit)) != 0)
+        });
         methods.add_method(
             "SetQuestScenarioCounter",
-            |_, _this, _counter: Option<u32>| Ok(()),
+            |_, this, args: mlua::MultiValue| {
+                // `SetQuestScenarioCounter(slot, value)`. Meteor exposes
+                // `SetCounter(num, value)` on QuestData; Lua scripts call
+                // this form on the Quest handle too.
+                let mut iter = args.into_iter();
+                let Some(Value::Integer(idx)) = iter.next() else {
+                    return Ok(());
+                };
+                let Some(Value::Integer(value)) = iter.next() else {
+                    return Ok(());
+                };
+                push(
+                    &this.queue,
+                    LuaCommand::QuestSetCounter {
+                        player_id: this.player_id,
+                        quest_id: this.quest_id,
+                        idx: idx as u8,
+                        value: (value.max(0).min(u16::MAX as i64)) as u16,
+                    },
+                );
+                Ok(())
+            },
         );
+        methods.add_method("StartSequence", |_, this, sequence: u32| {
+            push(
+                &this.queue,
+                LuaCommand::QuestStartSequence {
+                    player_id: this.player_id,
+                    quest_id: this.quest_id,
+                    sequence,
+                },
+            );
+            Ok(())
+        });
+
+        // --- GetData() → LuaQuestDataHandle -----------------------------
+        methods.add_method("GetData", |lua, this, _: ()| {
+            let handle = LuaQuestDataHandle {
+                player_id: this.player_id,
+                quest_id: this.quest_id,
+                flags: this.flags,
+                counters: this.counters,
+                queue: this.queue.clone(),
+            };
+            lua.create_userdata(handle)
+        });
+
+        // --- UpdateENPCs / SetENpc: stubs until Phase E -----------------
+        //
+        // Scripts call `quest:UpdateENPCs()` after a mutation to ask the
+        // engine to diff `QuestState.current` vs `.old` and broadcast the
+        // delta as `SetEventStatus` + `SetActorQuestGraphic` packets. That
+        // packet path isn't wired yet; for now the QuestData.Dirty bit
+        // still drives a DB save through the processor, so scripts that
+        // call UpdateENPCs won't regress — they just won't see the marker
+        // sync on the client side until Phase E.
+        methods.add_method("UpdateENPCs", |_, _this, _: ()| Ok(()));
+        methods.add_method("SetENpc", |_, _this, _args: mlua::MultiValue| Ok(()));
+        methods.add_method("GetENpc", |_, _this, _: u32| Ok(Value::Nil));
+        methods.add_method("HasENpc", |_, _this, _: u32| Ok(false));
+    }
+}
+
+/// `quest:GetData()` return value — Meteor's `QuestData`. Exposes flag
+/// and counter ops; `SetTime` / NPC-LS fields aren't persisted by the
+/// current schema so their setters are stubbed for now.
+pub struct LuaQuestDataHandle {
+    pub player_id: u32,
+    pub quest_id: u32,
+    pub flags: u32,
+    pub counters: [u16; 3],
+    pub queue: Arc<Mutex<CommandQueue>>,
+}
+
+impl UserData for LuaQuestDataHandle {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        // --- Read-side getters (served from the snapshot) --------------
+        methods.add_method("GetFlags", |_, this, _: ()| Ok(this.flags));
+        methods.add_method("GetFlag", |_, this, bit: u32| {
+            let bit = bit as u8;
+            if bit >= 32 {
+                return Ok(false);
+            }
+            Ok((this.flags & (1u32 << bit)) != 0)
+        });
+        methods.add_method("GetCounter", |_, this, idx: u32| {
+            let idx = idx as usize;
+            Ok(if idx < this.counters.len() {
+                this.counters[idx]
+            } else {
+                0
+            })
+        });
+
+        // --- Mutations queued through the processor ---------------------
+        methods.add_method("SetFlag", |_, this, bit: u32| {
+            push(
+                &this.queue,
+                LuaCommand::QuestSetFlag {
+                    player_id: this.player_id,
+                    quest_id: this.quest_id,
+                    bit: bit as u8,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method("ClearFlag", |_, this, bit: u32| {
+            push(
+                &this.queue,
+                LuaCommand::QuestClearFlag {
+                    player_id: this.player_id,
+                    quest_id: this.quest_id,
+                    bit: bit as u8,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method(
+            "SetCounter",
+            |_, this, (idx, value): (u32, u32)| {
+                push(
+                    &this.queue,
+                    LuaCommand::QuestSetCounter {
+                        player_id: this.player_id,
+                        quest_id: this.quest_id,
+                        idx: idx as u8,
+                        value: value.min(u16::MAX as u32) as u16,
+                    },
+                );
+                Ok(())
+            },
+        );
+        methods.add_method("IncCounter", |_, this, idx: u32| {
+            push(
+                &this.queue,
+                LuaCommand::QuestIncCounter {
+                    player_id: this.player_id,
+                    quest_id: this.quest_id,
+                    idx: idx as u8,
+                },
+            );
+            // Meteor's `IncCounter` returns the post-inc value; without a
+            // live read of the mutated counter we echo the snapshot+1 so
+            // scripts comparing against the return value see a reasonable
+            // number. The processor applies the real wrapping increment.
+            let idx_u = idx as usize;
+            if idx_u < this.counters.len() {
+                Ok(this.counters[idx_u].wrapping_add(1))
+            } else {
+                Ok(0u16)
+            }
+        });
+        methods.add_method("DecCounter", |_, this, idx: u32| {
+            push(
+                &this.queue,
+                LuaCommand::QuestDecCounter {
+                    player_id: this.player_id,
+                    quest_id: this.quest_id,
+                    idx: idx as u8,
+                },
+            );
+            let idx_u = idx as usize;
+            if idx_u < this.counters.len() {
+                Ok(this.counters[idx_u].wrapping_sub(1))
+            } else {
+                Ok(0u16)
+            }
+        });
+        methods.add_method("ClearData", |_, this, _: ()| {
+            push(
+                &this.queue,
+                LuaCommand::QuestClearData {
+                    player_id: this.player_id,
+                    quest_id: this.quest_id,
+                },
+            );
+            Ok(())
+        });
+
+        // --- Time / NpcLs — not persisted by the new schema yet ---------
+        methods.add_method("SetTimeNow", |_, _this, _: ()| Ok(()));
+        methods.add_method("GetTime", |_, _this, _: ()| Ok(0u32));
+        methods.add_method("SetNpcLsFrom", |_, _this, _: u32| Ok(()));
+        methods.add_method("IncrementNpcLsMsgStep", |_, _this, _: ()| Ok(()));
+        methods.add_method("GetNpcLsFrom", |_, _this, _: ()| Ok(0u32));
+        methods.add_method("GetMsgStep", |_, _this, _: ()| Ok(0u8));
+        methods.add_method("ClearNpcLs", |_, _this, _: ()| Ok(()));
     }
 }

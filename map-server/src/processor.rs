@@ -234,6 +234,41 @@ impl PacketProcessor {
         character.chara.rest_bonus_exp_rate = loaded.rest_bonus_exp_rate;
         character.chara.tp = 0;
 
+        // Hydrate the quest journal from the DB. `loaded.quest_scenario`
+        // holds the active-slot rows (sequence/flags/counters) and the
+        // separate bitfield column feeds the 2048-bit completion set.
+        // Previously this data was loaded but dropped on the floor because
+        // the runtime Player's helpers.quest_journal wasn't reachable from
+        // the processor — now that `quest_journal` lives on Character the
+        // zone-in bundle and any Lua hook see the real state.
+        for row in &loaded.quest_scenario {
+            let slot = row.slot as usize;
+            if slot >= 16 {
+                continue;
+            }
+            let actor_aid = crate::actor::quest::quest_actor_id(row.quest_id);
+            character.quest_journal.slots[slot] =
+                Some(crate::actor::quest::Quest::from_db_row(
+                    actor_aid,
+                    String::new(),
+                    row.sequence,
+                    row.flags,
+                    row.counter1,
+                    row.counter2,
+                    row.counter3,
+                ));
+        }
+        match self.db.load_completed_quests(actor_id).await {
+            Ok(bs) => character.quest_journal.completed = bs,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    actor = actor_id,
+                    "load_completed_quests failed; starting with empty bitfield",
+                );
+            }
+        }
+
         self.registry
             .insert(ActorHandle::new(
                 actor_id,
@@ -773,7 +808,88 @@ impl PacketProcessor {
                 player_id,
                 quest_id,
             } => {
-                tracing::debug!(player = player_id, quest = quest_id, "AddQuest (stub)");
+                self.apply_add_quest(player_id, quest_id).await;
+            }
+            LC::CompleteQuest {
+                player_id,
+                quest_id,
+            } => {
+                self.apply_complete_quest(player_id, quest_id).await;
+            }
+            LC::AbandonQuest {
+                player_id,
+                quest_id,
+            } => {
+                self.apply_abandon_quest(player_id, quest_id).await;
+            }
+            LC::QuestClearData {
+                player_id,
+                quest_id,
+            } => {
+                self.apply_quest_mutation(player_id, quest_id, |q| q.clear_data())
+                    .await;
+            }
+            LC::QuestClearFlags {
+                player_id,
+                quest_id,
+            } => {
+                self.apply_quest_mutation(player_id, quest_id, |q| q.clear_flags())
+                    .await;
+            }
+            LC::QuestSetFlag {
+                player_id,
+                quest_id,
+                bit,
+            } => {
+                self.apply_quest_mutation(player_id, quest_id, |q| q.set_flag(bit))
+                    .await;
+            }
+            LC::QuestClearFlag {
+                player_id,
+                quest_id,
+                bit,
+            } => {
+                self.apply_quest_mutation(player_id, quest_id, |q| q.clear_flag(bit))
+                    .await;
+            }
+            LC::QuestSetCounter {
+                player_id,
+                quest_id,
+                idx,
+                value,
+            } => {
+                self.apply_quest_mutation(player_id, quest_id, |q| {
+                    q.set_counter(idx as usize, value)
+                })
+                .await;
+            }
+            LC::QuestIncCounter {
+                player_id,
+                quest_id,
+                idx,
+            } => {
+                self.apply_quest_mutation(player_id, quest_id, |q| {
+                    q.inc_counter(idx as usize);
+                })
+                .await;
+            }
+            LC::QuestDecCounter {
+                player_id,
+                quest_id,
+                idx,
+            } => {
+                self.apply_quest_mutation(player_id, quest_id, |q| {
+                    q.dec_counter(idx as usize);
+                })
+                .await;
+            }
+            LC::QuestStartSequence {
+                player_id,
+                quest_id,
+                sequence,
+            } => {
+                self.apply_quest_mutation(player_id, quest_id, |q| q.start_sequence(sequence))
+                    .await;
             }
             LC::AddExp {
                 actor_id,
@@ -911,6 +1027,202 @@ impl PacketProcessor {
                 tracing::debug!(?other, "login lua cmd (unhandled)");
             }
         }
+    }
+
+    // =======================================================================
+    // Quest-mutation helpers (ported from Meteor's `Quest.cs` /
+    // `QuestData.cs` runtime surface)
+    // =======================================================================
+
+    /// Resolve a player's active quest, run `mutate`, and — if the quest
+    /// ended up dirty — persist the new `(sequence, flags, counters)`
+    /// tuple to `characters_quest_scenario`. The dirty flag is cleared
+    /// after the write so the next mutation reliably flips it again.
+    ///
+    /// No-ops if the player isn't live in the registry or doesn't have
+    /// the quest in their journal (matches Meteor: mutations on a missing
+    /// quest are silently ignored rather than panicking).
+    async fn apply_quest_mutation<F>(&self, player_id: u32, quest_id: u32, mutate: F)
+    where
+        F: FnOnce(&mut crate::actor::quest::Quest),
+    {
+        let Some(handle) = self.registry.get(player_id).await else {
+            tracing::debug!(
+                player = player_id,
+                quest = quest_id,
+                "quest mutation skipped — player not in registry",
+            );
+            return;
+        };
+        let save_tuple = {
+            let mut c = handle.character.write().await;
+            let Some(slot) = c.quest_journal.slot_of(quest_id) else {
+                tracing::debug!(
+                    player = player_id,
+                    quest = quest_id,
+                    "quest mutation skipped — quest not in journal",
+                );
+                return;
+            };
+            let Some(q) = c.quest_journal.slots[slot].as_mut() else {
+                return;
+            };
+            mutate(q);
+            if q.is_dirty() {
+                let sequence = q.get_sequence();
+                let flags = q.get_flags();
+                let counters = [q.get_counter(0), q.get_counter(1), q.get_counter(2)];
+                let actor_id = q.actor_id;
+                q.clear_dirty();
+                Some((slot as i32, actor_id, sequence, flags, counters))
+            } else {
+                None
+            }
+        };
+        if let Some((slot, actor_id, sequence, flags, [c1, c2, c3])) = save_tuple
+            && let Err(e) = self
+                .db
+                .save_quest(player_id, slot, actor_id, sequence, flags, c1, c2, c3)
+                .await
+        {
+            tracing::warn!(
+                error = %e,
+                player = player_id,
+                quest = quest_id,
+                "quest save failed",
+            );
+        }
+    }
+
+    /// `player:AddQuest(id)` — allocate a free slot, build a fresh
+    /// `Quest`, and persist the initial row. Mirrors Meteor's
+    /// `Player.AcceptQuest(questId)` minus the Lua-engine `onStart`
+    /// dispatch (which the five-hook surface layers on separately).
+    async fn apply_add_quest(&self, player_id: u32, quest_id: u32) {
+        let Some(handle) = self.registry.get(player_id).await else {
+            return;
+        };
+        let save_tuple = {
+            let mut c = handle.character.write().await;
+            if c.quest_journal.has(quest_id) {
+                tracing::debug!(
+                    player = player_id,
+                    quest = quest_id,
+                    "AddQuest skipped — quest already in journal",
+                );
+                return;
+            }
+            if c.quest_journal.is_completed(quest_id) {
+                tracing::debug!(
+                    player = player_id,
+                    quest = quest_id,
+                    "AddQuest skipped — quest already completed",
+                );
+                return;
+            }
+            let actor_id = crate::actor::quest::quest_actor_id(quest_id);
+            // Best-effort quest name — the Lua hook path uses this to
+            // resolve `scripts/lua/quests/<prefix>/<name>.lua`. Pre-Phase-C
+            // we don't have a name table wired yet, so the journal entry
+            // stores an empty string; processor-driven mutations just use
+            // the quest id directly and don't need the name.
+            let quest = crate::actor::quest::Quest::new(actor_id, String::new());
+            let Some(slot) = c.quest_journal.add(quest) else {
+                tracing::warn!(
+                    player = player_id,
+                    quest = quest_id,
+                    "AddQuest failed — journal full (16 slots)",
+                );
+                return;
+            };
+            (slot as i32, actor_id)
+        };
+        let (slot, actor_id) = save_tuple;
+        if let Err(e) = self
+            .db
+            .save_quest(player_id, slot, actor_id, 0, 0, 0, 0, 0)
+            .await
+        {
+            tracing::warn!(
+                error = %e,
+                player = player_id,
+                quest = quest_id,
+                "AddQuest DB persist failed",
+            );
+        }
+        tracing::info!(player = player_id, quest = quest_id, slot, "AddQuest applied");
+    }
+
+    /// `player:CompleteQuest(id)` — remove the active journal slot and
+    /// set the bit in `characters_quest_completed`.
+    async fn apply_complete_quest(&self, player_id: u32, quest_id: u32) {
+        let Some(handle) = self.registry.get(player_id).await else {
+            return;
+        };
+        let removed_slot = {
+            let mut c = handle.character.write().await;
+            let slot = c.quest_journal.slot_of(quest_id);
+            c.quest_journal.complete(quest_id);
+            slot.map(|s| s as i32)
+        };
+        if let Some(slot) = removed_slot {
+            // Drop the scenario row now that the quest's done.
+            if let Err(e) = self.db.remove_quest(player_id, quest_id).await {
+                tracing::warn!(
+                    error = %e,
+                    player = player_id,
+                    quest = quest_id,
+                    slot,
+                    "CompleteQuest: scenario-row delete failed",
+                );
+            }
+        }
+        if let Err(e) = self.db.complete_quest(player_id, quest_id).await {
+            tracing::warn!(
+                error = %e,
+                player = player_id,
+                quest = quest_id,
+                "CompleteQuest: bitstream save failed",
+            );
+        }
+        tracing::info!(
+            player = player_id,
+            quest = quest_id,
+            "CompleteQuest applied",
+        );
+    }
+
+    /// `player:AbandonQuest(id)` / `player:RemoveQuest(id)` — drop the
+    /// active slot without touching the completion bitstream.
+    async fn apply_abandon_quest(&self, player_id: u32, quest_id: u32) {
+        let Some(handle) = self.registry.get(player_id).await else {
+            return;
+        };
+        let had = {
+            let mut c = handle.character.write().await;
+            c.quest_journal.remove(quest_id).is_some()
+        };
+        if !had {
+            tracing::debug!(
+                player = player_id,
+                quest = quest_id,
+                "AbandonQuest skipped — quest not in journal",
+            );
+            return;
+        }
+        if let Err(e) = self.db.remove_quest(player_id, quest_id).await {
+            tracing::warn!(
+                error = %e,
+                player = player_id,
+                quest = quest_id,
+                "AbandonQuest DB delete failed",
+            );
+        }
+        tracing::info!(
+            player = player_id,
+            quest = quest_id,
+            "AbandonQuest applied",
+        );
     }
 
     async fn handle_game_message(&self, client: &ClientHandle, sub: &SubPacket) -> Result<()> {
@@ -1544,6 +1856,7 @@ fn build_player_snapshot_for_login(c: &Character) -> crate::lua::userdata::Playe
         current_event_type: 0,
         completed_quests: Vec::new(),
         active_quests: Vec::new(),
+        active_quest_states: Vec::new(),
         unlocked_aetherytes: Vec::new(),
         traits: Vec::new(),
         inventory: Vec::new(),

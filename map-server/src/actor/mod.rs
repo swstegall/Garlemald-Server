@@ -300,6 +300,14 @@ pub struct Character {
     /// fields on `PlayerWork`). Kept on Character so NPCs can also
     /// drive kicks, though in practice only Player rows populate it.
     pub event_session: crate::event::EventSession,
+    /// Active-quest slots + the 2048-bit completion bitfield. Lives on
+    /// `Character` (rather than `Player::helpers`) so the packet
+    /// processor can mutate it through `ActorRegistry::get(id)` without
+    /// needing full `Player`-struct access — Meteor's equivalent sits
+    /// directly on the C# Player, and a parallel `QuestJournalRegistry`
+    /// would just double the write-path bookkeeping. Only Players ever
+    /// populate it; NPCs/BattleNpcs carry the default empty journal.
+    pub quest_journal: crate::actor::quest::QuestJournal,
 }
 
 impl Character {
@@ -316,6 +324,7 @@ impl Character {
             battle_temp: crate::battle::BattleTemp::default(),
             battle_save: crate::battle::BattleSave::default(),
             event_session: crate::event::EventSession::default(),
+            quest_journal: crate::actor::quest::QuestJournal::default(),
         }
     }
 

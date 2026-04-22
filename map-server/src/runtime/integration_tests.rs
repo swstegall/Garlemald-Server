@@ -1322,3 +1322,167 @@ async fn hate_add_event_updates_attacker_hate_container() {
     // doesn't reach for them.
     let _ = Arc::new(RwLock::new(()));
 }
+
+// ---------------------------------------------------------------------------
+// Quest-engine DB round-trips (Phase A/B/C plumbing)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn save_quest_roundtrips_all_columns_through_load_quest_scenario() {
+    use common::db::ConnCallExt;
+
+    let db = crate::database::Database::open(tempdb()).await.unwrap();
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (101, 0, 0, 0, 'QuestBearer')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let actor_aid = crate::actor::quest::quest_actor_id(110_005);
+    db.save_quest(
+        101, 0, actor_aid, /* sequence */ 7, /* flags */ 0x0000_1A00,
+        /* counter1 */ 3, /* counter2 */ 12, /* counter3 */ 0xFFFF,
+    )
+    .await
+    .unwrap();
+
+    // Second slot — exercises the PK (characterId, slot) guard.
+    let actor_aid_b = crate::actor::quest::quest_actor_id(110_020);
+    db.save_quest(101, 1, actor_aid_b, 0, 0, 0, 0, 0).await.unwrap();
+
+    // Re-save slot 0 with new values — ON CONFLICT should update, not
+    // duplicate.
+    db.save_quest(101, 0, actor_aid, 8, 0xFF, 9, 10, 11)
+        .await
+        .unwrap();
+
+    // Pulled rows should match the latest writes, not the original ones.
+    let rows = db
+        .conn_for_test()
+        .call_db(|c| {
+            let mut stmt = c.prepare(
+                "SELECT slot, questId, sequence, flags, counter1, counter2, counter3
+                 FROM characters_quest_scenario
+                 WHERE characterId = 101 ORDER BY slot",
+            )?;
+            let out: Vec<(u16, u32, u32, u32, u16, u16, u16)> = stmt
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, u16>(0)?,
+                        r.get::<_, u32>(1)?,
+                        r.get::<_, u32>(2)?,
+                        r.get::<_, u32>(3)?,
+                        r.get::<_, u16>(4)?,
+                        r.get::<_, u16>(5)?,
+                        r.get::<_, u16>(6)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<_>>()?;
+            Ok(out)
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(rows.len(), 2);
+    // slot=0 picked up the overwrite, slot=1 is the zero row we saved.
+    assert_eq!(rows[0], (0, 110_005, 8, 0xFF, 9, 10, 11));
+    assert_eq!(rows[1], (1, 110_020, 0, 0, 0, 0, 0));
+}
+
+#[tokio::test]
+async fn completed_quests_bitfield_roundtrips_through_db() {
+    use common::bitstream::Bitstream2048;
+    use common::db::ConnCallExt;
+
+    let db = crate::database::Database::open(tempdb()).await.unwrap();
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (55, 0, 0, 0, 'BitPacked')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    // Fresh character → empty bitstream, zero completed.
+    let fresh = db.load_completed_quests(55).await.unwrap();
+    assert_eq!(fresh.count_ones(), 0);
+    assert!(!db.is_quest_completed(55, 110_001).await.unwrap());
+
+    // complete_quest flips the compact-id bit.
+    db.complete_quest(55, 110_001).await.unwrap();
+    db.complete_quest(55, 112_048).await.unwrap();
+    db.complete_quest(55, 111_234).await.unwrap();
+    // Out-of-range is a silent no-op (matches Meteor's clamp).
+    db.complete_quest(55, 100_000).await.unwrap();
+
+    assert!(db.is_quest_completed(55, 110_001).await.unwrap());
+    assert!(db.is_quest_completed(55, 112_048).await.unwrap());
+    assert!(db.is_quest_completed(55, 111_234).await.unwrap());
+    assert!(!db.is_quest_completed(55, 110_002).await.unwrap());
+    assert!(!db.is_quest_completed(55, 100_000).await.unwrap());
+
+    // Read the raw blob — should be exactly 256 bytes with three bits set.
+    let loaded = db.load_completed_quests(55).await.unwrap();
+    assert_eq!(loaded.count_ones(), 3);
+    let expected: Vec<u32> = loaded.iter_set().map(|b| 110_001 + b as u32).collect();
+    assert_eq!(expected, vec![110_001, 111_234, 112_048]);
+
+    // Overwrite the whole bitstream via save_completed_quests.
+    let mut fresh_bs = Bitstream2048::new();
+    fresh_bs.set(0);
+    fresh_bs.set(2047);
+    db.save_completed_quests(55, &fresh_bs).await.unwrap();
+    let reloaded = db.load_completed_quests(55).await.unwrap();
+    assert_eq!(reloaded, fresh_bs);
+}
+
+#[tokio::test]
+async fn complete_quest_is_idempotent_for_repeated_calls() {
+    use common::db::ConnCallExt;
+
+    let db = crate::database::Database::open(tempdb()).await.unwrap();
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (56, 0, 0, 0, 'Repeat')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    for _ in 0..3 {
+        db.complete_quest(56, 110_500).await.unwrap();
+    }
+
+    let row_count = db
+        .conn_for_test()
+        .call_db(|c| {
+            let n: i64 = c.query_row(
+                "SELECT COUNT(*) FROM characters_quest_completed WHERE characterId = 56",
+                [],
+                |r| r.get(0),
+            )?;
+            Ok(n)
+        })
+        .await
+        .unwrap();
+    assert_eq!(row_count, 1);
+    assert!(db.is_quest_completed(56, 110_500).await.unwrap());
+    assert_eq!(
+        db.load_completed_quests(56).await.unwrap().count_ones(),
+        1
+    );
+}

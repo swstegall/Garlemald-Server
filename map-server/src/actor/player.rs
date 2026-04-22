@@ -26,7 +26,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::chara::TraitRef;
-use super::quest::{GuildleveJournal, Quest, QuestJournal};
+use super::quest::{GuildleveJournal, Quest};
 use super::{Player, PlayerState};
 
 // Class-id constants (match `scripts/global.lua` and `Player.cs` constants).
@@ -57,9 +57,12 @@ pub const SLOT_FINGER_LEFT: u16 = 17;
 
 /// Extra per-player state needed by the helpers that doesn't live on the
 /// packet-shape `PlayerState`.
+///
+/// `quest_journal` *used* to live here but moved onto [`Character`] so the
+/// packet processor (which only has `ActorRegistry` / `Arc<RwLock<Character>>`
+/// handles) can mutate it. Everything else here stays player-scoped.
 #[derive(Debug, Clone, Default)]
 pub struct PlayerHelperState {
-    pub quest_journal: QuestJournal,
     pub guildleve_journal: GuildleveJournal,
     pub unlocked_aetherytes: HashSet<u32>,
     pub traits: Vec<TraitRef>,
@@ -378,7 +381,7 @@ impl Player {
     // ----- Quests ----------------------------------------------------------
 
     pub fn get_free_quest_slot(&self) -> i32 {
-        self.helpers
+        self.character
             .quest_journal
             .get_free_slot()
             .map(|s| s as i32)
@@ -386,43 +389,43 @@ impl Player {
     }
 
     pub fn has_quest(&self, id: u32) -> bool {
-        self.helpers.quest_journal.has(id)
+        self.character.quest_journal.has(id)
     }
 
     pub fn has_quest_by_name(&self, name: &str) -> bool {
-        self.helpers.quest_journal.has_by_name(name)
+        self.character.quest_journal.has_by_name(name)
     }
 
     pub fn is_quest_completed(&self, id: u32) -> bool {
-        self.helpers.quest_journal.is_completed(id)
+        self.character.quest_journal.is_completed(id)
     }
 
     pub fn can_accept_quest(&self, id: u32) -> bool {
-        self.helpers.quest_journal.can_accept(id)
+        self.character.quest_journal.can_accept(id)
     }
 
     pub fn get_quest(&self, id: u32) -> Option<&Quest> {
-        self.helpers.quest_journal.get(id)
+        self.character.quest_journal.get(id)
     }
 
     pub fn get_quest_mut(&mut self, id: u32) -> Option<&mut Quest> {
-        self.helpers.quest_journal.get_mut(id)
+        self.character.quest_journal.get_mut(id)
     }
 
     pub fn get_quest_slot(&self, id: u32) -> Option<usize> {
-        self.helpers.quest_journal.slot_of(id)
+        self.character.quest_journal.slot_of(id)
     }
 
     pub fn add_quest(&mut self, quest: Quest) -> Option<usize> {
-        self.helpers.quest_journal.add(quest)
+        self.character.quest_journal.add(quest)
     }
 
     pub fn complete_quest(&mut self, id: u32) {
-        self.helpers.quest_journal.complete(id);
+        self.character.quest_journal.complete(id);
     }
 
     pub fn abandon_quest(&mut self, id: u32) -> Option<Quest> {
-        self.helpers.quest_journal.remove(id)
+        self.character.quest_journal.remove(id)
     }
 
     // ----- Guildleves ------------------------------------------------------
