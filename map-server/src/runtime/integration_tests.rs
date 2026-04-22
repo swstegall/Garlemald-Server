@@ -539,6 +539,292 @@ async fn actor_added_fans_spawn_bundle_to_nearby_players() {
 }
 
 #[tokio::test]
+async fn equip_event_writes_db_row_and_sends_bracket_packets() {
+    use crate::data::InventoryItem;
+    use crate::inventory::outbox::InventoryOutbox;
+    use crate::inventory::referenced::ReferencedItemPackage;
+    use crate::inventory::{PKG_EQUIPMENT, PKG_NORMAL};
+    use crate::runtime::dispatcher::dispatch_inventory_event;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db_path = tempdb();
+    let db = Arc::new(
+        crate::database::Database::open(db_path.clone())
+            .await
+            .expect("db stub"),
+    );
+
+    // Player actor owns a Character with an implicit class=0 (GLA default).
+    let mut character = Character::new(1);
+    character.chara.class = crate::actor::player::CLASSID_GLA as i16;
+    registry
+        .insert(ActorHandle::new(
+            1,
+            ActorKindTag::Player,
+            100,
+            42,
+            character,
+        ))
+        .await;
+
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(32);
+    world.register_client(42, ClientHandle::new(42, tx)).await;
+
+    // Drive a single equip through ReferencedItemPackage::set → outbox.
+    let mut eq = ReferencedItemPackage::new(1, 35, PKG_EQUIPMENT);
+    let mut outbox = InventoryOutbox::new();
+    eq.set(
+        crate::actor::player::SLOT_BODY,
+        InventoryItem {
+            unique_id: 9001,
+            item_id: 5000,
+            quantity: 1,
+            quality: 1,
+            slot: 3,
+            link_slot: 0xFFFF,
+            item_package: PKG_NORMAL,
+            tag: Default::default(),
+        },
+        &mut outbox,
+    );
+
+    for e in outbox.drain() {
+        dispatch_inventory_event(&e, &registry, &world, &db).await;
+    }
+
+    // DB row exists for class=GLA (since SLOT_BODY is not an undergarment).
+    let rows = db
+        .get_equipment(1, crate::actor::player::CLASSID_GLA as u16)
+        .await
+        .expect("get_equipment");
+    assert!(
+        rows.iter()
+            .any(|r| r.equip_slot == crate::actor::player::SLOT_BODY && r.item_id == 9001),
+        "expected equip row for slot=body item_id=9001, got {rows:?}",
+    );
+
+    // Client receives the bracket: begin_change, set_begin, linked_x01,
+    // set_end, end_change.
+    let mut received = 0;
+    while rx.try_recv().is_ok() {
+        received += 1;
+    }
+    assert_eq!(received, 5, "expected 5 inventory packets in the bracket");
+}
+
+#[tokio::test]
+async fn packet_items_batches_by_size_bucket() {
+    use crate::data::InventoryItem;
+    use crate::inventory::outbox::InventoryEvent;
+    use crate::runtime::dispatcher::dispatch_inventory_event;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    registry
+        .insert(ActorHandle::new(
+            1,
+            ActorKindTag::Player,
+            100,
+            42,
+            Character::new(1),
+        ))
+        .await;
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(32);
+    world.register_client(42, ClientHandle::new(42, tx)).await;
+
+    // 25 items → should fan as one x16 + one x08 + one x01 = 3 packets.
+    let items: Vec<InventoryItem> = (0..25)
+        .map(|i| InventoryItem {
+            unique_id: 1000 + i as u64,
+            item_id: 1,
+            quantity: 1,
+            quality: 1,
+            slot: i,
+            link_slot: 0xFFFF,
+            item_package: 0,
+            tag: Default::default(),
+        })
+        .collect();
+
+    dispatch_inventory_event(
+        &InventoryEvent::PacketItems {
+            owner_actor_id: 1,
+            items,
+        },
+        &registry,
+        &world,
+        &db,
+    )
+    .await;
+
+    let mut count = 0;
+    while rx.try_recv().is_ok() {
+        count += 1;
+    }
+    assert_eq!(count, 3, "25 items should fan x16 + x08 + x01 = 3 packets");
+}
+
+#[tokio::test]
+async fn recalc_stats_event_derives_secondaries_for_player() {
+    use crate::actor::modifier::Modifier;
+    use crate::runtime::dispatcher::dispatch_status_event;
+    use crate::status::outbox::StatusEvent;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+
+    // Player with seeded primary stats. Secondaries start at zero.
+    let mut character = Character::new(1);
+    character.chara.mods.set(Modifier::Strength, 90.0);
+    character.chara.mods.set(Modifier::Vitality, 60.0);
+    character.chara.mods.set(Modifier::Intelligence, 40.0);
+    registry
+        .insert(ActorHandle::new(
+            1,
+            ActorKindTag::Player,
+            100,
+            42,
+            character,
+        ))
+        .await;
+
+    dispatch_status_event(
+        &StatusEvent::RecalcStats { owner_actor_id: 1 },
+        &registry,
+        &world,
+        &db,
+    )
+    .await;
+
+    let chara = registry.get(1).await.unwrap().character;
+    let c = chara.read().await;
+    // floor(90 * 0.667) = 60
+    assert_eq!(c.chara.mods.get(Modifier::Attack), 60.0);
+    // floor(60 * 0.667) = 40
+    assert_eq!(c.chara.mods.get(Modifier::Defense), 40.0);
+    // floor(40 * 0.25) = 10
+    assert_eq!(c.chara.mods.get(Modifier::AttackMagicPotency), 10.0);
+}
+
+#[tokio::test]
+async fn recalc_stats_event_skips_derivation_for_npc() {
+    use crate::actor::modifier::Modifier;
+    use crate::runtime::dispatcher::dispatch_status_event;
+    use crate::status::outbox::StatusEvent;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+
+    // A BattleNpc with STR=90. Meteor reserves primary→secondary
+    // derivation for Player overrides — NPC mods should be untouched.
+    let mut character = Character::new(2);
+    character.chara.mods.set(Modifier::Strength, 90.0);
+    character.chara.mods.set(Modifier::Attack, 100.0);
+    registry
+        .insert(ActorHandle::new(
+            2,
+            ActorKindTag::BattleNpc,
+            100,
+            0,
+            character,
+        ))
+        .await;
+
+    dispatch_status_event(
+        &StatusEvent::RecalcStats { owner_actor_id: 2 },
+        &registry,
+        &world,
+        &db,
+    )
+    .await;
+
+    let chara = registry.get(2).await.unwrap().character;
+    let c = chara.read().await;
+    assert_eq!(c.chara.mods.get(Modifier::Attack), 100.0);
+}
+
+#[tokio::test]
+async fn equip_event_triggers_stat_recalc() {
+    use crate::actor::modifier::Modifier;
+    use crate::data::InventoryItem;
+    use crate::inventory::outbox::InventoryOutbox;
+    use crate::inventory::referenced::ReferencedItemPackage;
+    use crate::inventory::{PKG_EQUIPMENT, PKG_NORMAL};
+    use crate::runtime::dispatcher::dispatch_inventory_event;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+
+    // Seed the player with a non-zero STR so the post-equip derivation
+    // produces a visible effect.
+    let mut character = Character::new(1);
+    character.chara.class = crate::actor::player::CLASSID_GLA as i16;
+    character.chara.mods.set(Modifier::Strength, 30.0);
+    registry
+        .insert(ActorHandle::new(
+            1,
+            ActorKindTag::Player,
+            100,
+            42,
+            character,
+        ))
+        .await;
+
+    // Swallow the outbound packets — we're asserting on the character
+    // state, not the wire.
+    let (tx, _rx) = mpsc::channel::<Vec<u8>>(32);
+    world.register_client(42, ClientHandle::new(42, tx)).await;
+
+    let mut eq = ReferencedItemPackage::new(1, 35, PKG_EQUIPMENT);
+    let mut outbox = InventoryOutbox::new();
+    eq.set(
+        crate::actor::player::SLOT_BODY,
+        InventoryItem {
+            unique_id: 9001,
+            item_id: 5000,
+            quantity: 1,
+            quality: 1,
+            slot: 3,
+            link_slot: 0xFFFF,
+            item_package: PKG_NORMAL,
+            tag: Default::default(),
+        },
+        &mut outbox,
+    );
+
+    for e in outbox.drain() {
+        dispatch_inventory_event(&e, &registry, &world, &db).await;
+    }
+
+    // DbEquip fires apply_recalc_stats → apply_player_stat_derivation.
+    // floor(30 * 0.667) = 20 → Attack should rise by 20.
+    let chara = registry.get(1).await.unwrap().character;
+    let c = chara.read().await;
+    assert_eq!(c.chara.mods.get(Modifier::Attack), 20.0);
+}
+
+#[tokio::test]
 async fn hate_add_event_updates_attacker_hate_container() {
     let world = Arc::new(WorldManager::new());
     let registry = Arc::new(ActorRegistry::new());

@@ -84,13 +84,12 @@ pub fn build_inventory_item(
     build_inventory_list_x08(actor_id, items, list_offset, OP_INVENTORY_LIST_X16, 0x90)
 }
 
-/// 0x0148 InventoryListX01Packet — single item.
+/// 0x0148 InventoryListX01Packet — single item. C# packet holds exactly one
+/// 0x70-byte item record and nothing else; there is no trailing count field.
 pub fn build_inventory_list_x01(actor_id: u32, item: &InventoryItem) -> SubPacket {
     let mut data = body(0x90);
     let mut c = Cursor::new(&mut data[..]);
     c.write_all(&encode_item(item)).unwrap();
-    // C# writes `max = 1` at offset 0x70.
-    data[0x70..0x74].copy_from_slice(&1u32.to_le_bytes());
     SubPacket::new(OP_INVENTORY_LIST_X01, actor_id, data)
 }
 
@@ -282,14 +281,126 @@ fn build_inventory_remove_n(
 }
 
 /// 0x014D LinkedItemListX01 — equip slot linking for one item.
-pub fn build_linked_item_list_x01(actor_id: u32, position: u16, item: &InventoryItem) -> SubPacket {
+/// Each entry is 3× u16: (linked equip slot, source item slot, source item
+/// package). `item=None` writes zeros, matching the "clear this slot" path
+/// Meteor uses after an unequip.
+pub fn build_linked_item_list_x01(
+    actor_id: u32,
+    position: u16,
+    item: Option<&InventoryItem>,
+) -> SubPacket {
     let mut data = body(0x28);
     let mut c = Cursor::new(&mut data[..]);
     c.write_u16::<LittleEndian>(position).unwrap();
-    // The C# writes a 0x6-byte "linked handle" (itemUniqueId as u64 trunc'd
-    // to 48 bits + the slot). We serialize the same 8-byte prefix.
-    c.write_u64::<LittleEndian>(item.unique_id).unwrap();
+    let (src_slot, src_pkg) = item.map(|i| (i.slot, i.item_package)).unwrap_or((0, 0));
+    c.write_u16::<LittleEndian>(src_slot).unwrap();
+    c.write_u16::<LittleEndian>(src_pkg).unwrap();
     SubPacket::new(OP_LINKED_ITEM_LIST_X01, actor_id, data)
+}
+
+/// 0x014E LinkedItemListX08 — up to 8 equip-slot/item-ref triplets + a
+/// trailing `count: u32` at offset 0x30.
+pub fn build_linked_item_list_x08(
+    actor_id: u32,
+    entries: &[(u16, InventoryItem)],
+    list_offset: &mut usize,
+) -> SubPacket {
+    build_linked_item_list_n(
+        actor_id,
+        entries,
+        list_offset,
+        8,
+        OP_LINKED_ITEM_LIST_X08,
+        0x58,
+        Some(0x30),
+    )
+}
+
+/// 0x014F LinkedItemListX16 — up to 16 triplets, no count field.
+pub fn build_linked_item_list_x16(
+    actor_id: u32,
+    entries: &[(u16, InventoryItem)],
+    list_offset: &mut usize,
+) -> SubPacket {
+    build_linked_item_list_n(
+        actor_id,
+        entries,
+        list_offset,
+        16,
+        OP_LINKED_ITEM_LIST_X16,
+        0x80,
+        None,
+    )
+}
+
+/// 0x0150 LinkedItemListX32 — up to 32 triplets.
+pub fn build_linked_item_list_x32(
+    actor_id: u32,
+    entries: &[(u16, InventoryItem)],
+    list_offset: &mut usize,
+) -> SubPacket {
+    build_linked_item_list_n(
+        actor_id,
+        entries,
+        list_offset,
+        32,
+        OP_LINKED_ITEM_LIST_X32,
+        0xE0,
+        None,
+    )
+}
+
+/// 0x0151 LinkedItemListX64 — up to 64 triplets.
+///
+/// Note: Meteor's `LinkedItemListX64Packet.cs` declares `PACKET_SIZE = 0x194`
+/// (body = 0x174 / 372 bytes), which only fits 62 of the advertised 64
+/// entries and throws on a full batch. We size the body to fit 64 × 6 bytes
+/// + the 0x20 header (0x1A0) so a full batch doesn't truncate. Client-side
+/// compat with 1.23b here is untested because this path effectively never
+/// fires — equipment tops out at ~35 slots.
+pub fn build_linked_item_list_x64(
+    actor_id: u32,
+    entries: &[(u16, InventoryItem)],
+    list_offset: &mut usize,
+) -> SubPacket {
+    build_linked_item_list_n(
+        actor_id,
+        entries,
+        list_offset,
+        64,
+        OP_LINKED_ITEM_LIST_X64,
+        0x1A0,
+        None,
+    )
+}
+
+fn build_linked_item_list_n(
+    actor_id: u32,
+    entries: &[(u16, InventoryItem)],
+    list_offset: &mut usize,
+    cap: usize,
+    opcode: u16,
+    packet_size: usize,
+    count_offset: Option<usize>,
+) -> SubPacket {
+    let mut data = body(packet_size);
+    let max = entries.len().saturating_sub(*list_offset).min(cap);
+    {
+        let mut c = Cursor::new(&mut data[..]);
+        for i in 0..max {
+            let (equip_slot, item) = &entries[*list_offset + i];
+            c.write_u16::<LittleEndian>(*equip_slot).unwrap();
+            c.write_u16::<LittleEndian>(item.slot).unwrap();
+            c.write_u16::<LittleEndian>(item.item_package).unwrap();
+        }
+    }
+    *list_offset += max;
+    if let Some(off) = count_offset
+        && off + 4 <= data.len()
+    {
+        data[off..off + 4].copy_from_slice(&(max as u32).to_le_bytes());
+    }
+    SubPacket::new(opcode, actor_id, data)
 }
 
 /// 0x014E SetInitialEquipmentPacket — mirrors Meteor's

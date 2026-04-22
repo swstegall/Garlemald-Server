@@ -122,7 +122,7 @@ pub async fn dispatch_status_event(
             apply_tp_delta(registry, *owner_actor_id, *delta).await;
         }
         StatusEvent::RecalcStats { owner_actor_id } => {
-            tracing::debug!(owner = owner_actor_id, "status: RecalcStats (TODO)");
+            apply_recalc_stats(registry, *owner_actor_id).await;
         }
         StatusEvent::LuaCall {
             owner_actor_id,
@@ -608,13 +608,328 @@ fn battle_result_to_wire(
 
 pub async fn dispatch_inventory_event(
     event: &InventoryEvent,
-    _registry: &ActorRegistry,
-    _world: &WorldManager,
-    _db: &Database,
+    registry: &ActorRegistry,
+    world: &WorldManager,
+    db: &Database,
 ) {
-    // Phase 1 logs — real packet/DB emission wires in Phase 2 alongside
-    // the zone-in handshake that first sends the inventory.
-    tracing::debug!(kind = ?std::any::type_name_of_val(event), "inventory event (TODO)");
+    match event {
+        // ---- DB mutations --------------------------------------------------
+        InventoryEvent::DbAdd {
+            owner_actor_id,
+            item,
+            item_package,
+            slot,
+        } => {
+            if let Err(e) = db
+                .add_item(*owner_actor_id, item.unique_id, *item_package, *slot)
+                .await
+            {
+                tracing::warn!(owner = owner_actor_id, err = %e, "inventory: add_item failed");
+            }
+        }
+        InventoryEvent::DbRemove {
+            owner_actor_id,
+            server_item_id,
+        } => {
+            if let Err(e) = db.remove_item(*owner_actor_id, *server_item_id).await {
+                tracing::warn!(
+                    owner = owner_actor_id,
+                    iid = server_item_id,
+                    err = %e,
+                    "inventory: remove_item failed",
+                );
+            }
+        }
+        InventoryEvent::DbQuantity {
+            server_item_id,
+            quantity,
+        } => {
+            if let Err(e) = db.set_quantity(*server_item_id, *quantity).await {
+                tracing::warn!(iid = server_item_id, err = %e, "inventory: set_quantity failed");
+            }
+        }
+        InventoryEvent::DbPositions { updates } => {
+            if let Err(e) = db.update_item_positions(updates).await {
+                tracing::warn!(err = %e, "inventory: update_item_positions failed");
+            }
+        }
+        InventoryEvent::DbEquip {
+            owner_actor_id,
+            equip_slot,
+            unique_item_id,
+        } => {
+            let class_id = resolve_current_class_id(registry, *owner_actor_id).await;
+            let is_undergarment = *equip_slot == crate::actor::player::SLOT_UNDERSHIRT
+                || *equip_slot == crate::actor::player::SLOT_UNDERGARMENT;
+            match db
+                .equip_item(
+                    *owner_actor_id,
+                    class_id,
+                    *equip_slot,
+                    *unique_item_id,
+                    is_undergarment,
+                )
+                .await
+            {
+                Ok(()) => apply_recalc_stats(registry, *owner_actor_id).await,
+                Err(e) => tracing::warn!(
+                    owner = owner_actor_id,
+                    slot = equip_slot,
+                    err = %e,
+                    "inventory: equip_item failed",
+                ),
+            }
+        }
+        InventoryEvent::DbUnequip {
+            owner_actor_id,
+            equip_slot,
+        } => {
+            let class_id = resolve_current_class_id(registry, *owner_actor_id).await;
+            match db
+                .unequip_item(*owner_actor_id, class_id, *equip_slot)
+                .await
+            {
+                Ok(()) => apply_recalc_stats(registry, *owner_actor_id).await,
+                Err(e) => tracing::warn!(
+                    owner = owner_actor_id,
+                    slot = equip_slot,
+                    err = %e,
+                    "inventory: unequip_item failed",
+                ),
+            }
+        }
+
+        // ---- Packet emissions ---------------------------------------------
+        InventoryEvent::PacketBeginChange { owner_actor_id } => {
+            send_inventory_packet(
+                registry,
+                world,
+                *owner_actor_id,
+                tx::actor_inventory::build_inventory_begin_change(*owner_actor_id, false),
+            )
+            .await;
+        }
+        InventoryEvent::PacketEndChange { owner_actor_id } => {
+            send_inventory_packet(
+                registry,
+                world,
+                *owner_actor_id,
+                tx::actor_inventory::build_inventory_end_change(*owner_actor_id),
+            )
+            .await;
+        }
+        InventoryEvent::PacketSetBegin {
+            owner_actor_id,
+            capacity,
+            code,
+        } => {
+            send_inventory_packet(
+                registry,
+                world,
+                *owner_actor_id,
+                tx::actor_inventory::build_inventory_set_begin(*owner_actor_id, *capacity, *code),
+            )
+            .await;
+        }
+        InventoryEvent::PacketSetEnd { owner_actor_id } => {
+            send_inventory_packet(
+                registry,
+                world,
+                *owner_actor_id,
+                tx::actor_inventory::build_inventory_set_end(*owner_actor_id),
+            )
+            .await;
+        }
+        InventoryEvent::PacketItems {
+            owner_actor_id,
+            items,
+        } => {
+            let Some(client) = resolve_client(registry, world, *owner_actor_id).await else {
+                return;
+            };
+            let mut offset = 0usize;
+            while offset < items.len() {
+                let remaining = items.len() - offset;
+                let sub = if remaining >= 64 {
+                    tx::actor_inventory::build_inventory_list_x64(
+                        *owner_actor_id,
+                        items,
+                        &mut offset,
+                    )
+                } else if remaining >= 32 {
+                    tx::actor_inventory::build_inventory_list_x32(
+                        *owner_actor_id,
+                        items,
+                        &mut offset,
+                    )
+                } else if remaining >= 16 {
+                    tx::actor_inventory::build_inventory_list_x16(
+                        *owner_actor_id,
+                        items,
+                        &mut offset,
+                    )
+                } else if remaining >= 8 {
+                    tx::actor_inventory::build_inventory_list_x08_n(
+                        *owner_actor_id,
+                        items,
+                        &mut offset,
+                    )
+                } else {
+                    let sub = tx::actor_inventory::build_inventory_list_x01(
+                        *owner_actor_id,
+                        &items[offset],
+                    );
+                    offset += 1;
+                    sub
+                };
+                client.send_bytes(sub.to_bytes()).await;
+            }
+        }
+        InventoryEvent::PacketRemoveSlots {
+            owner_actor_id,
+            slots,
+        } => {
+            let Some(client) = resolve_client(registry, world, *owner_actor_id).await else {
+                return;
+            };
+            let mut offset = 0usize;
+            while offset < slots.len() {
+                let remaining = slots.len() - offset;
+                let sub = if remaining >= 64 {
+                    tx::actor_inventory::build_inventory_remove_x64(
+                        *owner_actor_id,
+                        slots,
+                        &mut offset,
+                    )
+                } else if remaining >= 32 {
+                    tx::actor_inventory::build_inventory_remove_x32(
+                        *owner_actor_id,
+                        slots,
+                        &mut offset,
+                    )
+                } else if remaining >= 16 {
+                    tx::actor_inventory::build_inventory_remove_x16(
+                        *owner_actor_id,
+                        slots,
+                        &mut offset,
+                    )
+                } else if remaining >= 8 {
+                    tx::actor_inventory::build_inventory_remove_x08(
+                        *owner_actor_id,
+                        slots,
+                        &mut offset,
+                    )
+                } else {
+                    let sub = tx::actor_inventory::build_inventory_remove_x01(
+                        *owner_actor_id,
+                        slots[offset],
+                    );
+                    offset += 1;
+                    sub
+                };
+                client.send_bytes(sub.to_bytes()).await;
+            }
+        }
+        InventoryEvent::PacketLinkedSingle {
+            owner_actor_id,
+            position,
+            item,
+        } => {
+            send_inventory_packet(
+                registry,
+                world,
+                *owner_actor_id,
+                tx::actor_inventory::build_linked_item_list_x01(
+                    *owner_actor_id,
+                    *position,
+                    item.as_ref(),
+                ),
+            )
+            .await;
+        }
+        InventoryEvent::PacketLinkedMany {
+            owner_actor_id,
+            items,
+        } => {
+            let Some(client) = resolve_client(registry, world, *owner_actor_id).await else {
+                return;
+            };
+            let mut offset = 0usize;
+            while offset < items.len() {
+                let remaining = items.len() - offset;
+                let sub = if remaining >= 64 {
+                    tx::actor_inventory::build_linked_item_list_x64(
+                        *owner_actor_id,
+                        items,
+                        &mut offset,
+                    )
+                } else if remaining >= 32 {
+                    tx::actor_inventory::build_linked_item_list_x32(
+                        *owner_actor_id,
+                        items,
+                        &mut offset,
+                    )
+                } else if remaining >= 16 {
+                    tx::actor_inventory::build_linked_item_list_x16(
+                        *owner_actor_id,
+                        items,
+                        &mut offset,
+                    )
+                } else if remaining >= 8 {
+                    tx::actor_inventory::build_linked_item_list_x08(
+                        *owner_actor_id,
+                        items,
+                        &mut offset,
+                    )
+                } else {
+                    let (position, item) = &items[offset];
+                    let sub = tx::actor_inventory::build_linked_item_list_x01(
+                        *owner_actor_id,
+                        *position,
+                        Some(item),
+                    );
+                    offset += 1;
+                    sub
+                };
+                client.send_bytes(sub.to_bytes()).await;
+            }
+        }
+    }
+}
+
+async fn resolve_client(
+    registry: &ActorRegistry,
+    world: &WorldManager,
+    owner_actor_id: u32,
+) -> Option<crate::data::ClientHandle> {
+    let handle = registry.get(owner_actor_id).await?;
+    world.client(handle.session_id).await
+}
+
+async fn send_inventory_packet(
+    registry: &ActorRegistry,
+    world: &WorldManager,
+    owner_actor_id: u32,
+    sub: common::subpacket::SubPacket,
+) {
+    if let Some(client) = resolve_client(registry, world, owner_actor_id).await {
+        client.send_bytes(sub.to_bytes()).await;
+    }
+}
+
+/// Resolve the `class_id` Player currently has equipped (or 0 for NPCs).
+/// Mirrors the C# `player.charaWork.parameterSave.state_mainSkill[0]` lookup
+/// that `Database.EquipItem/UnequipItem` feeds as the `classId` column.
+async fn resolve_current_class_id(registry: &ActorRegistry, owner_actor_id: u32) -> u8 {
+    let Some(handle) = registry.get(owner_actor_id).await else {
+        return 0;
+    };
+    let chara = handle.character.read().await;
+    if chara.chara.current_job != 0 {
+        chara.chara.current_job as u8
+    } else {
+        chara.chara.class as u8
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -785,5 +1100,27 @@ async fn apply_tp_delta(registry: &ActorRegistry, actor_id: u32, delta: i32) {
     if let Some(handle) = registry.get(actor_id).await {
         let mut c = handle.character.write().await;
         c.add_tp(delta);
+    }
+}
+
+/// Recompute HP/MP pools from the modifier map, then — for Players — apply
+/// Meteor's primary→secondary derivation (STR→Attack, VIT→Defense, etc.).
+/// Dispatched from both `StatusEvent::RecalcStats` and the equip/unequip
+/// arms of `dispatch_inventory_event`.
+///
+/// We do not broadcast HP/MP packets here yet. The modifier map is only
+/// populated from the `characters_inventory_equipment` gear table in
+/// follow-up work, so recomputed pools rarely differ from the pre-call
+/// values. Add the delta-broadcast once equipment paramBonus summing
+/// lands.
+async fn apply_recalc_stats(registry: &ActorRegistry, actor_id: u32) {
+    let Some(handle) = registry.get(actor_id).await else {
+        return;
+    };
+    let is_player = handle.is_player();
+    let mut c = handle.character.write().await;
+    c.recalculate_stats();
+    if is_player {
+        c.apply_player_stat_derivation();
     }
 }

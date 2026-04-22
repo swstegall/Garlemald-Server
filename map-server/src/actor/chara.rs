@@ -163,6 +163,44 @@ impl Character {
         self.calculate_base_stats();
     }
 
+    /// Port of the Player-specific tail of `Player.CalculateBaseStats`:
+    /// derive physical/magic secondaries from the primary ability scores.
+    /// Meteor uses `AddMod` (additive), so repeated calls stack — match
+    /// that behavior exactly; callers fire this only in response to an
+    /// event that changed the primaries (equip / trait toggle / level-up).
+    ///
+    /// Ratios from `Map Server/Actors/Chara/Player/Player.cs:2765-2779`:
+    ///   STR → Attack (×0.667),  DEX → Accuracy,  VIT → Defense
+    ///   INT → AttackMagicPotency (×0.25)
+    ///   MND → MagicAccuracy + HealingMagicPotency
+    ///   Piety → MagicEvasion + EnfeeblingMagicPotency
+    ///
+    /// We skip Meteor's `AddMod(Modifier.Hp, (float)Modifier.Vitality)` —
+    /// that line casts the enum's integer value rather than `GetMod(...)`,
+    /// so it adds a constant 4 to Hp regardless of VIT. Treated as a
+    /// known-bad Meteor line rather than copied verbatim.
+    pub fn apply_player_stat_derivation(&mut self) {
+        use Modifier::*;
+        let str_v = self.chara.mods.get(Strength);
+        let dex_v = self.chara.mods.get(Dexterity);
+        let vit_v = self.chara.mods.get(Vitality);
+        let int_v = self.chara.mods.get(Intelligence);
+        let mnd_v = self.chara.mods.get(Mind);
+        let pie_v = self.chara.mods.get(Piety);
+
+        self.chara.mods.add(Attack, (str_v * 0.667).floor());
+        self.chara.mods.add(Accuracy, (dex_v * 0.667).floor());
+        self.chara.mods.add(Defense, (vit_v * 0.667).floor());
+
+        self.chara.mods.add(AttackMagicPotency, (int_v * 0.25).floor());
+        self.chara.mods.add(MagicAccuracy, (mnd_v * 0.25).floor());
+        self.chara.mods.add(HealingMagicPotency, (mnd_v * 0.25).floor());
+        self.chara.mods.add(MagicEvasion, (pie_v * 0.25).floor());
+        self.chara
+            .mods
+            .add(EnfeeblingMagicPotency, (pie_v * 0.25).floor());
+    }
+
     // ----- Class / level ----------------------------------------------------
 
     pub fn get_class(&self) -> i16 {
