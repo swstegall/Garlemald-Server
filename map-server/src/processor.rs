@@ -900,7 +900,7 @@ impl PacketProcessor {
                         &handle,
                         quest_id,
                         "onStateChange",
-                        vec![mlua::Value::Integer(sequence as i64)],
+                        vec![crate::lua::QuestHookArg::Int(sequence as i64)],
                     )
                     .await;
                 }
@@ -1165,7 +1165,7 @@ impl PacketProcessor {
             );
         }
         tracing::info!(player = player_id, quest = quest_id, slot, "AddQuest applied");
-        self.fire_quest_hook(&handle, quest_id, "onStart", Vec::new())
+        self.fire_quest_hook(&handle, quest_id, "onStart", vec![])
             .await;
     }
 
@@ -1182,7 +1182,7 @@ impl PacketProcessor {
             &handle,
             quest_id,
             "onFinish",
-            vec![mlua::Value::Boolean(true)],
+            vec![crate::lua::QuestHookArg::Bool(true)],
         )
         .await;
 
@@ -1230,7 +1230,7 @@ impl PacketProcessor {
             &handle,
             quest_id,
             "onFinish",
-            vec![mlua::Value::Boolean(false)],
+            vec![crate::lua::QuestHookArg::Bool(false)],
         )
         .await;
 
@@ -1280,7 +1280,7 @@ impl PacketProcessor {
         handle: &ActorHandle,
         quest_id: u32,
         hook_name: &str,
-        extra_args: Vec<mlua::Value>,
+        extra_args: Vec<crate::lua::QuestHookArg>,
     ) {
         let Some(engine) = self.lua.as_ref() else {
             return;
@@ -1457,12 +1457,13 @@ impl PacketProcessor {
         };
         let actor_id = handle.actor_id;
 
+        let owner_actor_id = pkt.owner_actor_id;
         let mut outbox = EventOutbox::new();
         {
             let mut chara = handle.character.write().await;
             chara.event_session.start_event(
                 actor_id,
-                pkt.owner_actor_id,
+                owner_actor_id,
                 pkt.event_name,
                 pkt.event_type,
                 pkt.lua_params,
@@ -1473,13 +1474,81 @@ impl PacketProcessor {
             dispatch_event_event(&e, &self.registry, &self.world, &self.db, self.lua.as_ref())
                 .await;
         }
+
+        // Fire `onTalk(player, quest, npc)` on every active quest the
+        // player holds. Meteor's convention is to fire for *every* quest
+        // and let the script filter by NPC class id + sequence — trying
+        // to pre-filter on `QuestState.current` membership would drop
+        // scripts that haven't populated their ENPC list yet (many stub
+        // quests, tutorial cleanup paths, etc.).
+        self.fire_on_talk_for_active_quests(&handle, owner_actor_id).await;
+
         tracing::debug!(
             player = actor_id,
-            owner = pkt.owner_actor_id,
+            owner = owner_actor_id,
             "event start dispatched",
         );
-        // `pkt.owner_actor_id` borrowed earlier — the parser returned it by value.
         Ok(())
+    }
+
+    /// Look up the NPC's live state and fire `onTalk(player, quest, npc)`
+    /// once per active quest in the player's journal. No-ops if the NPC
+    /// isn't in the registry, or the player has no active quests.
+    async fn fire_on_talk_for_active_quests(&self, handle: &ActorHandle, npc_actor_id: u32) {
+        let active_quest_ids: Vec<u32> = {
+            let c = handle.character.read().await;
+            c.quest_journal
+                .slots
+                .iter()
+                .flatten()
+                .map(|q| q.quest_id())
+                .collect()
+        };
+        if active_quest_ids.is_empty() {
+            return;
+        }
+        let Some(npc_spec) = self.build_npc_spec(npc_actor_id).await else {
+            // Not a registered actor (e.g. director-owned kicks) — the
+            // event went through the normal dispatch; we just skip the
+            // quest-side onTalk loop.
+            return;
+        };
+
+        for quest_id in active_quest_ids {
+            self.fire_quest_hook(
+                handle,
+                quest_id,
+                "onTalk",
+                vec![crate::lua::QuestHookArg::Npc(npc_spec.clone())],
+            )
+            .await;
+        }
+    }
+
+    /// Snapshot the NPC's registry entry into a `Send`-friendly spec the
+    /// quest-hook dispatcher can materialise as a `LuaNpc` userdata on
+    /// the blocking pool. Returns `None` if the actor isn't live.
+    async fn build_npc_spec(&self, actor_id: u32) -> Option<crate::lua::LuaNpcSpec> {
+        let npc_handle = self.registry.get(actor_id).await?;
+        let c = npc_handle.character.read().await;
+        Some(crate::lua::LuaNpcSpec {
+            actor_id: c.base.actor_id,
+            name: c.base.actor_name.clone(),
+            class_name: c.base.class_name.clone(),
+            class_path: c.base.class_path.clone(),
+            // `unique_id` isn't stored on BaseActor yet — Meteor's
+            // equivalent comes from the spawn-row `uniqueId` column.
+            // Scripts that read `npc:GetUniqueId()` will see an empty
+            // string until the spawn pipeline starts populating it.
+            unique_id: String::new(),
+            zone_id: c.base.zone_id,
+            zone_name: String::new(),
+            state: c.base.current_main_state,
+            pos: (c.base.position_x, c.base.position_y, c.base.position_z),
+            rotation: c.base.rotation,
+            actor_class_id: c.chara.actor_class_id,
+            quest_graphic: 0,
+        })
     }
 
     async fn handle_event_update(&self, session_id: u32, data: &[u8]) -> Result<()> {

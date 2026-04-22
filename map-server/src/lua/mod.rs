@@ -68,6 +68,76 @@ pub use userdata::{
     LuaActor, LuaNpc, LuaPlayer, LuaQuestDataHandle, LuaQuestHandle, LuaZone, PlayerSnapshot,
     QuestStateSnapshot, ZoneSnapshot,
 };
+// `QuestHookArg` + `LuaNpcSpec` are defined at this module's top level
+// as `pub`, so they're reachable as `crate::lua::{QuestHookArg, LuaNpcSpec}`
+// from the processor. No additional re-export needed.
+
+/// Extra argument passed to a quest hook (`onTalk`, `onKillBNpc`, …)
+/// after the `(player, quest)` pair. Each variant is `Send` so callers
+/// can pass a `Vec<QuestHookArg>` into `tokio::task::spawn_blocking`
+/// and let the `LuaEngine::call_quest_hook` body build the actual
+/// `Value` inside the Lua VM.
+#[derive(Debug, Clone)]
+pub enum QuestHookArg {
+    Int(i64),
+    Bool(bool),
+    Nil,
+    /// Materialise a fresh `LuaNpc` userdata inside the script VM.
+    Npc(LuaNpcSpec),
+}
+
+/// Deferred construction params for a `LuaNpc` userdata — owned, `Send`,
+/// and built on the processor side from the live NPC state before
+/// crossing into the blocking pool.
+#[derive(Debug, Clone)]
+pub struct LuaNpcSpec {
+    pub actor_id: u32,
+    pub name: String,
+    pub class_name: String,
+    pub class_path: String,
+    pub unique_id: String,
+    pub zone_id: u32,
+    pub zone_name: String,
+    pub state: u16,
+    pub pos: (f32, f32, f32),
+    pub rotation: f32,
+    pub actor_class_id: u32,
+    pub quest_graphic: u8,
+}
+
+impl QuestHookArg {
+    fn into_value(
+        self,
+        lua: &Lua,
+        queue: Arc<Mutex<CommandQueue>>,
+    ) -> mlua::Result<Value> {
+        Ok(match self {
+            QuestHookArg::Int(i) => Value::Integer(i as mlua::Integer),
+            QuestHookArg::Bool(b) => Value::Boolean(b),
+            QuestHookArg::Nil => Value::Nil,
+            QuestHookArg::Npc(spec) => {
+                let npc = userdata::LuaNpc {
+                    base: userdata::LuaActor {
+                        actor_id: spec.actor_id,
+                        name: spec.name,
+                        class_name: spec.class_name,
+                        class_path: spec.class_path,
+                        unique_id: spec.unique_id,
+                        zone_id: spec.zone_id,
+                        zone_name: spec.zone_name,
+                        state: spec.state,
+                        pos: spec.pos,
+                        rotation: spec.rotation,
+                        queue,
+                    },
+                    actor_class_id: spec.actor_class_id,
+                    quest_graphic: spec.quest_graphic,
+                };
+                Value::UserData(lua.create_userdata(npc)?)
+            }
+        })
+    }
+}
 
 pub struct LuaEngine {
     resolver: PathResolver,
@@ -282,23 +352,22 @@ impl LuaEngine {
     /// `onStateChange`, `onTalk`, `onKillBNpc` — with the Meteor calling
     /// convention: `(player, quest, …extra_args)`.
     ///
-    /// Builds a `LuaPlayer` from `snapshot` and a `LuaQuestHandle` keyed
-    /// to the same live quest-state snapshot, then passes any `extra_args`
-    /// after them. Returns the drained command queue so the processor
-    /// can apply the mutations the hook emitted.
+    /// `extra_args` are constructed inside the function via the Send-
+    /// friendly `QuestHookArg` enum: primitive variants go straight to
+    /// `Value`, while `Npc(...)` materialises a fresh `LuaNpc` userdata
+    /// against the same VM that will receive it. Keeping args Send
+    /// lets the caller run `call_quest_hook` on the tokio blocking pool.
     ///
     /// A missing hook function is *not* an error — Meteor quest scripts
-    /// only define the hooks they care about, so we treat "function not
-    /// found" as a quiet success with no commands. Script-side errors
-    /// (parse failures, nil dereferences) keep any commands emitted up
-    /// to the error point, matching `call_player_hook_best_effort`.
+    /// only define the hooks they care about. Script-side errors keep
+    /// any commands emitted up to the error point.
     pub fn call_quest_hook(
         &self,
         script_path: &Path,
         hook_name: &str,
         player_snapshot: userdata::PlayerSnapshot,
         quest_handle: userdata::LuaQuestHandle,
-        extra_args: Vec<Value>,
+        extra_args: Vec<QuestHookArg>,
     ) -> PartialLuaCallResult {
         let (lua, queue) = match self.load_script(script_path) {
             Ok(pair) => pair,
@@ -356,7 +425,16 @@ impl LuaEngine {
         mv.push_back(Value::UserData(player_ud));
         mv.push_back(Value::UserData(quest_ud));
         for arg in extra_args {
-            mv.push_back(arg);
+            let v = match arg.into_value(&lua, queue.clone()) {
+                Ok(v) => v,
+                Err(e) => {
+                    return PartialLuaCallResult {
+                        commands: CommandQueue::drain(&queue),
+                        error: Some(anyhow::anyhow!("quest hook arg: {e}")),
+                    };
+                }
+            };
+            mv.push_back(v);
         }
 
         let call = f.call::<Value>(mv);
@@ -567,7 +645,7 @@ mod tests {
             "onStart",
             sample_snapshot(),
             sample_quest_handle(dummy_queue),
-            Vec::new(),
+            vec![],
         );
 
         assert!(result.error.is_none(), "onStart errored: {:?}", result.error);
@@ -605,10 +683,63 @@ mod tests {
             "onFinish",
             sample_snapshot(),
             sample_quest_handle(CommandQueue::new()),
-            vec![Value::Boolean(true)],
+            vec![QuestHookArg::Bool(true)],
         );
         assert!(result.error.is_none(), "missing hook should be quiet: {:?}", result.error);
         assert!(result.commands.is_empty());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn call_quest_hook_with_npc_arg_materialises_lua_userdata() {
+        let root = tmpdir();
+        std::fs::create_dir_all(root.join("quests/man")).unwrap();
+        // onTalk receives (player, quest, npc) — verify the npc userdata
+        // exposes `GetActorClassId` correctly and that mutating the quest
+        // through the handle still writes into the queue while the npc's
+        // fields are independently readable.
+        std::fs::write(
+            root.join("quests/man/man0l0.lua"),
+            r#"
+                function onTalk(player, quest, npc)
+                    if npc:GetActorClassId() == 1000438 then
+                        quest:SetQuestFlag(5)
+                    end
+                end
+            "#,
+        )
+        .unwrap();
+
+        let engine = LuaEngine::new(&root);
+        let script_path = root.join("quests/man/man0l0.lua");
+        let npc_spec = LuaNpcSpec {
+            actor_id: 0x12345,
+            name: "Rostnsthal".to_string(),
+            class_name: "PopulaceStandard".to_string(),
+            class_path: "/Chara/Npc/Populace/PopulaceStandard".to_string(),
+            unique_id: "rostnsthal".to_string(),
+            zone_id: 193,
+            zone_name: "test".to_string(),
+            state: 0,
+            pos: (0.0, 0.0, 0.0),
+            rotation: 0.0,
+            actor_class_id: 1_000_438,
+            quest_graphic: 0,
+        };
+        let result = engine.call_quest_hook(
+            &script_path,
+            "onTalk",
+            sample_snapshot(),
+            sample_quest_handle(CommandQueue::new()),
+            vec![QuestHookArg::Npc(npc_spec)],
+        );
+        assert!(result.error.is_none(), "onTalk errored: {:?}", result.error);
+        let saw_flag = result
+            .commands
+            .iter()
+            .any(|c| matches!(c, LuaCommand::QuestSetFlag { bit: 5, .. }));
+        assert!(saw_flag, "npc:GetActorClassId matched — but SetQuestFlag didn't fire; got {:?}", result.commands);
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -639,7 +770,7 @@ mod tests {
             "onStateChange",
             sample_snapshot(),
             sample_quest_handle(CommandQueue::new()),
-            vec![Value::Integer(10)],
+            vec![QuestHookArg::Int(10)],
         );
         assert!(result.error.is_none(), "hook errored: {:?}", result.error);
         let seen = result
