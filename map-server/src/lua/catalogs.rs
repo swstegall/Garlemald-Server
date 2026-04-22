@@ -25,8 +25,9 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
+use crate::crafting::{PassiveGuildleveData, RecipeResolver};
 use crate::data::ItemData;
 use crate::gamedata::{BattleCommand, GuildleveGamedata, QuestMeta, StatusEffectDef};
 
@@ -42,6 +43,14 @@ pub struct Catalogs {
     /// Loaded from `gamedata_quests` at startup. ~524 rows from Meteor's
     /// `origin/ioncannon/quest_system` seed.
     pub quests: RwLock<HashMap<u32, QuestMeta>>,
+    /// Shared recipe resolver. `Arc` so `GetRecipeResolver()` in Lua
+    /// can hand back a userdata wrapper without copying the 5 000-row
+    /// catalog — the VM holds a clone of the Arc for its lifetime.
+    pub recipes: RwLock<Option<Arc<RecipeResolver>>>,
+    /// Static passive-guildleve (local leve) definitions keyed by leve
+    /// id (120001..=120452). Read-only after boot; the runtime-mutable
+    /// per-player state lives on the quest journal.
+    pub passive_guildleves: RwLock<HashMap<u32, PassiveGuildleveData>>,
 }
 
 impl Catalogs {
@@ -83,6 +92,34 @@ impl Catalogs {
         if let Ok(mut w) = self.quests.write() {
             *w = quests;
         }
+    }
+
+    pub fn install_recipes(&self, resolver: RecipeResolver) {
+        if let Ok(mut w) = self.recipes.write() {
+            *w = Some(Arc::new(resolver));
+        }
+    }
+
+    pub fn install_passive_guildleves(&self, data: HashMap<u32, PassiveGuildleveData>) {
+        if let Ok(mut w) = self.passive_guildleves.write() {
+            *w = data;
+        }
+    }
+
+    /// Return a cheap `Arc` clone of the installed resolver, or `None`
+    /// if `install_recipes` hasn't run yet (fresh DB / startup race).
+    pub fn recipe_resolver(&self) -> Option<Arc<RecipeResolver>> {
+        self.recipes.read().ok().and_then(|w| w.clone())
+    }
+
+    /// Look up one passive-guildleve definition. Cheap clone (~200 B);
+    /// callers that need to read many rows should hold the RwLock
+    /// themselves.
+    pub fn passive_guildleve(&self, leve_id: u32) -> Option<PassiveGuildleveData> {
+        self.passive_guildleves
+            .read()
+            .ok()
+            .and_then(|w| w.get(&leve_id).cloned())
     }
 
     /// Resolve a quest id to its lowercase script-name (`"man0l0"`) the

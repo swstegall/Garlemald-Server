@@ -1912,3 +1912,200 @@ async fn complete_quest_is_idempotent_for_repeated_calls() {
         1
     );
 }
+
+// =============================================================================
+// Tier 3 #11 — crafting + local-leves port (ioncannon/crafting_and_localleves)
+//
+// These tests gate the three layers that came across from the branch: the
+// DB loaders (SQL seeds → in-memory catalog), the Rust-side Recipe +
+// PassiveGuildleveData + RecipeResolver DTOs, and the ported
+// `CraftCommand.lua` script itself. Because the synthesis minigame is
+// end-to-end with the client (every frame goes out through
+// `callClientFunction` → delegateCommand), the runtime behaviour can't be
+// verified without an online client; the test surface is therefore:
+//
+//   * DB loads produce the expected row counts and primary-key ranges.
+//   * The Lua script parses in mlua (guards against a future typo in the
+//     verbatim upstream file).
+//   * A representative Recipe round-trips through the userdata binding.
+//   * PassiveGuildleveData lookup works against the catalog.
+// =============================================================================
+
+#[tokio::test]
+async fn db_load_recipes_matches_seed_row_count() {
+    let db = crate::database::Database::open(tempdb())
+        .await
+        .expect("db stub");
+    let resolver = db.load_recipes().await.expect("load_recipes");
+    assert_eq!(
+        resolver.num_recipes(),
+        5384,
+        "expected 5384 recipes from 042_gamedata_recipes.sql, got {}",
+        resolver.num_recipes()
+    );
+    // Spot-check a known row: recipe id 1 produces item 10008504 (×12).
+    let r = resolver.by_id(1).expect("recipe id 1");
+    assert_eq!(r.result_item_id, 10_008_504);
+    assert_eq!(r.result_quantity, 12);
+    assert_eq!(r.materials[0], 10_008_002);
+    // `job = 'A'` → allowed_crafters = ["crp"].
+    assert_eq!(&**r.allowed_crafters, &["crp".to_string()]);
+}
+
+#[tokio::test]
+async fn db_load_passive_guildleve_data_spans_reserved_id_range() {
+    let db = crate::database::Database::open(tempdb())
+        .await
+        .expect("db stub");
+    let map = db
+        .load_passive_guildleve_data()
+        .await
+        .expect("load_passive_guildleve_data");
+    // 043_gamedata_passivegl_craft.sql ships 169 rows scattered across
+    // ids 120_001..=120_452. Rows outside that range would mean the seed
+    // file was silently rewritten.
+    assert!(
+        (100..=500).contains(&map.len()),
+        "unexpected row count {}; seed may have been trimmed",
+        map.len()
+    );
+    for &id in map.keys() {
+        assert!(
+            (crate::crafting::LOCAL_LEVE_ID_MIN..=crate::crafting::LOCAL_LEVE_ID_MAX)
+                .contains(&id),
+            "passive-guildleve id {id} out of 120_001..=120_452 range"
+        );
+    }
+    // Spot-check the first row.
+    let first = map.get(&120_001).expect("row 120_001 missing");
+    assert_eq!(first.plate_id, 20_033);
+    assert_eq!(first.border_id, 20_005);
+    assert_eq!(first.recommended_class, 1);
+    // Band-0 objective qty + attempts came from the raw dump columns.
+    assert_eq!(first.objective_quantity[0], 2);
+    assert_eq!(first.number_of_attempts[0], 4);
+}
+
+#[tokio::test]
+async fn craft_command_lua_parses() {
+    use crate::lua::LuaEngine;
+
+    let script_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .join("scripts/lua");
+    let script = script_root.join("commands/CraftCommand.lua");
+    if !script.exists() {
+        return; // Trimmed-artifact CI skip — same pattern as the quest test.
+    }
+    let engine = LuaEngine::new(&script_root);
+    engine
+        .load_script(&script)
+        .expect("ioncannon-ported CraftCommand.lua should parse (guard against upstream typos)");
+}
+
+#[tokio::test]
+async fn get_recipe_resolver_global_round_trips_a_recipe() {
+    use crate::lua::LuaEngine;
+    use mlua::Value;
+
+    // Build an in-memory DB, hydrate the recipe catalog into the
+    // LuaEngine's Catalogs, then run a tiny Lua snippet that uses
+    // GetRecipeResolver():GetRecipeByID(...) to pull back a field via
+    // the userdata binding.
+    let db = crate::database::Database::open(tempdb())
+        .await
+        .expect("db stub");
+    let resolver = db.load_recipes().await.expect("load_recipes");
+    let script_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .join("scripts/lua");
+    let engine = LuaEngine::new(&script_root);
+    engine.catalogs().install_recipes(resolver);
+
+    let probe = script_root.join("commands/__probe_recipe.lua");
+    std::fs::write(
+        &probe,
+        r#"
+            local r = GetRecipeResolver():GetRecipeByID(1)
+            if r == nil then return -1 end
+            return r.resultItemID
+        "#,
+    )
+    .unwrap();
+    let (lua, _queue) = engine.load_script(&probe).expect("load probe");
+    let result: i64 = lua
+        .load("return (function() local r = GetRecipeResolver():GetRecipeByID(1); if r == nil then return -1 end; return r.resultItemID end)()")
+        .eval()
+        .unwrap();
+    assert_eq!(result, 10_008_504);
+
+    // Also exercise the dot-callable `.GetRecipeFromMats(...)` shape
+    // Meteor's Lua uses. Multiple recipes can share the same material
+    // fingerprint, so we only assert that *some* matching recipe comes
+    // back with a positive resultItemID — the exact first-of-N value
+    // depends on HashMap iteration order and is not meaningful to the
+    // client (the craft-start widget shows every result in the list).
+    let first_hit: i64 = lua
+        .load(
+            r#"
+            local rr = GetRecipeResolver()
+            local list = rr.GetRecipeFromMats(rr, 10008002, 0, 0, 0, 0, 0, 0, 0)
+            if list == nil then return -1 end
+            if #list == 0 then return -2 end
+            return list[1].resultItemID
+        "#,
+        )
+        .eval()
+        .unwrap();
+    assert!(
+        first_hit > 0,
+        "GetRecipeFromMats should return at least one recipe with a positive resultItemID, got {first_hit}"
+    );
+
+    let _ = std::fs::remove_file(&probe);
+}
+
+#[test]
+fn passive_guildleve_view_craft_success_end_to_end() {
+    // Pure-Rust test that exercises the branch-pathway PassiveGuildleve
+    // flow — the "continue leve until attempts are exhausted" loop in
+    // CraftCommand.lua's `startCrafting`.
+    use crate::actor::quest::Quest;
+    use crate::crafting::{PassiveGuildleveData, PassiveGuildleveView};
+
+    let data = PassiveGuildleveData {
+        id: 120_001,
+        plate_id: 0,
+        border_id: 0,
+        recommended_class: 0,
+        issuing_location: 0,
+        leve_location: 0,
+        delivery_display_name: 0,
+        objective_item_id: [3_000_001, 0, 0, 0],
+        objective_quantity: [4, 0, 0, 0],
+        number_of_attempts: [5, 0, 0, 0],
+        recommended_level: [0; 4],
+        reward_item_id: [0; 4],
+        reward_quantity: [0; 4],
+    };
+    let mut quest = Quest::new(
+        crate::actor::quest::quest_actor_id(120_001),
+        "plg120001",
+    );
+    let mut view = PassiveGuildleveView::new(&mut quest, &data);
+    view.set_has_materials(true);
+
+    // Three successful crafts, two failures, then attempts exhausted.
+    for _ in 0..3 {
+        view.craft_success(1);
+    }
+    view.craft_fail();
+    view.craft_fail();
+    assert_eq!(view.current_crafted(), 3);
+    assert_eq!(view.current_attempt(), 5);
+    assert_eq!(view.remaining_materials(), 0);
+    // Still under objective (3 < 4) — leve would fail in the UI loop.
+    assert!(view.current_crafted() < view.objective_quantity() as u16);
+}

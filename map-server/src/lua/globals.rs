@@ -30,7 +30,7 @@ use mlua::{Function, Lua, MultiValue, Value};
 
 use super::catalogs::Catalogs;
 use super::command::CommandQueue;
-use super::userdata::{LuaItemData, LuaWorldManager};
+use super::userdata::{LuaItemData, LuaRecipeResolver, LuaWorldManager};
 
 /// Install the global functions referenced by `scripts/global.lua`.
 pub fn install_globals(
@@ -139,6 +139,21 @@ pub fn install_globals(
             Ok(Value::Table(t))
         })?;
         globals.set("GetGuildleveGamedata", f)?;
+    }
+
+    // GetRecipeResolver() → LuaRecipeResolver | nil. Mirrors Meteor's
+    // `Server.ResolveRecipe()`. Returns `nil` if the recipe catalog
+    // hasn't been loaded yet — CraftCommand.lua will simply fail its
+    // first GetRecipeFromMats call, which is a better failure mode than
+    // crashing the whole Lua VM.
+    {
+        let cats = catalogs.clone();
+        let f = lua.create_function(move |_, _: ()| {
+            Ok(cats
+                .recipe_resolver()
+                .map(|resolver| LuaRecipeResolver { resolver }))
+        })?;
+        globals.set("GetRecipeResolver", f)?;
     }
 
     // `print` → tracing::debug (so scripts don't spam stdout).

@@ -29,6 +29,7 @@ mod actor;
 mod battle;
 mod command_processor;
 mod config;
+mod crafting;
 mod data;
 mod database;
 mod director;
@@ -107,6 +108,37 @@ async fn main() -> Result<()> {
             tracing::warn!(
                 error = %e,
                 "gamedata_quests load failed — quest hooks (onStart/onFinish/onStateChange) will be no-ops",
+            );
+        }
+    }
+
+    // Populate the crafting recipe + passive-guildleve catalogs used by
+    // `CraftCommand.lua`. Both are non-fatal — if either load fails the
+    // CraftJudge Lua flow simply fails the first GetRecipeResolver() or
+    // getQuestGuildleve() call, and the rest of the server stays up.
+    match db.load_recipes().await {
+        Ok(resolver) => {
+            let count = resolver.num_recipes();
+            lua.catalogs().install_recipes(resolver);
+            tracing::info!(count, "gamedata_recipes catalog loaded");
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "gamedata_recipes load failed — CraftCommand.lua will not find any recipes",
+            );
+        }
+    }
+    match db.load_passive_guildleve_data().await {
+        Ok(data) => {
+            let count = data.len();
+            lua.catalogs().install_passive_guildleves(data);
+            tracing::info!(count, "gamedata_passivegl_craft catalog loaded");
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "gamedata_passivegl_craft load failed — local crafting leves unavailable",
             );
         }
     }

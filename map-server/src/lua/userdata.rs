@@ -31,9 +31,10 @@
 
 use std::sync::{Arc, Mutex};
 
-use mlua::{UserData, UserDataMethods, Value};
+use mlua::{AnyUserData, UserData, UserDataFields, UserDataMethods, Value};
 
 use super::command::{CommandQueue, LuaCommand};
+use crate::crafting::{Recipe, RecipeResolver};
 
 fn push(queue: &Arc<Mutex<CommandQueue>>, cmd: LuaCommand) {
     CommandQueue::push(queue, cmd);
@@ -1765,5 +1766,171 @@ impl UserData for LuaQuestDataHandle {
         methods.add_method("GetNpcLsFrom", |_, _this, _: ()| Ok(0u32));
         methods.add_method("GetMsgStep", |_, _this, _: ()| Ok(0u8));
         methods.add_method("ClearNpcLs", |_, _this, _: ()| Ok(()));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LuaRecipe / LuaRecipeResolver — crafting catalog bindings
+//
+// Meteor's `CraftCommand.lua` reads every Recipe field via *dot* syntax
+// (`chosenRecipe.resultItemID`, not `chosenRecipe:GetResultItemID()`), so
+// we expose them as userdata fields via `add_field_method_get` rather
+// than methods. The same applies to `recipeResolver.GetRecipeFromMats(...)`
+// — dot-call with no `self`, so we register those as `add_function` on
+// the resolver userdata (the closure captures a clone of the Arc to find
+// itself).
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct LuaRecipe {
+    pub inner: Recipe,
+}
+
+impl UserData for LuaRecipe {
+    fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
+        // Dot-accessed fields — matches the Lua call sites
+        // `chosenRecipe.resultItemID` etc. Names kept in the same camelCase
+        // Meteor's C# DynValue exposes.
+        fields.add_field_method_get("id", |_, this| Ok(this.inner.id));
+        fields.add_field_method_get("resultItemID", |_, this| Ok(this.inner.result_item_id));
+        fields.add_field_method_get("resultQuantity", |_, this| Ok(this.inner.result_quantity));
+        fields.add_field_method_get("crystalId1", |_, this| Ok(this.inner.crystal_id_1));
+        fields.add_field_method_get("crystalQuantity1", |_, this| {
+            Ok(this.inner.crystal_quantity_1)
+        });
+        fields.add_field_method_get("crystalId2", |_, this| Ok(this.inner.crystal_id_2));
+        fields.add_field_method_get("crystalQuantity2", |_, this| {
+            Ok(this.inner.crystal_quantity_2)
+        });
+        fields.add_field_method_get("tier", |_, this| Ok(this.inner.tier));
+    }
+
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        // The materials array is the only multi-value field; exposing it
+        // as a method that returns a 1-indexed table avoids shipping a
+        // whole Lua-side sequence-userdata just for one field.
+        methods.add_method("GetMaterials", |lua, this, _: ()| {
+            let tbl = lua.create_table()?;
+            for (i, m) in this.inner.materials.iter().enumerate() {
+                tbl.raw_set(i as i64 + 1, *m)?;
+            }
+            Ok(tbl)
+        });
+    }
+}
+
+#[derive(Clone)]
+pub struct LuaRecipeResolver {
+    pub resolver: Arc<RecipeResolver>,
+}
+
+impl UserData for LuaRecipeResolver {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        // Colon-callable variants (kept alongside dot-callable ones for
+        // scripts that mix the two idioms; the C# MoonSharp bindings
+        // supported both transparently).
+        methods.add_method("GetRecipeByID", |_, this, id: u32| {
+            Ok(this
+                .resolver
+                .by_id(id)
+                .map(|r| LuaRecipe { inner: r.clone() }))
+        });
+        methods.add_method("GetRecipeByItemID", |_, this, id: u32| {
+            Ok(this
+                .resolver
+                .by_item_id(id)
+                .map(|r| LuaRecipe { inner: r.clone() }))
+        });
+        methods.add_method("GetNumRecipes", |_, this, _: ()| {
+            Ok(this.resolver.num_recipes() as u32)
+        });
+
+        // Dot-callable variants — Meteor's Lua calls these as
+        // `recipeResolver.GetRecipeFromMats(...)` without a self, so we
+        // register as `add_function` which doesn't bind `self`. The first
+        // arg of the closure is the invoking userdata — Lua still passes
+        // it through the dot-indexed metamethod lookup; we pull the Arc
+        // out of it so callers don't need to supply the resolver again.
+        methods.add_function(
+            "GetRecipeFromMats",
+            |lua,
+             args: (
+                AnyUserData,
+                Option<u32>,
+                Option<u32>,
+                Option<u32>,
+                Option<u32>,
+                Option<u32>,
+                Option<u32>,
+                Option<u32>,
+                Option<u32>,
+            )| {
+                let this: LuaRecipeResolver = args.0.borrow::<LuaRecipeResolver>()?.clone();
+                let mats: [u32; 8] = [
+                    args.1.unwrap_or(0),
+                    args.2.unwrap_or(0),
+                    args.3.unwrap_or(0),
+                    args.4.unwrap_or(0),
+                    args.5.unwrap_or(0),
+                    args.6.unwrap_or(0),
+                    args.7.unwrap_or(0),
+                    args.8.unwrap_or(0),
+                ];
+                let recipes = this.resolver.by_mats(mats);
+                if recipes.is_empty() {
+                    return Ok(Value::Nil);
+                }
+                let tbl = lua.create_table()?;
+                for (i, r) in recipes.iter().enumerate() {
+                    tbl.raw_set(
+                        i as i64 + 1,
+                        LuaRecipe {
+                            inner: (*r).clone(),
+                        },
+                    )?;
+                }
+                Ok(Value::Table(tbl))
+            },
+        );
+
+        methods.add_function(
+            "RecipesToItemIdTable",
+            |lua, args: (AnyUserData, Option<mlua::Table>)| {
+                let tbl = lua.create_table()?;
+                if let Some(recipes) = args.1 {
+                    for i in 0..8 {
+                        let val = recipes.raw_get::<Option<AnyUserData>>(i as i64 + 1)?;
+                        let item_id = val
+                            .and_then(|u| u.borrow::<LuaRecipe>().ok().map(|r| r.inner.result_item_id))
+                            .unwrap_or(0);
+                        tbl.raw_set(i as i64 + 1, item_id)?;
+                    }
+                } else {
+                    for i in 0..8 {
+                        tbl.raw_set(i as i64 + 1, 0u32)?;
+                    }
+                }
+                Ok(tbl)
+            },
+        );
+
+        methods.add_function(
+            "RecipeToMatIdTable",
+            |lua, args: (AnyUserData, Option<AnyUserData>)| {
+                let tbl = lua.create_table()?;
+                if let Some(ud) = args.1 {
+                    if let Ok(recipe) = ud.borrow::<LuaRecipe>() {
+                        for (i, m) in recipe.inner.materials.iter().enumerate() {
+                            tbl.raw_set(i as i64 + 1, *m)?;
+                        }
+                        return Ok(tbl);
+                    }
+                }
+                for i in 0..8 {
+                    tbl.raw_set(i as i64 + 1, 0u32)?;
+                }
+                Ok(tbl)
+            },
+        );
     }
 }

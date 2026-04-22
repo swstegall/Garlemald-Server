@@ -643,6 +643,152 @@ impl Database {
         Ok(rows.into_iter().collect())
     }
 
+    /// Load every row of `gamedata_recipes` into a [`RecipeResolver`].
+    /// Mirrors `Database.GetRecipeGamedata` on
+    /// `origin/ioncannon/crafting_and_localleves` — the C# populates two
+    /// dictionaries (id → Recipe, md5(mats) → [Recipe]); the resolver's
+    /// constructor does both in one pass without the MD5 step.
+    pub async fn load_recipes(&self) -> Result<crate::crafting::RecipeResolver> {
+        let rows = self
+            .conn
+            .call_db(|c| {
+                let mut stmt = c.prepare(
+                    r"SELECT id, craftedItem, craftedQuantity, job,
+                             crystal0ID, crystal0Quantity, crystal1ID, crystal1Quantity,
+                             material0, material1, material2, material3,
+                             material4, material5, material6, material7
+                      FROM gamedata_recipes
+                      ORDER BY craftedItem ASC",
+                )?;
+                let rows: Vec<crate::crafting::Recipe> = stmt
+                    .query_map([], |r| {
+                        let id: u32 = r.get(0)?;
+                        let crafted_item: u32 = r.get::<_, u32>(1).unwrap_or_default();
+                        let crafted_qty: u32 = r.get::<_, u32>(2).unwrap_or_default();
+                        let job: String = r.get::<_, String>(3).unwrap_or_default();
+                        let c0_id: u32 = r.get::<_, u32>(4).unwrap_or_default();
+                        let c0_qty: u32 = r.get::<_, u32>(5).unwrap_or_default();
+                        let c1_id: u32 = r.get::<_, u32>(6).unwrap_or_default();
+                        let c1_qty: u32 = r.get::<_, u32>(7).unwrap_or_default();
+                        let mats: [u32; crate::crafting::recipe::RECIPE_MATERIAL_SLOTS] = [
+                            r.get::<_, u32>(8).unwrap_or_default(),
+                            r.get::<_, u32>(9).unwrap_or_default(),
+                            r.get::<_, u32>(10).unwrap_or_default(),
+                            r.get::<_, u32>(11).unwrap_or_default(),
+                            r.get::<_, u32>(12).unwrap_or_default(),
+                            r.get::<_, u32>(13).unwrap_or_default(),
+                            r.get::<_, u32>(14).unwrap_or_default(),
+                            r.get::<_, u32>(15).unwrap_or_default(),
+                        ];
+                        let allowed: Vec<String> = job
+                            .chars()
+                            .next()
+                            .and_then(crate::crafting::Recipe::job_code_to_class)
+                            .map(|c| vec![c.to_string()])
+                            .unwrap_or_default();
+                        Ok(crate::crafting::Recipe::new(
+                            id,
+                            crafted_item,
+                            crafted_qty,
+                            mats,
+                            c0_id,
+                            c0_qty,
+                            c1_id,
+                            c1_qty,
+                            allowed,
+                            1,
+                        ))
+                    })?
+                    .collect::<rusqlite::Result<_>>()?;
+                Ok(rows)
+            })
+            .await?;
+        Ok(crate::crafting::RecipeResolver::from_recipes(rows))
+    }
+
+    /// Load every row of `gamedata_passivegl_craft` into a map keyed by
+    /// leve id. Mirrors `Database.GetPassiveGuildleveGamedata` on the
+    /// ioncannon branch — each row becomes one
+    /// [`PassiveGuildleveData`](crate::crafting::PassiveGuildleveData)
+    /// with the four parallel difficulty arrays populated.
+    pub async fn load_passive_guildleve_data(
+        &self,
+    ) -> Result<HashMap<u32, crate::crafting::PassiveGuildleveData>> {
+        let rows = self
+            .conn
+            .call_db(|c| {
+                let mut stmt = c.prepare(
+                    r"SELECT id, plateId, borderId, recommendedClass,
+                             issuingLocation, guildleveLocation, deliveryDisplayName,
+                             objectiveItemId1, objectiveQuantity1, numberOfAttempts1,
+                             recommendedLevel1, rewardItemId1, rewardQuantity1,
+                             objectiveItemId2, objectiveQuantity2, numberOfAttempts2,
+                             recommendedLevel2, rewardItemId2, rewardQuantity2,
+                             objectiveItemId3, objectiveQuantity3, numberOfAttempts3,
+                             recommendedLevel3, rewardItemId3, rewardQuantity3,
+                             objectiveItemId4, objectiveQuantity4, numberOfAttempts4,
+                             recommendedLevel4, rewardItemId4, rewardQuantity4
+                      FROM gamedata_passivegl_craft",
+                )?;
+                let rows: Vec<(u32, crate::crafting::PassiveGuildleveData)> = stmt
+                    .query_map([], |r| {
+                        let id: u32 = r.get(0)?;
+                        Ok((
+                            id,
+                            crate::crafting::PassiveGuildleveData {
+                                id,
+                                plate_id: r.get::<_, u32>(1).unwrap_or_default(),
+                                border_id: r.get::<_, u32>(2).unwrap_or_default(),
+                                recommended_class: r.get::<_, u32>(3).unwrap_or_default(),
+                                issuing_location: r.get::<_, u32>(4).unwrap_or_default(),
+                                leve_location: r.get::<_, u32>(5).unwrap_or_default(),
+                                delivery_display_name: r.get::<_, u32>(6).unwrap_or_default(),
+                                objective_item_id: [
+                                    r.get::<_, i32>(7).unwrap_or_default(),
+                                    r.get::<_, i32>(13).unwrap_or_default(),
+                                    r.get::<_, i32>(19).unwrap_or_default(),
+                                    r.get::<_, i32>(25).unwrap_or_default(),
+                                ],
+                                objective_quantity: [
+                                    r.get::<_, i32>(8).unwrap_or_default(),
+                                    r.get::<_, i32>(14).unwrap_or_default(),
+                                    r.get::<_, i32>(20).unwrap_or_default(),
+                                    r.get::<_, i32>(26).unwrap_or_default(),
+                                ],
+                                number_of_attempts: [
+                                    r.get::<_, i32>(9).unwrap_or_default(),
+                                    r.get::<_, i32>(15).unwrap_or_default(),
+                                    r.get::<_, i32>(21).unwrap_or_default(),
+                                    r.get::<_, i32>(27).unwrap_or_default(),
+                                ],
+                                recommended_level: [
+                                    r.get::<_, i32>(10).unwrap_or_default(),
+                                    r.get::<_, i32>(16).unwrap_or_default(),
+                                    r.get::<_, i32>(22).unwrap_or_default(),
+                                    r.get::<_, i32>(28).unwrap_or_default(),
+                                ],
+                                reward_item_id: [
+                                    r.get::<_, i32>(11).unwrap_or_default(),
+                                    r.get::<_, i32>(17).unwrap_or_default(),
+                                    r.get::<_, i32>(23).unwrap_or_default(),
+                                    r.get::<_, i32>(29).unwrap_or_default(),
+                                ],
+                                reward_quantity: [
+                                    r.get::<_, i32>(12).unwrap_or_default(),
+                                    r.get::<_, i32>(18).unwrap_or_default(),
+                                    r.get::<_, i32>(24).unwrap_or_default(),
+                                    r.get::<_, i32>(30).unwrap_or_default(),
+                                ],
+                            },
+                        ))
+                    })?
+                    .collect::<rusqlite::Result<_>>()?;
+                Ok(rows)
+            })
+            .await?;
+        Ok(rows.into_iter().collect())
+    }
+
     pub async fn load_global_status_effect_list(&self) -> Result<HashMap<u32, StatusEffectDef>> {
         let rows = self
             .conn
