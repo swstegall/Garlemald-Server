@@ -64,7 +64,10 @@ pub use command::{CommandQueue as LuaCommandQueue, LuaCommand as LuaCommandKind}
 #[allow(unused_imports)]
 pub use scheduler::{CoroutineScheduler as LuaScheduler, ParkedCoroutine, YieldDirective};
 #[allow(unused_imports)]
-pub use userdata::{LuaActor, LuaNpc, LuaPlayer, LuaZone, PlayerSnapshot, ZoneSnapshot};
+pub use userdata::{
+    LuaActor, LuaNpc, LuaPlayer, LuaQuestDataHandle, LuaQuestHandle, LuaZone, PlayerSnapshot,
+    QuestStateSnapshot, ZoneSnapshot,
+};
 
 pub struct LuaEngine {
     resolver: PathResolver,
@@ -275,6 +278,93 @@ impl LuaEngine {
         PartialLuaCallResult { commands, error }
     }
 
+    /// Fire one of the five quest hooks — `onStart`, `onFinish`,
+    /// `onStateChange`, `onTalk`, `onKillBNpc` — with the Meteor calling
+    /// convention: `(player, quest, …extra_args)`.
+    ///
+    /// Builds a `LuaPlayer` from `snapshot` and a `LuaQuestHandle` keyed
+    /// to the same live quest-state snapshot, then passes any `extra_args`
+    /// after them. Returns the drained command queue so the processor
+    /// can apply the mutations the hook emitted.
+    ///
+    /// A missing hook function is *not* an error — Meteor quest scripts
+    /// only define the hooks they care about, so we treat "function not
+    /// found" as a quiet success with no commands. Script-side errors
+    /// (parse failures, nil dereferences) keep any commands emitted up
+    /// to the error point, matching `call_player_hook_best_effort`.
+    pub fn call_quest_hook(
+        &self,
+        script_path: &Path,
+        hook_name: &str,
+        player_snapshot: userdata::PlayerSnapshot,
+        quest_handle: userdata::LuaQuestHandle,
+        extra_args: Vec<Value>,
+    ) -> PartialLuaCallResult {
+        let (lua, queue) = match self.load_script(script_path) {
+            Ok(pair) => pair,
+            Err(e) => {
+                return PartialLuaCallResult {
+                    commands: Vec::new(),
+                    error: Some(e),
+                };
+            }
+        };
+        // Re-point the handle's queue at the freshly-installed one so
+        // mutations the hook enqueues land in the right bucket.
+        let quest_handle = userdata::LuaQuestHandle {
+            queue: queue.clone(),
+            ..quest_handle
+        };
+
+        let globals = lua.globals();
+        let f: Function = match globals.get(hook_name) {
+            Ok(f) => f,
+            Err(_) => {
+                // Missing hook → quiet no-op. Drain anything the script
+                // top-level produced (rare; normally nothing).
+                return PartialLuaCallResult {
+                    commands: CommandQueue::drain(&queue),
+                    error: None,
+                };
+            }
+        };
+
+        let player = userdata::LuaPlayer {
+            snapshot: player_snapshot,
+            queue: queue.clone(),
+        };
+        let player_ud = match lua.create_userdata(player) {
+            Ok(ud) => ud,
+            Err(e) => {
+                return PartialLuaCallResult {
+                    commands: CommandQueue::drain(&queue),
+                    error: Some(anyhow::anyhow!("create_userdata(LuaPlayer): {e}")),
+                };
+            }
+        };
+        let quest_ud = match lua.create_userdata(quest_handle) {
+            Ok(ud) => ud,
+            Err(e) => {
+                return PartialLuaCallResult {
+                    commands: CommandQueue::drain(&queue),
+                    error: Some(anyhow::anyhow!("create_userdata(LuaQuestHandle): {e}")),
+                };
+            }
+        };
+
+        let mut mv = MultiValue::new();
+        mv.push_back(Value::UserData(player_ud));
+        mv.push_back(Value::UserData(quest_ud));
+        for arg in extra_args {
+            mv.push_back(arg);
+        }
+
+        let call = f.call::<Value>(mv);
+        let commands = CommandQueue::drain(&queue);
+        let error = call.err().map(|e| anyhow::anyhow!("{hook_name}: {e}"));
+        PartialLuaCallResult { commands, error }
+    }
+
     /// NPC-specific helper: try the unique-override script first, then fall
     /// back to the base-class script. Mirrors the C# `CallLuaFunctionNpc`.
     pub fn call_npc(
@@ -423,6 +513,141 @@ mod tests {
             add.call::<i64>((2i64, 3i64)).unwrap()
         };
         assert_eq!(lua_val, 5);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn sample_snapshot() -> userdata::PlayerSnapshot {
+        userdata::PlayerSnapshot {
+            actor_id: 42,
+            active_quests: vec![110_001],
+            active_quest_states: vec![userdata::QuestStateSnapshot {
+                quest_id: 110_001,
+                sequence: 0,
+                flags: 0,
+                counters: [0; 3],
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn sample_quest_handle(queue: Arc<Mutex<CommandQueue>>) -> userdata::LuaQuestHandle {
+        userdata::LuaQuestHandle {
+            player_id: 42,
+            quest_id: 110_001,
+            has_quest: true,
+            sequence: 0,
+            flags: 0,
+            counters: [0; 3],
+            queue,
+        }
+    }
+
+    #[test]
+    fn call_quest_hook_passes_player_and_quest_and_drains_commands() {
+        let root = tmpdir();
+        std::fs::create_dir_all(root.join("quests/man")).unwrap();
+        // onStart mutates the quest via the handle; the call should emit
+        // a QuestSetFlag command.
+        std::fs::write(
+            root.join("quests/man/man0l0.lua"),
+            r#"
+                function onStart(player, quest)
+                    quest:SetQuestFlag(2)
+                    quest:StartSequence(5)
+                end
+            "#,
+        )
+        .unwrap();
+
+        let engine = LuaEngine::new(&root);
+        let script_path = root.join("quests/man/man0l0.lua");
+        let dummy_queue = CommandQueue::new();
+        let result = engine.call_quest_hook(
+            &script_path,
+            "onStart",
+            sample_snapshot(),
+            sample_quest_handle(dummy_queue),
+            Vec::new(),
+        );
+
+        assert!(result.error.is_none(), "onStart errored: {:?}", result.error);
+        let has_set_flag = result
+            .commands
+            .iter()
+            .any(|c| matches!(c, LuaCommand::QuestSetFlag { bit: 2, quest_id: 110_001, .. }));
+        let has_start_seq = result
+            .commands
+            .iter()
+            .any(|c| matches!(c, LuaCommand::QuestStartSequence { sequence: 5, quest_id: 110_001, .. }));
+        assert!(has_set_flag, "missing QuestSetFlag; got {:?}", result.commands);
+        assert!(has_start_seq, "missing QuestStartSequence; got {:?}", result.commands);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn call_quest_hook_missing_function_is_a_quiet_no_op() {
+        let root = tmpdir();
+        std::fs::create_dir_all(root.join("quests/man")).unwrap();
+        // Script defines only onStart — calling onFinish should silently
+        // no-op (no error) because Meteor quest scripts only implement
+        // the hooks they care about.
+        std::fs::write(
+            root.join("quests/man/man0l0.lua"),
+            "function onStart(player, quest) end",
+        )
+        .unwrap();
+
+        let engine = LuaEngine::new(&root);
+        let script_path = root.join("quests/man/man0l0.lua");
+        let result = engine.call_quest_hook(
+            &script_path,
+            "onFinish",
+            sample_snapshot(),
+            sample_quest_handle(CommandQueue::new()),
+            vec![Value::Boolean(true)],
+        );
+        assert!(result.error.is_none(), "missing hook should be quiet: {:?}", result.error);
+        assert!(result.commands.is_empty());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn call_quest_hook_receives_extra_args_after_player_and_quest() {
+        let root = tmpdir();
+        std::fs::create_dir_all(root.join("quests/man")).unwrap();
+        // onStateChange(player, quest, sequence) — if the script gets
+        // the right sequence it enqueues a command carrying it back via
+        // StartSequence so the test can inspect.
+        std::fs::write(
+            root.join("quests/man/man0l0.lua"),
+            r#"
+                function onStateChange(player, quest, sequence)
+                    if sequence == 10 then
+                        quest:StartSequence(99)
+                    end
+                end
+            "#,
+        )
+        .unwrap();
+
+        let engine = LuaEngine::new(&root);
+        let script_path = root.join("quests/man/man0l0.lua");
+        let result = engine.call_quest_hook(
+            &script_path,
+            "onStateChange",
+            sample_snapshot(),
+            sample_quest_handle(CommandQueue::new()),
+            vec![Value::Integer(10)],
+        );
+        assert!(result.error.is_none(), "hook errored: {:?}", result.error);
+        let seen = result
+            .commands
+            .iter()
+            .any(|c| matches!(c, LuaCommand::QuestStartSequence { sequence: 99, .. }));
+        assert!(seen, "script didn't see sequence=10; got {:?}", result.commands);
+
         let _ = std::fs::remove_dir_all(root);
     }
 }

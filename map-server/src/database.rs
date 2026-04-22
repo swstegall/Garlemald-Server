@@ -580,6 +580,38 @@ impl Database {
         Ok(rows.into_iter().collect())
     }
 
+    /// Load the `gamedata_quests` catalog (id, questName, className,
+    /// prerequisite, minLevel) that the five-hook dispatcher uses to
+    /// resolve a quest id to its Lua script path.
+    pub async fn get_quest_gamedata(&self) -> Result<HashMap<u32, crate::gamedata::QuestMeta>> {
+        let rows = self
+            .conn
+            .call_db(|c| {
+                let mut stmt = c.prepare(
+                    r"SELECT id, questName, className, prerequisite, minLevel
+                      FROM gamedata_quests",
+                )?;
+                let rows: Vec<(u32, crate::gamedata::QuestMeta)> = stmt
+                    .query_map([], |r| {
+                        let id: u32 = r.get(0)?;
+                        Ok((
+                            id,
+                            crate::gamedata::QuestMeta {
+                                id,
+                                quest_name: r.get::<_, String>(1).unwrap_or_default(),
+                                class_name: r.get::<_, String>(2).unwrap_or_default(),
+                                prerequisite: r.get::<_, u32>(3).unwrap_or_default(),
+                                min_level: r.get::<_, u16>(4).unwrap_or_default(),
+                            },
+                        ))
+                    })?
+                    .collect::<rusqlite::Result<_>>()?;
+                Ok(rows)
+            })
+            .await?;
+        Ok(rows.into_iter().collect())
+    }
+
     pub async fn get_guildleve_gamedata(&self) -> Result<HashMap<u32, GuildleveGamedata>> {
         let rows = self
             .conn

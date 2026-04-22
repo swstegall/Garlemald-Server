@@ -28,7 +28,7 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 
 use crate::data::ItemData;
-use crate::gamedata::{BattleCommand, GuildleveGamedata, StatusEffectDef};
+use crate::gamedata::{BattleCommand, GuildleveGamedata, QuestMeta, StatusEffectDef};
 
 #[derive(Default)]
 pub struct Catalogs {
@@ -38,6 +38,10 @@ pub struct Catalogs {
     pub battle_commands: RwLock<HashMap<u16, BattleCommand>>,
     /// Maps static-actor name (e.g. `"DftFst"`) to its fixed actor id.
     pub static_actors: RwLock<HashMap<String, u32>>,
+    /// Quest id → metadata (className drives Lua script-path resolution).
+    /// Loaded from `gamedata_quests` at startup. ~524 rows from Meteor's
+    /// `origin/ioncannon/quest_system` seed.
+    pub quests: RwLock<HashMap<u32, QuestMeta>>,
 }
 
 impl Catalogs {
@@ -73,5 +77,21 @@ impl Catalogs {
         if let Ok(mut w) = self.static_actors.write() {
             w.insert(name.into(), actor_id);
         }
+    }
+
+    pub fn install_quests(&self, quests: HashMap<u32, QuestMeta>) {
+        if let Ok(mut w) = self.quests.write() {
+            *w = quests;
+        }
+    }
+
+    /// Resolve a quest id to its lowercase script-name (`"man0l0"`) the
+    /// Lua dispatcher uses as `scripts/lua/quests/<prefix>/<name>.lua`.
+    /// Returns `None` if the quest id isn't in the catalog.
+    pub fn quest_script_name(&self, quest_id: u32) -> Option<String> {
+        self.quests
+            .read()
+            .ok()
+            .and_then(|m| m.get(&quest_id).map(|q| q.class_name.to_lowercase()))
     }
 }

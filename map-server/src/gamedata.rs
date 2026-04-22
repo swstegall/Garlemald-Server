@@ -359,6 +359,19 @@ pub struct ChocoboData {
     pub chocobo_name: String,
 }
 
+/// One row of `gamedata_quests` — the metadata catalog ported from
+/// Meteor's `origin/ioncannon/quest_system` seed. Keyed by quest id
+/// (110_001..=112_048 in 1.23b). `class_name` is the Pascal-case code
+/// used in the Lua path (e.g. `"Man0l0"` → `scripts/lua/quests/man/man0l0.lua`).
+#[derive(Debug, Clone, Default)]
+pub struct QuestMeta {
+    pub id: u32,
+    pub quest_name: String,
+    pub class_name: String,
+    pub prerequisite: u32,
+    pub min_level: u16,
+}
+
 /// One row hydrated from `characters_quest_scenario` post-redesign.
 /// The free-form `questData` JSON blob is gone; runtime state lives in
 /// `flags` + three 16-bit counters and the phase counter has been

@@ -890,6 +890,20 @@ impl PacketProcessor {
             } => {
                 self.apply_quest_mutation(player_id, quest_id, |q| q.start_sequence(sequence))
                     .await;
+                // Fire `onStateChange(player, quest, sequence)` so quest
+                // scripts can re-register their active ENPCs for the new
+                // sequence. The ENPC diff → packet broadcast arrives in
+                // Phase E; the hook itself fires now so scripts stop
+                // silently no-oping.
+                if let Some(handle) = self.registry.get(player_id).await {
+                    self.fire_quest_hook(
+                        &handle,
+                        quest_id,
+                        "onStateChange",
+                        vec![mlua::Value::Integer(sequence as i64)],
+                    )
+                    .await;
+                }
             }
             LC::AddExp {
                 actor_id,
@@ -1095,9 +1109,9 @@ impl PacketProcessor {
     }
 
     /// `player:AddQuest(id)` — allocate a free slot, build a fresh
-    /// `Quest`, and persist the initial row. Mirrors Meteor's
-    /// `Player.AcceptQuest(questId)` minus the Lua-engine `onStart`
-    /// dispatch (which the five-hook surface layers on separately).
+    /// `Quest`, persist the initial row, and fire the Lua `onStart`
+    /// hook (the first of Meteor's five quest callbacks). Hook-emitted
+    /// commands are applied via `apply_login_lua_command`.
     async fn apply_add_quest(&self, player_id: u32, quest_id: u32) {
         let Some(handle) = self.registry.get(player_id).await else {
             return;
@@ -1121,12 +1135,12 @@ impl PacketProcessor {
                 return;
             }
             let actor_id = crate::actor::quest::quest_actor_id(quest_id);
-            // Best-effort quest name — the Lua hook path uses this to
-            // resolve `scripts/lua/quests/<prefix>/<name>.lua`. Pre-Phase-C
-            // we don't have a name table wired yet, so the journal entry
-            // stores an empty string; processor-driven mutations just use
-            // the quest id directly and don't need the name.
-            let quest = crate::actor::quest::Quest::new(actor_id, String::new());
+            let name = self
+                .lua
+                .as_ref()
+                .and_then(|e| e.catalogs().quest_script_name(quest_id))
+                .unwrap_or_default();
+            let quest = crate::actor::quest::Quest::new(actor_id, name);
             let Some(slot) = c.quest_journal.add(quest) else {
                 tracing::warn!(
                     player = player_id,
@@ -1151,14 +1165,27 @@ impl PacketProcessor {
             );
         }
         tracing::info!(player = player_id, quest = quest_id, slot, "AddQuest applied");
+        self.fire_quest_hook(&handle, quest_id, "onStart", Vec::new())
+            .await;
     }
 
-    /// `player:CompleteQuest(id)` — remove the active journal slot and
-    /// set the bit in `characters_quest_completed`.
+    /// `player:CompleteQuest(id)` — fire `onFinish(player, quest, true)`
+    /// first so the script sees the quest still in-journal, then remove
+    /// the scenario row and set the completion bit.
     async fn apply_complete_quest(&self, player_id: u32, quest_id: u32) {
         let Some(handle) = self.registry.get(player_id).await else {
             return;
         };
+        // Fire onFinish before we tear the quest down so the hook can still
+        // read `quest:GetData()` counters / flags via its snapshot.
+        self.fire_quest_hook(
+            &handle,
+            quest_id,
+            "onFinish",
+            vec![mlua::Value::Boolean(true)],
+        )
+        .await;
+
         let removed_slot = {
             let mut c = handle.character.write().await;
             let slot = c.quest_journal.slot_of(quest_id);
@@ -1166,7 +1193,6 @@ impl PacketProcessor {
             slot.map(|s| s as i32)
         };
         if let Some(slot) = removed_slot {
-            // Drop the scenario row now that the quest's done.
             if let Err(e) = self.db.remove_quest(player_id, quest_id).await {
                 tracing::warn!(
                     error = %e,
@@ -1193,11 +1219,21 @@ impl PacketProcessor {
     }
 
     /// `player:AbandonQuest(id)` / `player:RemoveQuest(id)` — drop the
-    /// active slot without touching the completion bitstream.
+    /// active slot and fire `onFinish(player, quest, false)` so scripts
+    /// can distinguish completion from abandonment via the boolean arg.
     async fn apply_abandon_quest(&self, player_id: u32, quest_id: u32) {
         let Some(handle) = self.registry.get(player_id).await else {
             return;
         };
+        // Fire onFinish first (same reasoning as CompleteQuest).
+        self.fire_quest_hook(
+            &handle,
+            quest_id,
+            "onFinish",
+            vec![mlua::Value::Boolean(false)],
+        )
+        .await;
+
         let had = {
             let mut c = handle.character.write().await;
             c.quest_journal.remove(quest_id).is_some()
@@ -1223,6 +1259,124 @@ impl PacketProcessor {
             quest = quest_id,
             "AbandonQuest applied",
         );
+    }
+
+    /// Build a `PlayerSnapshot` + `LuaQuestHandle`, invoke the named
+    /// hook on `scripts/lua/quests/<prefix>/<name>.lua`, and drain the
+    /// emitted `LuaCommand`s through `apply_login_lua_command` so the
+    /// side effects land in the same Rust-side pipeline player scripts
+    /// already use.
+    ///
+    /// No-ops when:
+    /// * `self.lua` is `None` (test harnesses that don't wire Lua)
+    /// * the quest id isn't in the `gamedata_quests` catalog (so the
+    ///   class name can't be resolved, so there's no script to run)
+    /// * the resolved script path doesn't exist on disk
+    ///
+    /// A Lua-side error inside the hook is logged but not propagated —
+    /// quest progression mustn't hard-fail on a scripting bug.
+    async fn fire_quest_hook(
+        &self,
+        handle: &ActorHandle,
+        quest_id: u32,
+        hook_name: &str,
+        extra_args: Vec<mlua::Value>,
+    ) {
+        let Some(engine) = self.lua.as_ref() else {
+            return;
+        };
+        let Some(script_name) = engine.catalogs().quest_script_name(quest_id) else {
+            tracing::debug!(
+                quest = quest_id,
+                hook = hook_name,
+                "quest hook skipped — quest id not in gamedata_quests catalog",
+            );
+            return;
+        };
+        let script_path = engine.resolver().quest(&script_name);
+        if !script_path.exists() {
+            tracing::debug!(
+                quest = quest_id,
+                hook = hook_name,
+                path = %script_path.display(),
+                "quest hook skipped — no script on disk",
+            );
+            return;
+        }
+
+        // Snapshot both the Player view and the live Quest state from a
+        // single Character read so the hook sees a coherent frame.
+        let (snapshot, quest_handle) = {
+            let c = handle.character.read().await;
+            let snapshot = build_player_snapshot_from_character(&c);
+            let quest = c
+                .quest_journal
+                .get(quest_id)
+                .map(|q| (q.get_sequence(), q.get_flags(), q.get_counter(0), q.get_counter(1), q.get_counter(2)))
+                .unwrap_or((0, 0, 0, 0, 0));
+            let handle = crate::lua::LuaQuestHandle {
+                player_id: snapshot.actor_id,
+                quest_id,
+                has_quest: c.quest_journal.has(quest_id),
+                sequence: quest.0,
+                flags: quest.1,
+                counters: [quest.2, quest.3, quest.4],
+                queue: crate::lua::command::CommandQueue::new(),
+            };
+            (snapshot, handle)
+        };
+
+        let engine_clone = engine.clone();
+        let script_path_clone = script_path.clone();
+        let hook_name_owned = hook_name.to_string();
+        // `call_quest_hook` is synchronous and can block (Lua scripts
+        // often take milliseconds to tens of ms). Run it on the tokio
+        // blocking pool so we don't stall the reactor thread.
+        let result = tokio::task::spawn_blocking(move || {
+            engine_clone.call_quest_hook(
+                &script_path_clone,
+                &hook_name_owned,
+                snapshot,
+                quest_handle,
+                extra_args,
+            )
+        })
+        .await;
+
+        let result = match result {
+            Ok(r) => r,
+            Err(join_err) => {
+                tracing::warn!(
+                    error = %join_err,
+                    quest = quest_id,
+                    hook = hook_name,
+                    "quest hook dispatch panicked",
+                );
+                return;
+            }
+        };
+        if let Some(e) = result.error {
+            tracing::debug!(
+                error = %e,
+                quest = quest_id,
+                hook = hook_name,
+                "quest hook errored; applying partial commands",
+            );
+        } else {
+            tracing::debug!(
+                quest = quest_id,
+                hook = hook_name,
+                commands = result.commands.len(),
+                "quest hook fired",
+            );
+        }
+        // Hook-emitted commands recurse back through the command
+        // pipeline — `apply_login_lua_command` can re-invoke
+        // `apply_add_quest` → `fire_quest_hook`, so the compiler needs
+        // an explicit indirection point to bound the future size.
+        for cmd in result.commands {
+            Box::pin(self.apply_login_lua_command(handle, cmd)).await;
+        }
     }
 
     async fn handle_game_message(&self, client: &ClientHandle, sub: &SubPacket) -> Result<()> {
@@ -1862,4 +2016,36 @@ fn build_player_snapshot_for_login(c: &Character) -> crate::lua::userdata::Playe
         inventory: Vec::new(),
         login_director_actor_id: c.chara.login_director_actor_id,
     }
+}
+
+/// Variant of [`build_player_snapshot_for_login`] for the quest-hook
+/// dispatch path. Populates `active_quests` / `completed_quests` /
+/// `active_quest_states` from the live `Character::quest_journal` so
+/// the `LuaPlayer` passed into `onStart`/`onFinish`/`onStateChange`
+/// returns accurate values for `HasQuest` / `IsQuestCompleted` /
+/// `GetFreeQuestSlot` and so `LuaQuestHandle` getters resolve against
+/// real sequence/flags/counters.
+fn build_player_snapshot_from_character(c: &Character) -> crate::lua::userdata::PlayerSnapshot {
+    let mut snapshot = build_player_snapshot_for_login(c);
+    snapshot.active_quests = c
+        .quest_journal
+        .slots
+        .iter()
+        .flatten()
+        .map(|q| q.quest_id())
+        .collect();
+    snapshot.active_quest_states = c
+        .quest_journal
+        .slots
+        .iter()
+        .flatten()
+        .map(|q| crate::lua::QuestStateSnapshot {
+            quest_id: q.quest_id(),
+            sequence: q.get_sequence(),
+            flags: q.get_flags(),
+            counters: [q.get_counter(0), q.get_counter(1), q.get_counter(2)],
+        })
+        .collect();
+    snapshot.completed_quests = c.quest_journal.iter_completed().collect();
+    snapshot
 }

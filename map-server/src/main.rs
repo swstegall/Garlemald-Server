@@ -91,6 +91,26 @@ async fn main() -> Result<()> {
     let world = Arc::new(WorldManager::new());
     let registry = Arc::new(ActorRegistry::new());
     let lua = Arc::new(LuaEngine::new(config.script_root().to_path_buf()));
+
+    // Populate the quest-metadata catalog the five-hook dispatcher reads
+    // via `LuaEngine::catalogs().quest_script_name(id)` to turn quest ids
+    // into `scripts/lua/quests/<prefix>/<name>.lua` paths. A missing
+    // table is non-fatal — the catalog stays empty and hooks become
+    // quiet no-ops instead of crashing the server.
+    match db.get_quest_gamedata().await {
+        Ok(quests) => {
+            let count = quests.len();
+            lua.catalogs().install_quests(quests);
+            tracing::info!(count, "gamedata_quests catalog loaded");
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "gamedata_quests load failed — quest hooks (onStart/onFinish/onStateChange) will be no-ops",
+            );
+        }
+    }
+
     let cmd = Arc::new(CommandProcessor::new(
         world.clone(),
         registry.clone(),
