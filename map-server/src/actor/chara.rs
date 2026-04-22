@@ -163,6 +163,141 @@ impl Character {
         self.calculate_base_stats();
     }
 
+    /// Seed a Player's primary stats (STR/VIT/DEX/INT/MND/PIE) + Hp/Mp
+    /// baselines from class + level. **Intentional placeholder** — the
+    /// real FFXIV 1.x per-level growth curves, race base stats, and
+    /// guardian-deity bonuses were never reversed (Meteor upstream
+    /// `WorldManager.cs:522-524` only seeds BattleNpcs from
+    /// `server_battlenpc_*` and leaves Players at zero).
+    ///
+    /// What this does give us: non-zero primaries so
+    /// [`apply_player_stat_derivation`] produces non-zero secondaries,
+    /// and combat formulas (which read `Attack` / `Accuracy` / `Defense`)
+    /// stop returning floors. Values are deliberately small enough that
+    /// a real reversed-from-client seeder can replace this without
+    /// breaking any test that asserts on specific numbers — the tests
+    /// assert shape (monotone in level, class-emphasis ordering) rather
+    /// than exact values.
+    ///
+    /// Formula: `base + level * per_level`, with a per-class emphasis of
+    /// +2 to the primaries that class cares about. A level-1 character
+    /// ends up with ~10 in every primary and a bit more in class-relevant
+    /// ones; a level-50 character ~108-112. Hp/Mp get separate base +
+    /// per-level curves, MP-focused for casters.
+    ///
+    /// **Seed-if-zero semantics.** Every `set` this function does is
+    /// gated on the current value being `<= 0.0`, so:
+    ///   * A fresh `Character::new()` (all mods at zero) gets the full
+    ///     class+level baseline on its first recalc.
+    ///   * A character that already has non-zero primaries from any
+    ///     prior source (unit test fixture, DB persisted values, future
+    ///     gear-paramBonus sum, etc.) passes through untouched.
+    ///   * Repeated calls within one recalc pass are a no-op for
+    ///     primaries after the first (the emphasis `add` bump is also
+    ///     gated so a re-run doesn't double it).
+    ///
+    /// That rule is what makes it safe to chain baseline → gear-sum →
+    /// derivation: gear sum can add on top of the seeded primaries
+    /// without the next recalc zeroing them back out.
+    pub fn apply_player_stat_baseline(&mut self) {
+        use Modifier::*;
+        let level = self.chara.level.max(1) as f64;
+        let class = self.chara.class;
+
+        // Base values — deliberately modest. "8 + level * 2" gives 10
+        // at L1, 108 at L50, which is inside the range Meteor's own
+        // battle-command basePotency defaults assume (100-ish).
+        let base = 8.0;
+        let per_level = 2.0;
+        let primary = base + level * per_level;
+
+        // Same shape for Hp/Mp/Tp so combat pools exist from L1.
+        let hp = 250.0 + level * 30.0;
+        let tp = 1000.0;
+        let is_caster = matches!(
+            class,
+            c if c == crate::gamedata::CLASSID_THM as i16
+                || c == crate::gamedata::CLASSID_CNJ as i16
+        );
+        let mp = if is_caster {
+            80.0 + level * 20.0
+        } else {
+            20.0 + level * 5.0
+        };
+
+        // Closure captures `self.chara.mods` via `&mut`, but borrowck
+        // blocks holding the borrow across the match below — so use a
+        // small helper fn working off the mods map directly.
+        fn seed_if_zero(c: &mut Character, m: Modifier, v: f64) {
+            if c.chara.mods.get(m) <= 0.0 {
+                c.chara.mods.set(m, v);
+            }
+        }
+        seed_if_zero(self, Hp, hp);
+        seed_if_zero(self, Mp, mp);
+        seed_if_zero(self, Tp, tp);
+
+        // Track which primaries we actually seeded this call — the
+        // emphasis `+2` bumps only apply to those, otherwise a test
+        // that pre-seeds STR=90 (and wants Attack=60 from derivation)
+        // would see its value drift by +2 every time baseline ran.
+        let mut seeded = [false; 6];
+        let primaries = [
+            Strength, Vitality, Dexterity, Intelligence, Mind, Piety,
+        ];
+        for (i, m) in primaries.iter().enumerate() {
+            if self.chara.mods.get(*m) <= 0.0 {
+                self.chara.mods.set(*m, primary);
+                seeded[i] = true;
+            }
+        }
+
+        // Class emphasis — bumps the two primaries most relevant to the
+        // class. Values small (+2) so the placeholder doesn't drift too
+        // far from what a real seeder might choose; preserves a class
+        // ordering (e.g. PUG STR > CNJ STR) that combat tests can rely
+        // on without pinning exact numbers.
+        let (emph1, emph2) = match class {
+            // Physical DPS: STR-focused
+            c if c == crate::gamedata::CLASSID_PUG as i16 => (Strength, Dexterity),
+            c if c == crate::gamedata::CLASSID_LNC as i16 => (Strength, Vitality),
+            c if c == crate::gamedata::CLASSID_ARC as i16 => (Dexterity, Strength),
+            // Tanks: VIT-focused
+            c if c == crate::gamedata::CLASSID_GLA as i16 => (Vitality, Strength),
+            c if c == crate::gamedata::CLASSID_MRD as i16 => (Strength, Vitality),
+            // Casters
+            c if c == crate::gamedata::CLASSID_THM as i16 => (Intelligence, Mind),
+            c if c == crate::gamedata::CLASSID_CNJ as i16 => (Mind, Piety),
+            // Disciples of Hand — DEX-focused (precision work)
+            c if (crate::gamedata::CLASSID_CRP as i16..=crate::gamedata::CLASSID_CUL as i16)
+                .contains(&c) =>
+            {
+                (Dexterity, Intelligence)
+            }
+            // Disciples of Land — DEX + MND (perception/gathering)
+            c if (crate::gamedata::CLASSID_MIN as i16..=crate::gamedata::CLASSID_FSH as i16)
+                .contains(&c) =>
+            {
+                (Dexterity, Mind)
+            }
+            // Unknown / unset class — no emphasis.
+            _ => return,
+        };
+        let emph_idx = |m: Modifier| -> Option<usize> {
+            primaries.iter().position(|p| *p == m)
+        };
+        if let Some(i) = emph_idx(emph1)
+            && seeded[i]
+        {
+            self.chara.mods.add(emph1, 2.0);
+        }
+        if let Some(i) = emph_idx(emph2)
+            && seeded[i]
+        {
+            self.chara.mods.add(emph2, 2.0);
+        }
+    }
+
     /// Port of the Player-specific tail of `Player.CalculateBaseStats`:
     /// derive physical/magic secondaries from the primary ability scores.
     /// Meteor uses `AddMod` (additive), so repeated calls stack — match
@@ -179,6 +314,16 @@ impl Character {
     /// that line casts the enum's integer value rather than `GetMod(...)`,
     /// so it adds a constant 4 to Hp regardless of VIT. Treated as a
     /// known-bad Meteor line rather than copied verbatim.
+    ///
+    /// **Call ordering with [`apply_player_stat_baseline`]:** baseline
+    /// runs first (seeds primaries with `set`), derivation second
+    /// (reads primaries and adds secondaries). Between those two steps
+    /// is where a future gear-paramBonus summer will slot in —
+    /// `gamedata_items_equipment.paramBonusType*` ids `15001..=15100`
+    /// map 1:1 to [`Modifier`] ids via `paramBonusType - 15001`, so the
+    /// summer's job is to walk equipped slots, resolve each to an
+    /// [`ItemData`](crate::data::ItemData) with pre-parsed bonuses, and
+    /// `add_mod` them before derivation reads primaries.
     pub fn apply_player_stat_derivation(&mut self) {
         use Modifier::*;
         let str_v = self.chara.mods.get(Strength);
@@ -398,6 +543,151 @@ mod recalc_tests {
         c.recalculate_stats();
         assert_eq!(c.chara.max_hp, 1234);
         assert_eq!(c.chara.hp, 1000);
+    }
+
+    // -----------------------------------------------------------------
+    // Tier 1 #3 follow-up — class+level baseline seeder tests.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn baseline_seeds_nonzero_primaries_for_any_class() {
+        // Smoke test: the pre-seeder state was "every Player has STR=0,
+        // so derivation produces Attack=0". After the baseline runs
+        // every primary must be strictly positive, regardless of class
+        // (including the "unknown class, no emphasis" path).
+        for class_id in [
+            crate::gamedata::CLASSID_GLA as i16,
+            crate::gamedata::CLASSID_CNJ as i16,
+            crate::gamedata::CLASSID_CRP as i16,
+            crate::gamedata::CLASSID_MIN as i16,
+            42, // unmapped class
+        ] {
+            let mut c = Character::new(1);
+            c.chara.class = class_id;
+            c.chara.level = 1;
+            c.apply_player_stat_baseline();
+            for stat in [
+                Modifier::Strength,
+                Modifier::Vitality,
+                Modifier::Dexterity,
+                Modifier::Intelligence,
+                Modifier::Mind,
+                Modifier::Piety,
+            ] {
+                assert!(
+                    c.chara.mods.get(stat) > 0.0,
+                    "class {class_id} primary {stat:?} should be > 0, got {}",
+                    c.chara.mods.get(stat)
+                );
+            }
+            assert!(
+                c.chara.mods.get(Modifier::Hp) > 0.0,
+                "class {class_id} Hp should be > 0"
+            );
+            assert!(
+                c.chara.mods.get(Modifier::Mp) > 0.0,
+                "class {class_id} Mp should be > 0"
+            );
+        }
+    }
+
+    #[test]
+    fn baseline_primaries_grow_monotonically_with_level() {
+        let mut low = Character::new(1);
+        low.chara.class = crate::gamedata::CLASSID_GLA as i16;
+        low.chara.level = 1;
+        low.apply_player_stat_baseline();
+
+        let mut high = Character::new(2);
+        high.chara.class = crate::gamedata::CLASSID_GLA as i16;
+        high.chara.level = 50;
+        high.apply_player_stat_baseline();
+
+        assert!(high.chara.mods.get(Modifier::Strength) > low.chara.mods.get(Modifier::Strength));
+        assert!(high.chara.mods.get(Modifier::Hp) > low.chara.mods.get(Modifier::Hp));
+    }
+
+    #[test]
+    fn baseline_caster_gets_more_mp_than_physical_at_same_level() {
+        // Caster MP pool should outpace a melee class's at the same
+        // level. Nothing here pins exact numbers — only that the relative
+        // ordering the `is_caster` branch enforces holds.
+        let mut thm = Character::new(1);
+        thm.chara.class = crate::gamedata::CLASSID_THM as i16;
+        thm.chara.level = 20;
+        thm.apply_player_stat_baseline();
+
+        let mut gla = Character::new(2);
+        gla.chara.class = crate::gamedata::CLASSID_GLA as i16;
+        gla.chara.level = 20;
+        gla.apply_player_stat_baseline();
+
+        assert!(
+            thm.chara.mods.get(Modifier::Mp) > gla.chara.mods.get(Modifier::Mp),
+            "THM Mp {} should exceed GLA Mp {}",
+            thm.chara.mods.get(Modifier::Mp),
+            gla.chara.mods.get(Modifier::Mp),
+        );
+    }
+
+    #[test]
+    fn baseline_class_emphasis_biases_the_right_primary() {
+        // Assert shape, not numbers — a tank's VIT should outrank its
+        // INT (emphasis); a caster's INT outranks its STR.
+        let mut gla = Character::new(1);
+        gla.chara.class = crate::gamedata::CLASSID_GLA as i16;
+        gla.chara.level = 10;
+        gla.apply_player_stat_baseline();
+        assert!(
+            gla.chara.mods.get(Modifier::Vitality) > gla.chara.mods.get(Modifier::Intelligence),
+            "GLA VIT should exceed INT after emphasis"
+        );
+
+        let mut thm = Character::new(2);
+        thm.chara.class = crate::gamedata::CLASSID_THM as i16;
+        thm.chara.level = 10;
+        thm.apply_player_stat_baseline();
+        assert!(
+            thm.chara.mods.get(Modifier::Intelligence) > thm.chara.mods.get(Modifier::Strength),
+            "THM INT should exceed STR after emphasis"
+        );
+    }
+
+    #[test]
+    fn baseline_then_derivation_produces_nonzero_secondaries() {
+        // The whole point of the baseline seeder: running
+        // `apply_player_stat_derivation` without any prior manual STR
+        // seeding should now produce non-zero secondaries — that's the
+        // regression guard for "derivation ran on zeros" (the Tier 1 #3
+        // gap the roadmap calls out).
+        let mut c = Character::new(1);
+        c.chara.class = crate::gamedata::CLASSID_PUG as i16;
+        c.chara.level = 10;
+        c.apply_player_stat_baseline();
+        c.apply_player_stat_derivation();
+        assert!(c.chara.mods.get(Modifier::Attack) > 0.0);
+        assert!(c.chara.mods.get(Modifier::Accuracy) > 0.0);
+        assert!(c.chara.mods.get(Modifier::Defense) > 0.0);
+    }
+
+    #[test]
+    fn baseline_is_idempotent_for_primaries() {
+        // Two back-to-back calls must leave primaries at the same
+        // value (the function uses `set` for primaries and `add` only
+        // for the +2 emphasis bump — which re-applies on repeat).
+        // Emphasis re-apply drift is *intentionally* out of scope: the
+        // dispatcher calls baseline once per recalc pass.
+        let mut c = Character::new(1);
+        c.chara.class = crate::gamedata::CLASSID_PUG as i16;
+        c.chara.level = 5;
+        c.apply_player_stat_baseline();
+        let after_first = c.chara.mods.get(Modifier::Vitality);
+        c.apply_player_stat_baseline();
+        let after_second = c.chara.mods.get(Modifier::Vitality);
+        assert_eq!(
+            after_first, after_second,
+            "non-emphasis primary should be idempotent across repeated baseline calls"
+        );
     }
 }
 

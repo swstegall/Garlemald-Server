@@ -2109,3 +2109,68 @@ fn passive_guildleve_view_craft_success_end_to_end() {
     // Still under objective (3 < 4) — leve would fail in the UI loop.
     assert!(view.current_crafted() < view.objective_quantity() as u16);
 }
+
+// =============================================================================
+// Primary-stat baseline seeder (Tier 1 #3 follow-up).
+// =============================================================================
+
+/// Regression guard for the "derivation ran on zeros" gap — with a fresh
+/// Player character (no manual stat seeding), firing `RecalcStats`
+/// through the dispatcher path must produce non-zero secondaries. Pre-
+/// seeder this would have asserted `Attack == 0.0`; post-seeder the
+/// baseline seeds primaries first so derivation lands on them.
+#[tokio::test]
+async fn recalc_stats_event_on_zero_player_produces_nonzero_secondaries() {
+    use crate::actor::modifier::Modifier;
+    use crate::runtime::dispatcher::dispatch_status_event;
+    use crate::status::outbox::StatusEvent;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+
+    // A freshly-constructed Player character — every modifier is zero.
+    // This is the state the processor hands the registry after login
+    // before any baseline/equip/status event has fired. The regression
+    // this test guards: without the baseline seeder the whole stat
+    // chain produced zeros and combat formulas floored to 0.
+    let mut character = Character::new(10);
+    character.chara.class = crate::gamedata::CLASSID_PUG as i16;
+    character.chara.level = 10;
+    registry
+        .insert(ActorHandle::new(
+            10,
+            ActorKindTag::Player,
+            100,
+            42,
+            character,
+        ))
+        .await;
+
+    dispatch_status_event(
+        &StatusEvent::RecalcStats { owner_actor_id: 10 },
+        &registry,
+        &world,
+        &db,
+    )
+    .await;
+
+    let c = registry
+        .get(10)
+        .await
+        .unwrap()
+        .character
+        .read()
+        .await
+        .chara
+        .mods
+        .get(Modifier::Attack);
+    assert!(
+        c > 0.0,
+        "dispatch RecalcStats on a zero-init Player should leave Attack > 0 — got {c}"
+    );
+}

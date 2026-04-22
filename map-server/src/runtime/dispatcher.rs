@@ -1149,11 +1149,12 @@ async fn apply_tp_delta(registry: &ActorRegistry, actor_id: u32, delta: i32) {
 /// Dispatched from both `StatusEvent::RecalcStats` and the equip/unequip
 /// arms of `dispatch_inventory_event`.
 ///
-/// We do not broadcast HP/MP packets here yet. The modifier map is only
-/// populated from the `characters_inventory_equipment` gear table in
-/// follow-up work, so recomputed pools rarely differ from the pre-call
-/// values. Add the delta-broadcast once equipment paramBonus summing
-/// lands.
+/// We do not broadcast HP/MP packets here yet. Gear-paramBonus summing
+/// is still pending so recomputed pools rarely differ from the pre-call
+/// values — add the delta-broadcast once the gear summer lands. The
+/// class+level baseline that now runs first does give non-zero primaries
+/// from login onwards, so `apply_player_stat_derivation` finally
+/// produces non-zero Attack/Accuracy/Defense for Players.
 async fn apply_recalc_stats(registry: &ActorRegistry, actor_id: u32) {
     let Some(handle) = registry.get(actor_id).await else {
         return;
@@ -1162,6 +1163,17 @@ async fn apply_recalc_stats(registry: &ActorRegistry, actor_id: u32) {
     let mut c = handle.character.write().await;
     c.recalculate_stats();
     if is_player {
+        // Order is load-bearing:
+        //   1. Baseline seeds primaries with `set` (idempotent).
+        //   2. TODO: gear-paramBonus summer `add`s bonuses here — pulls
+        //      `paramBonusType*`/`paramBonusValue*` from ItemData
+        //      (which needs the columns added to `Database::load_items`
+        //      and `ItemData`). Mapping: `modifier_id = paramBonusType
+        //      - 15001` for types in `15001..=15100`, ignore other
+        //      ranges (`16xxx` = class-kind flags, `20xxx` = element,
+        //      `1015xxx` = conditional bonuses not yet decoded).
+        //   3. Derivation `add`s secondaries from primaries.
+        c.apply_player_stat_baseline();
         c.apply_player_stat_derivation();
     }
 }

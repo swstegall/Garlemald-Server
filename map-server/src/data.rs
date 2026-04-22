@@ -134,6 +134,17 @@ pub struct ItemTag {
 
 /// Reference data for an item, keyed by `item_id`. Populated from the
 /// `server_items` table on startup.
+///
+/// **TODO (gear-paramBonus follow-up to Tier 1 #3):** add pre-parsed
+/// gear bonuses here — one `Vec<(u32 /*modifier_id*/, i32 /*delta*/)>`
+/// field populated from `gamedata_items_equipment.paramBonusType1..10` /
+/// `paramBonusValue1..10`. The decoding rule is
+/// `modifier_id = paramBonusType - 15001` for types in `15001..=15100`
+/// (STR→Attack modifiers), ignoring the other ranges (`16xxx` class-
+/// kind flags, `20xxx` elemental resistances, `1015xxx` conditional/HQ
+/// bonuses not yet decoded). The summer itself slots into
+/// `runtime::dispatcher::apply_recalc_stats` between
+/// `apply_player_stat_baseline` and `apply_player_stat_derivation`.
 #[derive(Debug, Clone, Default)]
 pub struct ItemData {
     pub id: u32,

@@ -195,6 +195,20 @@ impl PacketProcessor {
         // ScriptBind LuaParams stay on the non-director path.
         character.base.zone_id = zone_id;
         character.chara.class = class_slot as i16;
+        // Seed level from the DB's per-class `skill_level` row so the
+        // stat-baseline formula sees the right per-level multiplier at
+        // login. Meteor's C# reads this from
+        // `characters_class_levels.<classColumn>`; our loader writes
+        // into `battle_save.skill_level[class_id]`. Falls through to 0
+        // for class_slot ≥ 42 / unset class, which
+        // `apply_player_stat_baseline` clamps to level 1.
+        let level_from_class = loaded
+            .class_levels
+            .skill_level
+            .get(class_slot)
+            .copied()
+            .unwrap_or(0);
+        character.chara.level = level_from_class;
         // Seed the battle-modifier map with the DB max values, then run
         // `calculate_base_stats` — port of C# `Character.CalculateBaseStats`
         // (`actor/chara.rs:113`) which reads `Modifier::Hp` / `HpPercent`
@@ -219,6 +233,16 @@ impl PacketProcessor {
             crate::actor::modifier::Modifier::Mp,
             mp_max as f64,
         );
+        // Run the Player baseline-stat seeder *before* calculate_base_stats
+        // so STR/VIT/DEX/INT/MND/PIE have non-zero values at login and
+        // every subsequent recalc (equip/status/trait) reads real
+        // primaries. See `apply_player_stat_baseline` for the explicit-
+        // placeholder caveat — real per-level growth curves weren't
+        // reversed from the 1.23b client. Seed-if-zero semantics mean
+        // the Hp/Mp mods just set from `characters_parametersave`
+        // survive untouched.
+        character.apply_player_stat_baseline();
+        character.apply_player_stat_derivation();
         character.calculate_base_stats();
         // Pack the DB appearance rows into the 28-slot table the client
         // expects in `SetActorAppearancePacket`. Without these the zone-in
