@@ -1326,6 +1326,199 @@ async fn hate_add_event_updates_attacker_hate_container() {
 }
 
 // ---------------------------------------------------------------------------
+// Phase E — ENPC auto-sync packets
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn quest_set_enpc_emits_event_status_and_quest_graphic_packets() {
+    use crate::actor::event_conditions::{EventConditionList, TalkCondition};
+    use crate::actor::quest::{Quest, quest_actor_id};
+    use crate::lua::LuaEngine;
+    use crate::lua::command::LuaCommand;
+    use crate::processor::PacketProcessor;
+
+    // Build a tmp script root with a quest that registers one ENPC on
+    // sequence 0 via `onStateChange`.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let script_root = std::env::temp_dir().join(format!("garlemald-phase-e-{nanos}"));
+    std::fs::create_dir_all(script_root.join("quests/man")).unwrap();
+    std::fs::write(
+        script_root.join("quests/man/man0l0.lua"),
+        r#"
+            function onStateChange(player, quest, sequence)
+                if sequence == 0 then
+                    quest:SetENpc(2000001, 2, true, false, false, false)
+                end
+            end
+        "#,
+    )
+    .unwrap();
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db"),
+    );
+    // `characters` FK anchor for save_quest.
+    use common::db::ConnCallExt;
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                "INSERT INTO characters (id, userId, slot, serverId, name) VALUES (42, 0, 0, 0, 'Tester')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let lua = Arc::new(LuaEngine::new(&script_root));
+    {
+        let mut quests = std::collections::HashMap::new();
+        quests.insert(
+            110_001u32,
+            crate::gamedata::QuestMeta {
+                id: 110_001,
+                quest_name: "Shapeless Melody".to_string(),
+                class_name: "Man0l0".to_string(),
+                prerequisite: 0,
+                min_level: 1,
+            },
+        );
+        lua.catalogs().install_quests(quests);
+    }
+
+    // Zone 100 with the player + one NPC whose actor_class_id matches
+    // the SetENpc argument.
+    let mut zone = Zone::new(
+        100,
+        "test",
+        1,
+        "/Area/Zone/Test",
+        0,
+        0,
+        0,
+        false,
+        false,
+        false,
+        false,
+        false,
+        Some(&StubNavmeshLoader),
+    );
+    let mut ob = AreaOutbox::new();
+    zone.core.add_actor(
+        StoredActor {
+            actor_id: 42,
+            kind: ActorKind::Player,
+            position: Vector3::ZERO,
+            grid: (0, 0),
+            is_alive: true,
+        },
+        &mut ob,
+    );
+    zone.core.add_actor(
+        StoredActor {
+            actor_id: 0x987_6543,
+            kind: ActorKind::Npc,
+            position: Vector3::new(2.0, 0.0, 0.0),
+            grid: (0, 0),
+            is_alive: true,
+        },
+        &mut ob,
+    );
+    world.register_zone(zone).await;
+
+    // Player character + active quest at sequence 0.
+    let mut player = Character::new(42);
+    let mut quest = Quest::new(quest_actor_id(110_001), "Man0l0".to_string());
+    quest.clear_dirty();
+    player.quest_journal.add(quest);
+    registry
+        .insert(ActorHandle::new(42, ActorKindTag::Player, 100, 99, player))
+        .await;
+
+    // NPC with its actor_class_id + one Talk condition so the event-
+    // status packet loop has something to emit.
+    let mut npc = Character::new(0x987_6543);
+    npc.chara.actor_class_id = 2_000_001;
+    npc.base.event_conditions = EventConditionList {
+        talk: vec![TalkCondition {
+            condition_name: "talkDefault".to_string(),
+            is_disabled: false,
+            unknown1: 4,
+        }],
+        ..EventConditionList::default()
+    };
+    registry
+        .insert(ActorHandle::new(
+            0x987_6543,
+            ActorKindTag::Npc,
+            100,
+            0,
+            npc,
+        ))
+        .await;
+
+    // Player's client channel — where the ENPC packets should land.
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(16);
+    world.register_client(99, ClientHandle::new(99, tx)).await;
+
+    let processor = PacketProcessor {
+        db: db.clone(),
+        world: world.clone(),
+        registry: registry.clone(),
+        lua: Some(lua.clone()),
+    };
+
+    // Drive the apply path the way the real processor does when it
+    // receives a QuestStartSequence LuaCommand from a script.
+    processor
+        .apply_login_lua_command(
+            &registry.get(42).await.unwrap(),
+            LuaCommand::QuestStartSequence {
+                player_id: 42,
+                quest_id: 110_001,
+                sequence: 0,
+            },
+        )
+        .await;
+
+    // Drain the channel — onStateChange should have re-registered the
+    // NPC, triggering one SetEventStatus per condition + one quest-
+    // graphic packet. The opcode lives in the GameMessageHeader at byte
+    // offset 0x12..0x14 of each `SubPacket::to_bytes()` frame (16-byte
+    // subpacket header + 2-byte `unknown4` + 2-byte opcode).
+    let mut saw_event_status = false;
+    let mut saw_quest_graphic = false;
+    while let Ok(bytes) = rx.try_recv() {
+        if bytes.len() < 0x14 {
+            continue;
+        }
+        let opcode = u16::from_le_bytes([bytes[0x12], bytes[0x13]]);
+        match opcode {
+            0x0136 => saw_event_status = true,
+            0x00E3 => saw_quest_graphic = true,
+            _ => {}
+        }
+    }
+    assert!(
+        saw_event_status,
+        "expected at least one SetEventStatus (0x0136) packet",
+    );
+    assert!(
+        saw_quest_graphic,
+        "expected at least one SetActorQuestGraphic (0x00E3) packet",
+    );
+
+    let _ = std::fs::remove_dir_all(script_root);
+}
+
+// ---------------------------------------------------------------------------
 // Quest-engine DB round-trips (Phase A/B/C plumbing)
 // ---------------------------------------------------------------------------
 

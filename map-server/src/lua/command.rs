@@ -173,6 +173,32 @@ pub enum LuaCommand {
         quest_id: u32,
         sequence: u32,
     },
+    /// `quest:SetENpc(classId, flagType, isTalkEnabled, isPushEnabled,
+    /// isEmoteEnabled, isSpawned)` — register an actively-tracked NPC
+    /// for the current sequence. The processor routes this through
+    /// `QuestState::add_enpc` and, when the resulting `AddEnpcOutcome`
+    /// is `New` or `Updated`, emits `SetEventStatus` + `SetActorQuestGraphic`
+    /// packets to the player.
+    QuestSetEnpc {
+        player_id: u32,
+        quest_id: u32,
+        actor_class_id: u32,
+        quest_flag_type: u8,
+        is_talk_enabled: bool,
+        is_push_enabled: bool,
+        is_emote_enabled: bool,
+        is_spawned: bool,
+    },
+    /// `quest:UpdateENPCs()` — drain `QuestState::old` (ENPCs the new
+    /// sequence didn't re-register) and emit clear packets for each.
+    /// Meteor's scripts call this at the tail of `onTalk` / `onPush` /
+    /// `onKillBNpc` after a mutation that might have changed which
+    /// NPCs are quest-active; the engine batches the broadcast so the
+    /// script doesn't need to re-emit per-NPC.
+    QuestUpdateEnpcs {
+        player_id: u32,
+        quest_id: u32,
+    },
     SetHomePoint {
         player_id: u32,
         homepoint: u32,

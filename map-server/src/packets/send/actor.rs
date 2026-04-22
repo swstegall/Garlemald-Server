@@ -352,6 +352,104 @@ pub fn build_set_event_status(
     SubPacket::new(OP_SET_EVENT_STATUS, actor_id, data)
 }
 
+/// 0x00E3 `SetActorQuestGraphicPacket` — port of Meteor's
+/// `SetActorQuestGraphicPacket.cs` (`ActorSpecialGraphicPacket.cs` on the
+/// `ioncannon/quest_system` branch). Wire body is a single 4-byte LE
+/// `iconCode`; the whole subpacket is the standard 0x28-byte shape.
+///
+/// `icon_code` values the client recognises:
+/// * `0` / `NONE`            — no marker
+/// * `2` / `QUEST`           — ordinary quest (`!` marker)
+/// * `3` / `NOGRAPHIC`       — suppress marker even when quest-active
+/// * `4` / `QUEST_IMPORTANT` — priority quest marker
+///
+/// Emitted alongside [`build_set_event_status`] packets whenever a quest
+/// script registers or clears an active ENPC (`quest:SetENpc(classId, ...)`
+/// / stale-ENPC drain after `onStateChange`).
+pub fn build_set_actor_quest_graphic(actor_id: u32, icon_code: u8) -> SubPacket {
+    let mut data = body(0x28);
+    let mut c = Cursor::new(&mut data[..]);
+    c.write_i32::<LittleEndian>(icon_code as i32).unwrap();
+    SubPacket::new(OP_ACTOR_SPECIAL_GRAPHIC, actor_id, data)
+}
+
+/// `Actor.GetSetEventStatusPackets(talk, emote, push, notice)` —
+/// fan out one [`build_set_event_status`] subpacket per entry in the
+/// NPC's event-condition list, enabling/disabling each per the flags.
+///
+/// The `ty` byte per Meteor's classification:
+/// * talk   → 1
+/// * notice → 5
+/// * emote  → 3
+/// * push   → 2
+pub fn build_actor_event_status_packets(
+    actor_id: u32,
+    conditions: &crate::actor::event_conditions::EventConditionList,
+    talk_enabled: bool,
+    emote_enabled: bool,
+    push_enabled: Option<bool>,
+    notice_enabled: bool,
+) -> Vec<SubPacket> {
+    let mut out = Vec::new();
+    for cond in &conditions.talk {
+        out.push(build_set_event_status(
+            actor_id,
+            talk_enabled,
+            1,
+            &cond.condition_name,
+        ));
+    }
+    for cond in &conditions.notice {
+        out.push(build_set_event_status(
+            actor_id,
+            notice_enabled,
+            5,
+            &cond.condition_name,
+        ));
+    }
+    for cond in &conditions.emote {
+        out.push(build_set_event_status(
+            actor_id,
+            emote_enabled,
+            3,
+            &cond.condition_name,
+        ));
+    }
+    // Meteor's C# branched on `push_enabled ?? condition.isEnabled`, but
+    // the garlemald `PushCircleCondition` / `PushFanCondition` /
+    // `PushBoxCondition` structs don't carry a per-condition enabled
+    // flag (they're treated as static wire-layout data). Fall back to
+    // `true` when the caller passed `None` so the packet enables the
+    // trigger by default — scripts that want it disabled pass
+    // `Some(false)`.
+    let push_flag = push_enabled.unwrap_or(true);
+    for cond in &conditions.push_circle {
+        out.push(build_set_event_status(
+            actor_id,
+            push_flag,
+            2,
+            &cond.condition_name,
+        ));
+    }
+    for cond in &conditions.push_fan {
+        out.push(build_set_event_status(
+            actor_id,
+            push_flag,
+            2,
+            &cond.condition_name,
+        ));
+    }
+    for cond in &conditions.push_box {
+        out.push(build_set_event_status(
+            actor_id,
+            push_flag,
+            2,
+            &cond.condition_name,
+        ));
+    }
+    out
+}
+
 /// 0x0137 SetActorPropertyPacket — byte 0 is the running length written last,
 /// then each AddXxx call emits `(type_tag, u32 id, value)`, and finally
 /// AddTarget appends `(0x82 + name_len, ascii name)` for the non-array /

@@ -1475,17 +1475,58 @@ impl UserData for LuaQuestHandle {
             lua.create_userdata(handle)
         });
 
-        // --- UpdateENPCs / SetENpc: stubs until Phase E -----------------
-        //
-        // Scripts call `quest:UpdateENPCs()` after a mutation to ask the
-        // engine to diff `QuestState.current` vs `.old` and broadcast the
-        // delta as `SetEventStatus` + `SetActorQuestGraphic` packets. That
-        // packet path isn't wired yet; for now the QuestData.Dirty bit
-        // still drives a DB save through the processor, so scripts that
-        // call UpdateENPCs won't regress — they just won't see the marker
-        // sync on the client side until Phase E.
-        methods.add_method("UpdateENPCs", |_, _this, _: ()| Ok(()));
-        methods.add_method("SetENpc", |_, _this, _args: mlua::MultiValue| Ok(()));
+        // --- UpdateENPCs / SetENpc wire through to packet emit ---------
+        methods.add_method("UpdateENPCs", |_, this, _: ()| {
+            push(
+                &this.queue,
+                LuaCommand::QuestUpdateEnpcs {
+                    player_id: this.player_id,
+                    quest_id: this.quest_id,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method("SetENpc", |_, this, args: mlua::MultiValue| {
+            // Meteor: `quest:SetENpc(classId, flagType=0, isTalkEnabled=true,
+            // isPushEnabled=false, isEmoteEnabled=false, isSpawned=false)`.
+            let mut iter = args.into_iter();
+            let class_id = match iter.next() {
+                Some(Value::Integer(i)) if i >= 0 => i as u32,
+                _ => return Ok(()),
+            };
+            let flag_type = match iter.next() {
+                Some(Value::Integer(i)) => (i.max(0).min(255)) as u8,
+                _ => 0,
+            };
+            fn bool_or(v: Option<Value>, default: bool) -> bool {
+                match v {
+                    Some(Value::Boolean(b)) => b,
+                    Some(Value::Nil) | None => default,
+                    // Meteor scripts occasionally pass `1`/`0` instead of
+                    // `true`/`false`; preserve that ergonomics.
+                    Some(Value::Integer(i)) => i != 0,
+                    _ => default,
+                }
+            }
+            let is_talk_enabled = bool_or(iter.next(), true);
+            let is_push_enabled = bool_or(iter.next(), false);
+            let is_emote_enabled = bool_or(iter.next(), false);
+            let is_spawned = bool_or(iter.next(), false);
+            push(
+                &this.queue,
+                LuaCommand::QuestSetEnpc {
+                    player_id: this.player_id,
+                    quest_id: this.quest_id,
+                    actor_class_id: class_id,
+                    quest_flag_type: flag_type,
+                    is_talk_enabled,
+                    is_push_enabled,
+                    is_emote_enabled,
+                    is_spawned,
+                },
+            );
+            Ok(())
+        });
         methods.add_method("GetENpc", |_, _this, _: u32| Ok(Value::Nil));
         methods.add_method("HasENpc", |_, _this, _: u32| Ok(false));
     }

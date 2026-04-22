@@ -655,7 +655,11 @@ impl PacketProcessor {
     /// Apply a LuaCommand emitted by `onBeginLogin`. Only the commands
     /// load-bearing for the login flow are handled here; others are
     /// logged and dropped.
-    async fn apply_login_lua_command(
+    ///
+    /// Marked `pub(crate)` so integration tests can drive the full
+    /// command pipeline directly — the real server only reaches this
+    /// from `handle_session_begin` / `onZoneIn` drain paths.
+    pub(crate) async fn apply_login_lua_command(
         &self,
         handle: &ActorHandle,
         cmd: crate::lua::LuaCommandKind,
@@ -888,22 +892,36 @@ impl PacketProcessor {
                 quest_id,
                 sequence,
             } => {
-                self.apply_quest_mutation(player_id, quest_id, |q| q.start_sequence(sequence))
+                self.apply_quest_start_sequence(player_id, quest_id, sequence)
                     .await;
-                // Fire `onStateChange(player, quest, sequence)` so quest
-                // scripts can re-register their active ENPCs for the new
-                // sequence. The ENPC diff → packet broadcast arrives in
-                // Phase E; the hook itself fires now so scripts stop
-                // silently no-oping.
-                if let Some(handle) = self.registry.get(player_id).await {
-                    self.fire_quest_hook(
-                        &handle,
-                        quest_id,
-                        "onStateChange",
-                        vec![crate::lua::QuestHookArg::Int(sequence as i64)],
-                    )
-                    .await;
-                }
+            }
+            LC::QuestSetEnpc {
+                player_id,
+                quest_id,
+                actor_class_id,
+                quest_flag_type,
+                is_talk_enabled,
+                is_push_enabled,
+                is_emote_enabled,
+                is_spawned,
+            } => {
+                self.apply_quest_set_enpc(
+                    player_id,
+                    quest_id,
+                    actor_class_id,
+                    quest_flag_type,
+                    is_talk_enabled,
+                    is_push_enabled,
+                    is_emote_enabled,
+                    is_spawned,
+                )
+                .await;
+            }
+            LC::QuestUpdateEnpcs {
+                player_id,
+                quest_id,
+            } => {
+                self.apply_quest_update_enpcs(player_id, quest_id).await;
             }
             LC::AddExp {
                 actor_id,
@@ -1106,6 +1124,233 @@ impl PacketProcessor {
                 "quest save failed",
             );
         }
+    }
+
+    /// `quest:StartSequence(sequence)` — bump the sequence number,
+    /// persist, then run the ENPC diff pattern Meteor uses in
+    /// `QuestState.UpdateState`: swap `current` → `old`, fire
+    /// `onStateChange` (which re-registers surviving ENPCs via
+    /// `quest:SetENpc(...)`), then drain whatever's left in `old` as
+    /// clear-broadcasts.
+    async fn apply_quest_start_sequence(&self, player_id: u32, quest_id: u32, sequence: u32) {
+        self.apply_quest_mutation(player_id, quest_id, |q| q.start_sequence(sequence))
+            .await;
+        let Some(handle) = self.registry.get(player_id).await else {
+            return;
+        };
+        // Swap the ENPC maps BEFORE the hook runs so `apply_quest_set_enpc`
+        // sees a clean `current` and can correctly diff against `old`.
+        {
+            let mut c = handle.character.write().await;
+            if let Some(q) = c.quest_journal.get_mut(quest_id) {
+                q.state.begin_sequence_swap();
+            }
+        }
+
+        self.fire_quest_hook(
+            &handle,
+            quest_id,
+            "onStateChange",
+            vec![crate::lua::QuestHookArg::Int(sequence as i64)],
+        )
+        .await;
+
+        // Anything still in `old` after the hook is an ENPC the new
+        // sequence didn't re-register — emit a clear for each.
+        let stale: Vec<crate::actor::quest::QuestEnpc> = {
+            let mut c = handle.character.write().await;
+            match c.quest_journal.get_mut(quest_id) {
+                Some(q) => q.state.drain_stale_enpcs().collect(),
+                None => Vec::new(),
+            }
+        };
+        for enpc in stale {
+            self.broadcast_quest_enpc_clear(player_id, enpc).await;
+        }
+    }
+
+    /// `quest:SetENpc(...)` handler. Mutates the live `QuestState`,
+    /// then — if the `AddEnpcOutcome` reports a state change worth
+    /// broadcasting — emits the matching event-status + quest-graphic
+    /// packets to the player.
+    async fn apply_quest_set_enpc(
+        &self,
+        player_id: u32,
+        quest_id: u32,
+        actor_class_id: u32,
+        quest_flag_type: u8,
+        is_talk_enabled: bool,
+        is_push_enabled: bool,
+        is_emote_enabled: bool,
+        is_spawned: bool,
+    ) {
+        let Some(handle) = self.registry.get(player_id).await else {
+            return;
+        };
+        let enpc = crate::actor::quest::QuestEnpc::new(
+            actor_class_id,
+            quest_flag_type,
+            is_spawned,
+            is_talk_enabled,
+            is_emote_enabled,
+            is_push_enabled,
+        );
+        let outcome = {
+            let mut c = handle.character.write().await;
+            let Some(q) = c.quest_journal.get_mut(quest_id) else {
+                return;
+            };
+            q.state.add_enpc(enpc)
+        };
+        match outcome {
+            crate::actor::quest::AddEnpcOutcome::Unchanged => {
+                // Matches Meteor: silent when the ENPC carried over with
+                // identical flags (no packet churn on sequences that just
+                // re-register the same active list).
+            }
+            crate::actor::quest::AddEnpcOutcome::New(snapshot)
+            | crate::actor::quest::AddEnpcOutcome::Updated(snapshot) => {
+                self.broadcast_quest_enpc_update(player_id, snapshot).await;
+            }
+        }
+    }
+
+    /// `quest:UpdateENPCs()` handler — drain the stale half of the
+    /// diff (ENPCs left over from the previous sequence that weren't
+    /// re-registered) and emit a clear broadcast for each.
+    async fn apply_quest_update_enpcs(&self, player_id: u32, quest_id: u32) {
+        let Some(handle) = self.registry.get(player_id).await else {
+            return;
+        };
+        let stale: Vec<crate::actor::quest::QuestEnpc> = {
+            let mut c = handle.character.write().await;
+            match c.quest_journal.get_mut(quest_id) {
+                Some(q) => q.state.drain_stale_enpcs().collect(),
+                None => Vec::new(),
+            }
+        };
+        for enpc in stale {
+            self.broadcast_quest_enpc_clear(player_id, enpc).await;
+        }
+    }
+
+    /// Resolve the NPC by actor-class id inside the player's zone, then
+    /// queue [`build_actor_event_status_packets`] + [`build_set_actor_quest_graphic`]
+    /// against the player's session. No-ops when the NPC isn't live or
+    /// the player has no active session (e.g. a scripted test harness).
+    async fn broadcast_quest_enpc_update(
+        &self,
+        player_id: u32,
+        enpc: crate::actor::quest::QuestEnpc,
+    ) {
+        let Some(player_handle) = self.registry.get(player_id).await else {
+            return;
+        };
+        let session_id = player_handle.session_id;
+        if session_id == 0 {
+            return;
+        }
+        let Some(client) = self.world.client(session_id).await else {
+            return;
+        };
+
+        let zone_id = player_handle.zone_id;
+        let Some(npc_handle) = self
+            .find_npc_by_class_id(zone_id, enpc.actor_class_id)
+            .await
+        else {
+            tracing::debug!(
+                player = player_id,
+                class_id = enpc.actor_class_id,
+                "quest ENPC broadcast skipped — no live NPC with that class id in zone",
+            );
+            return;
+        };
+
+        let (npc_actor_id, conditions) = {
+            let c = npc_handle.character.read().await;
+            (c.base.actor_id, c.base.event_conditions.clone())
+        };
+
+        let subpackets = crate::packets::send::build_actor_event_status_packets(
+            npc_actor_id,
+            &conditions,
+            enpc.is_talk_enabled,
+            enpc.is_emote_enabled,
+            Some(enpc.is_push_enabled),
+            /* notice_enabled */ true,
+        );
+        for sub in subpackets {
+            client.send_bytes(sub.to_bytes()).await;
+        }
+        let graphic = crate::packets::send::build_set_actor_quest_graphic(
+            npc_actor_id,
+            enpc.quest_flag_type,
+        );
+        client.send_bytes(graphic.to_bytes()).await;
+    }
+
+    /// Clear-broadcast counterpart of [`broadcast_quest_enpc_update`].
+    /// Emits every event-condition with `enabled=false` and the
+    /// quest-graphic icon set to 0 so the client drops the marker.
+    async fn broadcast_quest_enpc_clear(
+        &self,
+        player_id: u32,
+        enpc: crate::actor::quest::QuestEnpc,
+    ) {
+        let Some(player_handle) = self.registry.get(player_id).await else {
+            return;
+        };
+        let session_id = player_handle.session_id;
+        if session_id == 0 {
+            return;
+        }
+        let Some(client) = self.world.client(session_id).await else {
+            return;
+        };
+        let zone_id = player_handle.zone_id;
+        let Some(npc_handle) = self
+            .find_npc_by_class_id(zone_id, enpc.actor_class_id)
+            .await
+        else {
+            return;
+        };
+        let (npc_actor_id, conditions) = {
+            let c = npc_handle.character.read().await;
+            (c.base.actor_id, c.base.event_conditions.clone())
+        };
+
+        let subpackets = crate::packets::send::build_actor_event_status_packets(
+            npc_actor_id,
+            &conditions,
+            /* talk */ false,
+            /* emote */ false,
+            /* push */ Some(false),
+            /* notice */ false,
+        );
+        for sub in subpackets {
+            client.send_bytes(sub.to_bytes()).await;
+        }
+        let graphic = crate::packets::send::build_set_actor_quest_graphic(npc_actor_id, 0);
+        client.send_bytes(graphic.to_bytes()).await;
+    }
+
+    /// Linear scan of the zone's actor roster for an NPC whose
+    /// `actor_class_id` matches `class_id`. Quest scripts typically
+    /// register 2-8 ENPCs per sequence so per-call O(n) isn't a hot
+    /// path; a proper index on `ActorRegistry` can come later if needed.
+    async fn find_npc_by_class_id(&self, zone_id: u32, class_id: u32) -> Option<ActorHandle> {
+        let actors = self.registry.actors_in_zone(zone_id).await;
+        for h in actors {
+            let matches = {
+                let c = h.character.read().await;
+                c.chara.actor_class_id == class_id
+            };
+            if matches {
+                return Some(h);
+            }
+        }
+        None
     }
 
     /// `player:AddQuest(id)` — allocate a free slot, build a fresh
