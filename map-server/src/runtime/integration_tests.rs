@@ -1644,6 +1644,130 @@ async fn completed_quests_bitfield_roundtrips_through_db() {
 }
 
 #[tokio::test]
+async fn all_ported_quest_scripts_parse_without_error() {
+    use crate::lua::LuaEngine;
+
+    // Walk the on-disk `scripts/lua/quests/<prefix>/<name>.lua` tree and
+    // confirm every script loads cleanly. A parse/run error surfaces as
+    // `LuaEngine::load_script` returning `Err`. The bulk-port of
+    // ioncannon/quest_system has ~63 scripts spread across man/, etc/,
+    // wld/, dft/, trl/, pgl/ subfolders plus `quest_template.lua`;
+    // this test guards against regressions introduced by engine API
+    // changes (e.g. a renamed `quest:GetData()` method breaking every
+    // script that calls it).
+    let script_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .join("scripts/lua");
+    if !script_root.join("quests").exists() {
+        // Script tree not present in this checkout — skip silently
+        // rather than fail (covers test harnesses that run against a
+        // trimmed artifact bundle).
+        return;
+    }
+    let engine = LuaEngine::new(&script_root);
+
+    let mut loaded = 0usize;
+    let mut failed: Vec<(String, String)> = Vec::new();
+    let quests_dir = script_root.join("quests");
+    walk_lua_scripts(&quests_dir, &mut |path| {
+        match engine.load_script(path) {
+            Ok(_) => loaded += 1,
+            Err(e) => failed.push((path.display().to_string(), e.to_string())),
+        }
+    });
+
+    assert!(
+        failed.is_empty(),
+        "{} quest script(s) failed to parse:\n{}",
+        failed.len(),
+        failed
+            .iter()
+            .map(|(p, e)| format!("  {p}: {e}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+    assert!(
+        loaded >= 60,
+        "expected 60+ quest scripts, got {loaded} — did the bulk port drop files?",
+    );
+}
+
+fn walk_lua_scripts<F: FnMut(&std::path::Path)>(dir: &std::path::Path, visit: &mut F) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            walk_lua_scripts(&p, visit);
+        } else if p.extension().and_then(|s| s.to_str()) == Some("lua") {
+            visit(&p);
+        }
+    }
+}
+
+#[tokio::test]
+async fn ported_man0l0_onstart_emits_start_sequence_zero() {
+    // Smoke test for real content: `man0l0` ("Shapeless Melody", MSQ
+    // starter quest for Limsa Lominsa) should emit exactly one
+    // `QuestStartSequence { sequence: 0 }` when `onStart` fires.
+    // Guards against silent divergence between the script's expected
+    // API surface and garlemald's LuaQuestHandle methods.
+    use crate::lua::{LuaEngine, QuestHookArg, QuestStateSnapshot};
+    use crate::lua::command::{CommandQueue, LuaCommand};
+    use crate::lua::userdata::{LuaQuestHandle, PlayerSnapshot};
+
+    let script_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .join("scripts/lua");
+    let man0l0 = script_root.join("quests/man/man0l0.lua");
+    if !man0l0.exists() {
+        return; // trimmed artifact; skip
+    }
+    let engine = LuaEngine::new(&script_root);
+
+    let snapshot = PlayerSnapshot {
+        actor_id: 1,
+        active_quests: vec![110_001],
+        active_quest_states: vec![QuestStateSnapshot {
+            quest_id: 110_001,
+            sequence: 0,
+            flags: 0,
+            counters: [0; 3],
+        }],
+        ..Default::default()
+    };
+    let handle = LuaQuestHandle {
+        player_id: 1,
+        quest_id: 110_001,
+        has_quest: true,
+        sequence: 0,
+        flags: 0,
+        counters: [0; 3],
+        queue: CommandQueue::new(),
+    };
+    let result = engine.call_quest_hook(
+        &man0l0,
+        "onStart",
+        snapshot,
+        handle,
+        Vec::<QuestHookArg>::new(),
+    );
+    assert!(result.error.is_none(), "man0l0:onStart errored: {:?}", result.error);
+    let saw = result
+        .commands
+        .iter()
+        .any(|c| matches!(c, LuaCommand::QuestStartSequence { sequence: 0, quest_id: 110_001, .. }));
+    assert!(
+        saw,
+        "man0l0:onStart should emit QuestStartSequence(0); got {:?}",
+        result.commands,
+    );
+}
+
+#[tokio::test]
 async fn set_quest_complete_flips_bitstream_both_directions() {
     use crate::runtime::quest_apply::apply_set_quest_complete;
 
