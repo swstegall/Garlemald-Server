@@ -27,19 +27,20 @@
 //! `onKillBNpc`, by contrast, triggers from mid-tick combat resolution
 //! — `die_if_defender_fell` in `runtime/dispatcher.rs`. That path
 //! doesn't own a `PacketProcessor` handle, so this module exposes a
-//! free-function version that takes only `(ActorHandle, LuaEngine,
-//! bnpc_class_id)`. Hook-emitted commands are currently drained and
-//! **dropped with a log line**: scripts that want side effects on kill
-//! (AddExp, AddGil, QuestSet*) will need the ticker to grow a shared
-//! runtime-command drain helper. Logged as a TODO so the limitation is
-//! visible in traces.
+//! free-function version that takes only `(ActorHandle, LuaEngine, …,
+//! bnpc_class_id)`. Hook-emitted commands are drained through the
+//! shared `runtime::quest_apply::apply_runtime_lua_commands` helper so
+//! scripts can legitimately `player:AddExp(100)` / `quest:SetQuestFlag(5)`
+//! on kill and have the side effects persist.
 
 #![allow(dead_code)]
 
 use std::sync::Arc;
 
+use crate::database::Database;
 use crate::lua::{LuaEngine, QuestHookArg, command::CommandQueue};
-use crate::runtime::actor_registry::ActorHandle;
+use crate::runtime::actor_registry::{ActorHandle, ActorRegistry};
+use crate::world_manager::WorldManager;
 
 /// Iterate the attacker's active quests and fire
 /// `onKillBNpc(player, quest, bnpc_class_id)` for each. No-ops if:
@@ -57,6 +58,9 @@ pub async fn fire_on_kill_bnpc(
     attacker: &ActorHandle,
     lua: &Arc<LuaEngine>,
     bnpc_class_id: u32,
+    registry: &ActorRegistry,
+    db: &Database,
+    world: &WorldManager,
 ) {
     let (active_quest_ids, snapshot) = {
         let c = attacker.character.read().await;
@@ -161,16 +165,14 @@ pub async fn fire_on_kill_bnpc(
             );
         }
         if !result.commands.is_empty() {
-            // TODO(Phase C tail): route these through a shared runtime
-            // command drain so `player:AddExp(100)` / quest counter
-            // increments on kill actually land. For now the hook fires
-            // and its side effects are logged but dropped — matches the
-            // existing precedent of `dispatch_quest_check_completion`.
-            tracing::debug!(
-                quest = quest_id,
-                commands = result.commands.len(),
-                "onKillBNpc emitted commands (dropped; runtime-drain pending)",
-            );
+            crate::runtime::quest_apply::apply_runtime_lua_commands(
+                result.commands,
+                registry,
+                db,
+                world,
+                Some(lua),
+            )
+            .await;
         }
     }
 }
@@ -240,7 +242,22 @@ mod tests {
         character.quest_journal.add(quest);
         let handle = ActorHandle::new(1, ActorKindTag::Player, 100, 42, character);
 
-        fire_on_kill_bnpc(&handle, &lua, 1_000_438).await;
+        // The hook-fire test doesn't exercise emitted-command drain
+        // (the script just sets globals), so a dummy in-memory DB /
+        // world / registry-of-one are enough.
+        let registry = ActorRegistry::new();
+        registry.insert(handle.clone()).await;
+        let world = WorldManager::new();
+        let db_path = std::env::temp_dir().join(format!(
+            "garlemald-quest-hook-{}.db",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let db = crate::database::Database::open(db_path).await.expect("db stub");
+
+        fire_on_kill_bnpc(&handle, &lua, 1_000_438, &registry, &db, &world).await;
 
         // Reopen the per-script VM from the cache; its globals carry the
         // hook's side effects because the cache keeps the Lua instance
@@ -272,9 +289,107 @@ mod tests {
         let lua = Arc::new(LuaEngine::new(&root));
         // No quests installed in the catalog.
 
-        fire_on_kill_bnpc(&handle, &lua, 999).await;
+        let registry = ActorRegistry::new();
+        registry.insert(handle.clone()).await;
+        let world = WorldManager::new();
+        let db_path = std::env::temp_dir().join(format!(
+            "garlemald-quest-hook-empty-{}.db",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let db = crate::database::Database::open(db_path).await.expect("db stub");
+
+        fire_on_kill_bnpc(&handle, &lua, 999, &registry, &db, &world).await;
         // The assertion here is "no panic" — the function falls out of
         // the `active_quest_ids.is_empty()` branch before touching Lua.
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn emitted_add_exp_command_routes_through_runtime_drain() {
+        use common::db::ConnCallExt;
+
+        let root = tmpdir();
+        // onKillBNpc awards 750 exp to the attacker's current class.
+        std::fs::write(
+            root.join("quests/man/man0l0.lua"),
+            r#"
+                function onKillBNpc(player, quest, classId)
+                    player:AddExp(3, 750)
+                end
+            "#,
+        )
+        .unwrap();
+
+        let lua = Arc::new(LuaEngine::new(&root));
+        {
+            let mut quests = std::collections::HashMap::new();
+            quests.insert(
+                110_001u32,
+                crate::gamedata::QuestMeta {
+                    id: 110_001,
+                    quest_name: "Shapeless Melody".to_string(),
+                    class_name: "Man0l0".to_string(),
+                    prerequisite: 0,
+                    min_level: 1,
+                },
+            );
+            lua.catalogs().install_quests(quests);
+        }
+
+        let registry = ActorRegistry::new();
+        let mut character = Character::new(7);
+        let mut quest = Quest::new(quest_actor_id(110_001), "Man0l0".to_string());
+        quest.clear_dirty();
+        character.quest_journal.add(quest);
+        let handle = ActorHandle::new(7, ActorKindTag::Player, 100, 42, character);
+        registry.insert(handle.clone()).await;
+        let world = WorldManager::new();
+
+        let db_path = std::env::temp_dir().join(format!(
+            "garlemald-quest-hook-drain-{}.db",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let db = crate::database::Database::open(db_path).await.expect("db");
+        // AddExp reaches into characters_class_exp — seed the row so the
+        // UPDATE has a target.
+        db.conn_for_test()
+            .call_db(|c| {
+                c.execute(
+                    r"INSERT INTO characters (id, userId, slot, serverId, name)
+                      VALUES (7, 0, 0, 0, 'Killer')",
+                    [],
+                )?;
+                c.execute(
+                    r"INSERT INTO characters_class_exp (characterId) VALUES (7)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        fire_on_kill_bnpc(&handle, &lua, 1_000_999, &registry, &db, &world).await;
+
+        // Hook emitted AddExp → runtime drain → db.set_exp landed.
+        let gla = db
+            .conn_for_test()
+            .call_db(|c| {
+                c.query_row(
+                    "SELECT gla FROM characters_class_exp WHERE characterId = 7",
+                    [],
+                    |r| r.get::<_, i32>(0),
+                )
+            })
+            .await
+            .unwrap();
+        assert_eq!(gla, 750);
 
         let _ = std::fs::remove_dir_all(root);
     }

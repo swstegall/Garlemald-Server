@@ -923,6 +923,16 @@ impl PacketProcessor {
             } => {
                 self.apply_quest_update_enpcs(player_id, quest_id).await;
             }
+            LC::SetQuestComplete {
+                player_id,
+                quest_id,
+                flag,
+            } => {
+                crate::runtime::quest_apply::apply_set_quest_complete(
+                    player_id, quest_id, flag, &self.registry, &self.db,
+                )
+                .await;
+            }
             LC::AddExp {
                 actor_id,
                 class_id,

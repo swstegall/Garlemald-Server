@@ -199,6 +199,17 @@ pub enum LuaCommand {
         player_id: u32,
         quest_id: u32,
     },
+    /// `player:SetQuestComplete(id, flag)` — Meteor's direct-set of
+    /// the 2048-bit completion bitfield. Unlike `CompleteQuest`, this
+    /// doesn't remove the quest from active slots — GM debug commands
+    /// (`!completedQuest`) and cross-quest prerequisites use it to
+    /// retroactively mark a completion without running the script's
+    /// `onFinish`.
+    SetQuestComplete {
+        player_id: u32,
+        quest_id: u32,
+        flag: bool,
+    },
     SetHomePoint {
         player_id: u32,
         homepoint: u32,

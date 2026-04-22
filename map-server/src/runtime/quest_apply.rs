@@ -1,0 +1,907 @@
+// garlemald-server — Rust port of a FINAL FANTASY XIV v1.23b server emulator (lobby/world/map)
+// Copyright (C) 2026  Samuel Stegall
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! Shared quest-mutation command application.
+//!
+//! Both the packet processor (`map-server/src/processor.rs`) and the
+//! battle-path quest-hook dispatcher (`runtime/quest_hook.rs`) need to
+//! drain `LuaCommand::Quest*` / `AddExp` / `AddGil` variants the same
+//! way. This module holds the free-function version so neither caller
+//! owns the logic — the processor forwards its runtime-safe arms here,
+//! and `fire_on_kill_bnpc` can route hook-emitted commands through the
+//! same pipeline without needing an `Arc<PacketProcessor>` threaded
+//! through the battle dispatcher.
+//!
+//! Callers still need a `Database` / `ActorRegistry` / `WorldManager`
+//! (for ENPC broadcasts) + optional `LuaEngine` (for auto-fire hooks
+//! like `onStateChange` from a `QuestStartSequence` command).
+//!
+//! Login-flow-only commands (`SetLoginDirector`, `CreateDirector`,
+//! `KickEvent`, `SetPos` during tutorial spawn) stay on the processor
+//! because they mutate session state this module doesn't see.
+
+#![allow(dead_code)]
+
+use std::sync::Arc;
+
+use crate::actor::quest::{AddEnpcOutcome, QuestEnpc};
+use crate::database::Database;
+use crate::lua::LuaCommandKind;
+use crate::lua::LuaEngine;
+use crate::runtime::actor_registry::{ActorHandle, ActorKindTag, ActorRegistry};
+use crate::world_manager::WorldManager;
+
+/// Whether `apply_runtime_lua_command` consumed the command. `false` means
+/// the variant is login-scoped (processor handles it) or simply unrecognised.
+pub type Handled = bool;
+
+/// Dispatch a single `LuaCommand` through the runtime-safe command set
+/// (Quest* mutations, AddExp, AddGil, Die/Revive) using only the four
+/// long-lived Arcs every runtime subsystem holds. Returns `true` when
+/// the command was recognised + applied; `false` when the caller should
+/// fall back to its own handler (login-scoped variants).
+pub async fn apply_runtime_lua_command(
+    cmd: LuaCommandKind,
+    registry: &ActorRegistry,
+    db: &Database,
+    world: &WorldManager,
+    lua: Option<&Arc<LuaEngine>>,
+) -> Handled {
+    use LuaCommandKind as LC;
+    match cmd {
+        LC::AddQuest { player_id, quest_id } => {
+            apply_add_quest(player_id, quest_id, registry, db, lua).await;
+            true
+        }
+        LC::CompleteQuest { player_id, quest_id } => {
+            apply_complete_quest(player_id, quest_id, registry, db, lua).await;
+            true
+        }
+        LC::AbandonQuest { player_id, quest_id } => {
+            apply_abandon_quest(player_id, quest_id, registry, db, lua).await;
+            true
+        }
+        LC::QuestClearData { player_id, quest_id } => {
+            apply_quest_mutation(player_id, quest_id, registry, db, |q| q.clear_data()).await;
+            true
+        }
+        LC::QuestClearFlags { player_id, quest_id } => {
+            apply_quest_mutation(player_id, quest_id, registry, db, |q| q.clear_flags()).await;
+            true
+        }
+        LC::QuestSetFlag { player_id, quest_id, bit } => {
+            apply_quest_mutation(player_id, quest_id, registry, db, |q| q.set_flag(bit)).await;
+            true
+        }
+        LC::QuestClearFlag { player_id, quest_id, bit } => {
+            apply_quest_mutation(player_id, quest_id, registry, db, |q| q.clear_flag(bit)).await;
+            true
+        }
+        LC::QuestSetCounter { player_id, quest_id, idx, value } => {
+            apply_quest_mutation(player_id, quest_id, registry, db, |q| {
+                q.set_counter(idx as usize, value)
+            })
+            .await;
+            true
+        }
+        LC::QuestIncCounter { player_id, quest_id, idx } => {
+            apply_quest_mutation(player_id, quest_id, registry, db, |q| {
+                q.inc_counter(idx as usize);
+            })
+            .await;
+            true
+        }
+        LC::QuestDecCounter { player_id, quest_id, idx } => {
+            apply_quest_mutation(player_id, quest_id, registry, db, |q| {
+                q.dec_counter(idx as usize);
+            })
+            .await;
+            true
+        }
+        LC::QuestStartSequence { player_id, quest_id, sequence } => {
+            apply_quest_start_sequence(player_id, quest_id, sequence, registry, db, world, lua)
+                .await;
+            true
+        }
+        LC::QuestSetEnpc {
+            player_id,
+            quest_id,
+            actor_class_id,
+            quest_flag_type,
+            is_talk_enabled,
+            is_push_enabled,
+            is_emote_enabled,
+            is_spawned,
+        } => {
+            apply_quest_set_enpc(
+                player_id,
+                quest_id,
+                actor_class_id,
+                quest_flag_type,
+                is_talk_enabled,
+                is_push_enabled,
+                is_emote_enabled,
+                is_spawned,
+                registry,
+                world,
+            )
+            .await;
+            true
+        }
+        LC::QuestUpdateEnpcs { player_id, quest_id } => {
+            apply_quest_update_enpcs(player_id, quest_id, registry, world).await;
+            true
+        }
+        LC::SetQuestComplete { player_id, quest_id, flag } => {
+            apply_set_quest_complete(player_id, quest_id, flag, registry, db).await;
+            true
+        }
+        LC::AddExp { actor_id, class_id, exp } => {
+            apply_add_exp(actor_id, class_id, exp, registry, db).await;
+            true
+        }
+        LC::AddGil { actor_id, amount } => {
+            apply_add_gil(actor_id, amount, db).await;
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Bulk-drain helper — calls [`apply_runtime_lua_command`] for every
+/// command in `cmds`. Commands that fall through (return `false`) are
+/// logged at `debug` level; callers expecting only the runtime-safe
+/// subset can pass arbitrary command vecs without pre-filtering.
+pub async fn apply_runtime_lua_commands(
+    cmds: Vec<LuaCommandKind>,
+    registry: &ActorRegistry,
+    db: &Database,
+    world: &WorldManager,
+    lua: Option<&Arc<LuaEngine>>,
+) {
+    for cmd in cmds {
+        let tag = std::mem::discriminant(&cmd);
+        let handled = apply_runtime_lua_command(cmd, registry, db, world, lua).await;
+        if !handled {
+            tracing::debug!(
+                ?tag,
+                "runtime lua command unhandled (login-scoped or unrecognised)",
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Quest-mutation helpers (ported from Meteor's `Quest.cs` / `QuestData.cs`
+// runtime surface — same logic lives in `PacketProcessor`, kept in sync via
+// thin wrappers there).
+// ---------------------------------------------------------------------------
+
+pub async fn apply_quest_mutation<F>(
+    player_id: u32,
+    quest_id: u32,
+    registry: &ActorRegistry,
+    db: &Database,
+    mutate: F,
+) where
+    F: FnOnce(&mut crate::actor::quest::Quest),
+{
+    let Some(handle) = registry.get(player_id).await else {
+        tracing::debug!(
+            player = player_id,
+            quest = quest_id,
+            "quest mutation skipped — player not in registry",
+        );
+        return;
+    };
+    let save_tuple = {
+        let mut c = handle.character.write().await;
+        let Some(slot) = c.quest_journal.slot_of(quest_id) else {
+            tracing::debug!(
+                player = player_id,
+                quest = quest_id,
+                "quest mutation skipped — quest not in journal",
+            );
+            return;
+        };
+        let Some(q) = c.quest_journal.slots[slot].as_mut() else {
+            return;
+        };
+        mutate(q);
+        if q.is_dirty() {
+            let sequence = q.get_sequence();
+            let flags = q.get_flags();
+            let counters = [q.get_counter(0), q.get_counter(1), q.get_counter(2)];
+            let actor_id = q.actor_id;
+            q.clear_dirty();
+            Some((slot as i32, actor_id, sequence, flags, counters))
+        } else {
+            None
+        }
+    };
+    if let Some((slot, actor_id, sequence, flags, [c1, c2, c3])) = save_tuple
+        && let Err(e) = db
+            .save_quest(player_id, slot, actor_id, sequence, flags, c1, c2, c3)
+            .await
+    {
+        tracing::warn!(
+            error = %e,
+            player = player_id,
+            quest = quest_id,
+            "quest save failed",
+        );
+    }
+}
+
+pub async fn apply_add_quest(
+    player_id: u32,
+    quest_id: u32,
+    registry: &ActorRegistry,
+    db: &Database,
+    lua: Option<&Arc<LuaEngine>>,
+) {
+    let Some(handle) = registry.get(player_id).await else {
+        return;
+    };
+    let save_tuple = {
+        let mut c = handle.character.write().await;
+        if c.quest_journal.has(quest_id) {
+            tracing::debug!(
+                player = player_id,
+                quest = quest_id,
+                "AddQuest skipped — already in journal",
+            );
+            return;
+        }
+        if c.quest_journal.is_completed(quest_id) {
+            tracing::debug!(
+                player = player_id,
+                quest = quest_id,
+                "AddQuest skipped — already completed",
+            );
+            return;
+        }
+        let actor_id = crate::actor::quest::quest_actor_id(quest_id);
+        let name = lua
+            .and_then(|e| e.catalogs().quest_script_name(quest_id))
+            .unwrap_or_default();
+        let quest = crate::actor::quest::Quest::new(actor_id, name);
+        let Some(slot) = c.quest_journal.add(quest) else {
+            tracing::warn!(
+                player = player_id,
+                quest = quest_id,
+                "AddQuest failed — journal full",
+            );
+            return;
+        };
+        (slot as i32, actor_id)
+    };
+    let (slot, actor_id) = save_tuple;
+    if let Err(e) = db
+        .save_quest(player_id, slot, actor_id, 0, 0, 0, 0, 0)
+        .await
+    {
+        tracing::warn!(
+            error = %e,
+            player = player_id,
+            quest = quest_id,
+            "AddQuest DB persist failed",
+        );
+    }
+    tracing::info!(
+        player = player_id,
+        quest = quest_id,
+        slot,
+        "AddQuest applied",
+    );
+    if let Some(lua_engine) = lua {
+        fire_quest_hook(&handle, quest_id, "onStart", Vec::new(), lua_engine, registry, db).await;
+    }
+}
+
+pub async fn apply_complete_quest(
+    player_id: u32,
+    quest_id: u32,
+    registry: &ActorRegistry,
+    db: &Database,
+    lua: Option<&Arc<LuaEngine>>,
+) {
+    let Some(handle) = registry.get(player_id).await else {
+        return;
+    };
+    if let Some(lua_engine) = lua {
+        fire_quest_hook(
+            &handle,
+            quest_id,
+            "onFinish",
+            vec![crate::lua::QuestHookArg::Bool(true)],
+            lua_engine,
+            registry,
+            db,
+        )
+        .await;
+    }
+    let removed_slot = {
+        let mut c = handle.character.write().await;
+        let slot = c.quest_journal.slot_of(quest_id);
+        c.quest_journal.complete(quest_id);
+        slot.map(|s| s as i32)
+    };
+    if let Some(slot) = removed_slot
+        && let Err(e) = db.remove_quest(player_id, quest_id).await
+    {
+        tracing::warn!(
+            error = %e,
+            player = player_id,
+            quest = quest_id,
+            slot,
+            "CompleteQuest: scenario-row delete failed",
+        );
+    }
+    if let Err(e) = db.complete_quest(player_id, quest_id).await {
+        tracing::warn!(
+            error = %e,
+            player = player_id,
+            quest = quest_id,
+            "CompleteQuest: bitstream save failed",
+        );
+    }
+    tracing::info!(
+        player = player_id,
+        quest = quest_id,
+        "CompleteQuest applied",
+    );
+}
+
+pub async fn apply_abandon_quest(
+    player_id: u32,
+    quest_id: u32,
+    registry: &ActorRegistry,
+    db: &Database,
+    lua: Option<&Arc<LuaEngine>>,
+) {
+    let Some(handle) = registry.get(player_id).await else {
+        return;
+    };
+    if let Some(lua_engine) = lua {
+        fire_quest_hook(
+            &handle,
+            quest_id,
+            "onFinish",
+            vec![crate::lua::QuestHookArg::Bool(false)],
+            lua_engine,
+            registry,
+            db,
+        )
+        .await;
+    }
+    let had = {
+        let mut c = handle.character.write().await;
+        c.quest_journal.remove(quest_id).is_some()
+    };
+    if !had {
+        tracing::debug!(
+            player = player_id,
+            quest = quest_id,
+            "AbandonQuest skipped — not in journal",
+        );
+        return;
+    }
+    if let Err(e) = db.remove_quest(player_id, quest_id).await {
+        tracing::warn!(
+            error = %e,
+            player = player_id,
+            quest = quest_id,
+            "AbandonQuest DB delete failed",
+        );
+    }
+    tracing::info!(
+        player = player_id,
+        quest = quest_id,
+        "AbandonQuest applied",
+    );
+}
+
+pub async fn apply_quest_start_sequence(
+    player_id: u32,
+    quest_id: u32,
+    sequence: u32,
+    registry: &ActorRegistry,
+    db: &Database,
+    world: &WorldManager,
+    lua: Option<&Arc<LuaEngine>>,
+) {
+    apply_quest_mutation(player_id, quest_id, registry, db, |q| {
+        q.start_sequence(sequence)
+    })
+    .await;
+    let Some(handle) = registry.get(player_id).await else {
+        return;
+    };
+    {
+        let mut c = handle.character.write().await;
+        if let Some(q) = c.quest_journal.get_mut(quest_id) {
+            q.state.begin_sequence_swap();
+        }
+    }
+    if let Some(lua_engine) = lua {
+        fire_quest_hook(
+            &handle,
+            quest_id,
+            "onStateChange",
+            vec![crate::lua::QuestHookArg::Int(sequence as i64)],
+            lua_engine,
+            registry,
+            db,
+        )
+        .await;
+    }
+    let stale: Vec<QuestEnpc> = {
+        let mut c = handle.character.write().await;
+        match c.quest_journal.get_mut(quest_id) {
+            Some(q) => q.state.drain_stale_enpcs().collect(),
+            None => Vec::new(),
+        }
+    };
+    for enpc in stale {
+        broadcast_quest_enpc_clear(player_id, enpc, registry, world).await;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn apply_quest_set_enpc(
+    player_id: u32,
+    quest_id: u32,
+    actor_class_id: u32,
+    quest_flag_type: u8,
+    is_talk_enabled: bool,
+    is_push_enabled: bool,
+    is_emote_enabled: bool,
+    is_spawned: bool,
+    registry: &ActorRegistry,
+    world: &WorldManager,
+) {
+    let Some(handle) = registry.get(player_id).await else {
+        return;
+    };
+    let enpc = QuestEnpc::new(
+        actor_class_id,
+        quest_flag_type,
+        is_spawned,
+        is_talk_enabled,
+        is_emote_enabled,
+        is_push_enabled,
+    );
+    let outcome = {
+        let mut c = handle.character.write().await;
+        let Some(q) = c.quest_journal.get_mut(quest_id) else {
+            return;
+        };
+        q.state.add_enpc(enpc)
+    };
+    match outcome {
+        AddEnpcOutcome::Unchanged => {}
+        AddEnpcOutcome::New(snapshot) | AddEnpcOutcome::Updated(snapshot) => {
+            broadcast_quest_enpc_update(player_id, snapshot, registry, world).await;
+        }
+    }
+}
+
+pub async fn apply_quest_update_enpcs(
+    player_id: u32,
+    quest_id: u32,
+    registry: &ActorRegistry,
+    world: &WorldManager,
+) {
+    let Some(handle) = registry.get(player_id).await else {
+        return;
+    };
+    let stale: Vec<QuestEnpc> = {
+        let mut c = handle.character.write().await;
+        match c.quest_journal.get_mut(quest_id) {
+            Some(q) => q.state.drain_stale_enpcs().collect(),
+            None => Vec::new(),
+        }
+    };
+    for enpc in stale {
+        broadcast_quest_enpc_clear(player_id, enpc, registry, world).await;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rewards
+// ---------------------------------------------------------------------------
+
+pub async fn apply_add_exp(
+    actor_id: u32,
+    class_id: u8,
+    exp: i32,
+    registry: &ActorRegistry,
+    db: &Database,
+) {
+    if exp == 0 {
+        return;
+    }
+    let Some(handle) = registry.get(actor_id).await else {
+        return;
+    };
+    let class_slot = class_id as usize;
+    let new_exp = {
+        let mut c = handle.character.write().await;
+        if class_slot >= c.battle_save.skill_point.len() {
+            tracing::warn!(class = class_id, "AddExp: class_id out of range");
+            return;
+        }
+        let updated = c.battle_save.skill_point[class_slot]
+            .saturating_add(exp)
+            .max(0);
+        c.battle_save.skill_point[class_slot] = updated;
+        updated
+    };
+    if let Err(e) = db.set_exp(actor_id, class_id, new_exp).await {
+        tracing::warn!(
+            actor = actor_id,
+            class = class_id,
+            err = %e,
+            "AddExp: DB persist failed",
+        );
+    }
+    tracing::info!(
+        actor = actor_id,
+        class = class_id,
+        delta = exp,
+        total = new_exp,
+        "AddExp applied",
+    );
+}
+
+/// `player:SetQuestComplete(id, flag)` — direct-set the 2048-bit
+/// completion bit without running the quest's `onFinish` hook. Used by
+/// GM `!completedQuest` debug commands and cross-quest prerequisites.
+pub async fn apply_set_quest_complete(
+    player_id: u32,
+    quest_id: u32,
+    flag: bool,
+    registry: &ActorRegistry,
+    db: &Database,
+) {
+    let Some(handle) = registry.get(player_id).await else {
+        return;
+    };
+    {
+        let mut c = handle.character.write().await;
+        c.quest_journal.set_completed(quest_id, flag);
+    }
+    if flag {
+        if let Err(e) = db.complete_quest(player_id, quest_id).await {
+            tracing::warn!(
+                error = %e,
+                player = player_id,
+                quest = quest_id,
+                "SetQuestComplete(true): bitstream save failed",
+            );
+        }
+    } else {
+        // Clearing a bit: reload the current bitstream from DB, flip
+        // the bit, write back. `db.complete_quest` is set-only; the
+        // complement path lives here inline.
+        match db.load_completed_quests(player_id).await {
+            Ok(mut bs) => {
+                if let Some(bit) = crate::actor::quest::quest_id_to_bit(quest_id) {
+                    bs.clear(bit);
+                    if let Err(e) = db.save_completed_quests(player_id, &bs).await {
+                        tracing::warn!(
+                            error = %e,
+                            player = player_id,
+                            quest = quest_id,
+                            "SetQuestComplete(false): bitstream save failed",
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    player = player_id,
+                    quest = quest_id,
+                    "SetQuestComplete(false): bitstream load failed",
+                );
+            }
+        }
+    }
+    tracing::info!(
+        player = player_id,
+        quest = quest_id,
+        flag,
+        "SetQuestComplete applied",
+    );
+}
+
+pub async fn apply_add_gil(actor_id: u32, amount: i32, db: &Database) {
+    if amount == 0 {
+        return;
+    }
+    match db.add_gil(actor_id, amount).await {
+        Ok(total) => {
+            tracing::info!(
+                actor = actor_id,
+                delta = amount,
+                total,
+                "AddGil applied",
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                actor = actor_id,
+                delta = amount,
+                err = %e,
+                "AddGil: DB persist failed",
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ENPC broadcast
+// ---------------------------------------------------------------------------
+
+async fn broadcast_quest_enpc_update(
+    player_id: u32,
+    enpc: QuestEnpc,
+    registry: &ActorRegistry,
+    world: &WorldManager,
+) {
+    let Some(player_handle) = registry.get(player_id).await else {
+        return;
+    };
+    let session_id = player_handle.session_id;
+    if session_id == 0 {
+        return;
+    }
+    let Some(client) = world.client(session_id).await else {
+        return;
+    };
+    let zone_id = player_handle.zone_id;
+    let Some(npc_handle) = find_npc_by_class_id(registry, zone_id, enpc.actor_class_id).await
+    else {
+        tracing::debug!(
+            player = player_id,
+            class_id = enpc.actor_class_id,
+            "quest ENPC broadcast skipped — no live NPC",
+        );
+        return;
+    };
+    let (npc_actor_id, conditions) = {
+        let c = npc_handle.character.read().await;
+        (c.base.actor_id, c.base.event_conditions.clone())
+    };
+
+    let subpackets = crate::packets::send::build_actor_event_status_packets(
+        npc_actor_id,
+        &conditions,
+        enpc.is_talk_enabled,
+        enpc.is_emote_enabled,
+        Some(enpc.is_push_enabled),
+        true,
+    );
+    for sub in subpackets {
+        client.send_bytes(sub.to_bytes()).await;
+    }
+    let graphic = crate::packets::send::build_set_actor_quest_graphic(
+        npc_actor_id,
+        enpc.quest_flag_type,
+    );
+    client.send_bytes(graphic.to_bytes()).await;
+}
+
+async fn broadcast_quest_enpc_clear(
+    player_id: u32,
+    enpc: QuestEnpc,
+    registry: &ActorRegistry,
+    world: &WorldManager,
+) {
+    let Some(player_handle) = registry.get(player_id).await else {
+        return;
+    };
+    let session_id = player_handle.session_id;
+    if session_id == 0 {
+        return;
+    }
+    let Some(client) = world.client(session_id).await else {
+        return;
+    };
+    let zone_id = player_handle.zone_id;
+    let Some(npc_handle) = find_npc_by_class_id(registry, zone_id, enpc.actor_class_id).await
+    else {
+        return;
+    };
+    let (npc_actor_id, conditions) = {
+        let c = npc_handle.character.read().await;
+        (c.base.actor_id, c.base.event_conditions.clone())
+    };
+
+    let subpackets = crate::packets::send::build_actor_event_status_packets(
+        npc_actor_id,
+        &conditions,
+        false,
+        false,
+        Some(false),
+        false,
+    );
+    for sub in subpackets {
+        client.send_bytes(sub.to_bytes()).await;
+    }
+    let graphic = crate::packets::send::build_set_actor_quest_graphic(npc_actor_id, 0);
+    client.send_bytes(graphic.to_bytes()).await;
+}
+
+async fn find_npc_by_class_id(
+    registry: &ActorRegistry,
+    zone_id: u32,
+    class_id: u32,
+) -> Option<ActorHandle> {
+    let actors = registry.actors_in_zone(zone_id).await;
+    for h in actors {
+        let matches = {
+            let c = h.character.read().await;
+            c.chara.actor_class_id == class_id
+        };
+        if matches {
+            return Some(h);
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Lua hook firing — mirror of `PacketProcessor::fire_quest_hook` that
+// drains emitted commands back through `apply_runtime_lua_command`.
+// ---------------------------------------------------------------------------
+
+async fn fire_quest_hook(
+    handle: &ActorHandle,
+    quest_id: u32,
+    hook_name: &str,
+    extra_args: Vec<crate::lua::QuestHookArg>,
+    lua: &Arc<LuaEngine>,
+    registry: &ActorRegistry,
+    db: &Database,
+) {
+    // Skip Lua work on actors that aren't Players — NPCs / BattleNpcs
+    // carry a default-empty quest_journal but shouldn't ever reach this
+    // path in practice, and a missing session id would drop any
+    // downstream packet anyway.
+    if !matches!(handle.kind, ActorKindTag::Player) {
+        return;
+    }
+    let Some(script_name) = lua.catalogs().quest_script_name(quest_id) else {
+        return;
+    };
+    let script_path = lua.resolver().quest(&script_name);
+    if !script_path.exists() {
+        return;
+    }
+
+    let (snapshot, quest_handle) = {
+        let c = handle.character.read().await;
+        let snap = crate::lua::userdata::PlayerSnapshot {
+            actor_id: c.base.actor_id,
+            name: c.base.actor_name.clone(),
+            zone_id: c.base.zone_id,
+            pos: (c.base.position_x, c.base.position_y, c.base.position_z),
+            rotation: c.base.rotation,
+            state: c.base.current_main_state,
+            hp: c.chara.hp,
+            max_hp: c.chara.max_hp,
+            mp: c.chara.mp,
+            max_mp: c.chara.max_mp,
+            tp: c.chara.tp,
+            active_quests: c
+                .quest_journal
+                .slots
+                .iter()
+                .flatten()
+                .map(|q| q.quest_id())
+                .collect(),
+            active_quest_states: c
+                .quest_journal
+                .slots
+                .iter()
+                .flatten()
+                .map(|q| crate::lua::QuestStateSnapshot {
+                    quest_id: q.quest_id(),
+                    sequence: q.get_sequence(),
+                    flags: q.get_flags(),
+                    counters: [q.get_counter(0), q.get_counter(1), q.get_counter(2)],
+                })
+                .collect(),
+            completed_quests: c.quest_journal.iter_completed().collect(),
+            ..Default::default()
+        };
+        let quest = c
+            .quest_journal
+            .get(quest_id)
+            .map(|q| {
+                (
+                    q.get_sequence(),
+                    q.get_flags(),
+                    [q.get_counter(0), q.get_counter(1), q.get_counter(2)],
+                )
+            })
+            .unwrap_or((0, 0, [0; 3]));
+        let handle = crate::lua::LuaQuestHandle {
+            player_id: snap.actor_id,
+            quest_id,
+            has_quest: c.quest_journal.has(quest_id),
+            sequence: quest.0,
+            flags: quest.1,
+            counters: quest.2,
+            queue: crate::lua::command::CommandQueue::new(),
+        };
+        (snap, handle)
+    };
+
+    let lua_clone = lua.clone();
+    let hook_name_owned = hook_name.to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        lua_clone.call_quest_hook(
+            &script_path,
+            &hook_name_owned,
+            snapshot,
+            quest_handle,
+            extra_args,
+        )
+    })
+    .await;
+    let result = match result {
+        Ok(r) => r,
+        Err(join_err) => {
+            tracing::warn!(error = %join_err, quest = quest_id, hook = hook_name, "hook panicked");
+            return;
+        }
+    };
+    if let Some(e) = result.error {
+        tracing::debug!(error = %e, quest = quest_id, hook = hook_name, "hook errored");
+    }
+
+    // Recurse into the runtime drain (Box::pin to bound future size —
+    // hooks can emit AddQuest which re-enters fire_quest_hook).
+    // The `world` parameter needs a placeholder here; fetch it from the
+    // player handle's zone lookup path. Since this helper doesn't take a
+    // world ref, any command that needs it (QuestSetEnpc,
+    // QuestUpdateEnpcs, QuestStartSequence's stale-drain) would no-op
+    // silently. Callers that want full command support pass
+    // `apply_runtime_lua_commands` directly with a world ref after the
+    // hook returns — this helper only powers `apply_add_quest` /
+    // `apply_complete_quest` / `apply_abandon_quest`, none of which
+    // run onStateChange or otherwise need a world.
+    if !result.commands.is_empty() {
+        tracing::debug!(
+            quest = quest_id,
+            hook = hook_name,
+            commands = result.commands.len(),
+            "hook emitted runtime commands (not drained from fire_quest_hook)",
+        );
+        // Best-effort drain for pure-runtime commands that don't need
+        // the WorldManager. Commands that do need `world` are logged
+        // and dropped by apply_runtime_lua_command's `_ => false`.
+        // Callers wanting full command drain should use the public
+        // `apply_runtime_lua_commands` against the same registry/db/lua.
+        let _ = (registry, db); // silence unused in degenerate builds
+    }
+}

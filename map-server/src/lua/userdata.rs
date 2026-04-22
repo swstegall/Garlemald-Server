@@ -821,6 +821,115 @@ impl UserData for LuaPlayer {
             );
             Ok(())
         });
+        methods.add_method("GetQuestSlot", |_, this, id: u32| {
+            // Returns 0-based slot index, or -1 if the quest isn't
+            // active. Matches Meteor's `GetQuestSlot(questId)` behaviour.
+            let slot = this
+                .snapshot
+                .active_quests
+                .iter()
+                .position(|&q| q == id)
+                .map(|i| i as i32)
+                .unwrap_or(-1);
+            Ok(slot)
+        });
+        methods.add_method("SetQuestComplete", |_, this, args: mlua::MultiValue| {
+            // `SetQuestComplete(id, flag=true)` — flag omitted means
+            // "mark complete". Meteor scripts call this form on prereq
+            // cross-references and GM debug commands.
+            let mut iter = args.into_iter();
+            let Some(Value::Integer(id)) = iter.next() else {
+                return Ok(());
+            };
+            let flag = match iter.next() {
+                Some(Value::Boolean(b)) => b,
+                Some(Value::Nil) | None => true,
+                Some(Value::Integer(i)) => i != 0,
+                _ => true,
+            };
+            push(
+                &this.queue,
+                LuaCommand::SetQuestComplete {
+                    player_id: this.snapshot.actor_id,
+                    quest_id: id as u32,
+                    flag,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method("GetQuestsForNpc", |lua, this, _npc: Value| {
+            // Meteor's implementation filters active quests by whether
+            // the NPC is in the quest's `QuestState.current` — the map
+            // populated by `quest:SetENpc(...)` during `onStateChange`.
+            // We don't surface ENPC membership in the snapshot (see
+            // `QuestStateSnapshot` — only flags/counters travel across),
+            // so the safe-and-permissive port returns ALL active
+            // quests. Scripts typically use this to iterate for
+            // onTalk-style dispatch, and our `onTalk` already fires per
+            // active quest — the filtering happens inside each script's
+            // sequence/classId check. Returns a Lua array.
+            let table = lua.create_table()?;
+            for (i, qid) in this.snapshot.active_quests.iter().enumerate() {
+                let state = this
+                    .snapshot
+                    .active_quest_states
+                    .iter()
+                    .find(|s| s.quest_id == *qid)
+                    .copied()
+                    .unwrap_or(QuestStateSnapshot {
+                        quest_id: *qid,
+                        sequence: 0,
+                        flags: 0,
+                        counters: [0; 3],
+                    });
+                let handle = LuaQuestHandle {
+                    player_id: this.snapshot.actor_id,
+                    quest_id: *qid,
+                    has_quest: true,
+                    sequence: state.sequence,
+                    flags: state.flags,
+                    counters: state.counters,
+                    queue: this.queue.clone(),
+                };
+                table.set(i + 1, lua.create_userdata(handle)?)?;
+            }
+            Ok(table)
+        });
+        methods.add_method("GetDefaultTalkQuest", |lua, this, _npc: Value| {
+            // Meteor: "return the first active quest that has this NPC
+            // in its state list." Same lenient approach as
+            // `GetQuestsForNpc`: return the first active quest if any,
+            // otherwise nil. onTalk already fans out to all quests so
+            // scripts using this for talk-dispatch still hit the
+            // right handler through their internal filter.
+            match this.snapshot.active_quests.first().copied() {
+                Some(qid) => {
+                    let state = this
+                        .snapshot
+                        .active_quest_states
+                        .iter()
+                        .find(|s| s.quest_id == qid)
+                        .copied()
+                        .unwrap_or(QuestStateSnapshot {
+                            quest_id: qid,
+                            sequence: 0,
+                            flags: 0,
+                            counters: [0; 3],
+                        });
+                    let handle = LuaQuestHandle {
+                        player_id: this.snapshot.actor_id,
+                        quest_id: qid,
+                        has_quest: true,
+                        sequence: state.sequence,
+                        flags: state.flags,
+                        counters: state.counters,
+                        queue: this.queue.clone(),
+                    };
+                    Ok(Value::UserData(lua.create_userdata(handle)?))
+                }
+                None => Ok(Value::Nil),
+            }
+        });
         methods.add_method("RemoveQuestByQuestId", |_, this, id: u32| {
             push(
                 &this.queue,

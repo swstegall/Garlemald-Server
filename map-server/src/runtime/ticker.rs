@@ -171,6 +171,7 @@ impl GameTicker {
                     &self.world,
                     zone,
                     self.lua.as_ref(),
+                    Some(&self.db),
                 )
                 .await;
             }

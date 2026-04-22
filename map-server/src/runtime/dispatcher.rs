@@ -162,6 +162,7 @@ pub async fn dispatch_battle_event(
     world: &WorldManager,
     zone: &Arc<RwLock<Zone>>,
     lua: Option<&Arc<crate::lua::LuaEngine>>,
+    db: Option<&Arc<crate::database::Database>>,
 ) {
     match event {
         BattleEvent::Engage {
@@ -285,6 +286,7 @@ pub async fn dispatch_battle_event(
                 world,
                 zone,
                 lua,
+                db,
             )
             .await;
         }
@@ -301,6 +303,7 @@ pub async fn dispatch_battle_event(
                 world,
                 zone,
                 lua,
+                db,
             )
             .await;
         }
@@ -331,6 +334,7 @@ async fn resolve_auto_attack(
     world: &WorldManager,
     zone: &Arc<RwLock<Zone>>,
     lua: Option<&Arc<crate::lua::LuaEngine>>,
+    db: Option<&Arc<crate::database::Database>>,
 ) {
     if attacker_actor_id == defender_actor_id {
         return;
@@ -429,6 +433,7 @@ async fn resolve_auto_attack(
         world,
         zone,
         lua,
+        db,
     )
     .await;
 }
@@ -441,6 +446,7 @@ async fn resolve_action(
     world: &WorldManager,
     zone: &Arc<RwLock<Zone>>,
     lua: Option<&Arc<crate::lua::LuaEngine>>,
+    db: Option<&Arc<crate::database::Database>>,
 ) {
     let Some(attacker_handle) = registry.get(attacker_actor_id).await else {
         return;
@@ -566,6 +572,7 @@ async fn resolve_action(
         world,
         zone,
         lua,
+        db,
     )
     .await;
 }
@@ -1181,6 +1188,7 @@ async fn die_if_defender_fell(
     world: &WorldManager,
     zone: &Arc<RwLock<Zone>>,
     lua: Option<&Arc<crate::lua::LuaEngine>>,
+    db: Option<&Arc<crate::database::Database>>,
 ) {
     let Some(handle) = registry.get(defender_actor_id).await else {
         return;
@@ -1226,7 +1234,21 @@ async fn die_if_defender_fell(
     ) {
         return;
     }
-    crate::runtime::quest_hook::fire_on_kill_bnpc(&attacker_handle, lua, bnpc_class_id).await;
+    let Some(db_arc) = db else {
+        // No DB in scope (test harness) — the runtime-command drain for
+        // AddExp/QuestSetFlag/etc. needs it to persist state. Skip the
+        // hook rather than emitting packets without persistence.
+        return;
+    };
+    crate::runtime::quest_hook::fire_on_kill_bnpc(
+        &attacker_handle,
+        lua,
+        bnpc_class_id,
+        registry,
+        db_arc,
+        world,
+    )
+    .await;
 }
 
 /// Port of Meteor's `DeathState.OnStart` tail: disengage the AI, flip

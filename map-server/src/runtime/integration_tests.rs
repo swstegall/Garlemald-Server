@@ -139,7 +139,7 @@ async fn do_battle_action_reaches_player_client_queue() {
     };
 
     let zone_arc = world.zone(100).await.unwrap();
-    dispatch_battle_event(&event, &registry, &world, &zone_arc, None).await;
+    dispatch_battle_event(&event, &registry, &world, &zone_arc, None, None).await;
 
     // The player's ClientHandle should have received at least one SubPacket.
     let got = rx
@@ -1091,6 +1091,7 @@ async fn die_flips_main_state_and_broadcasts_around_actor() {
         &world,
         &zone_arc,
         None,
+        None,
     )
     .await;
 
@@ -1165,6 +1166,7 @@ async fn revive_restores_hp_and_flips_state_back_to_passive() {
         &registry,
         &world,
         &zone_arc,
+        None,
         None,
     )
     .await;
@@ -1313,7 +1315,7 @@ async fn hate_add_event_updates_attacker_hate_container() {
         amount: 250,
     };
     let zone_arc = world.zone(100).await.unwrap();
-    dispatch_battle_event(&event, &registry, &world, &zone_arc, None).await;
+    dispatch_battle_event(&event, &registry, &world, &zone_arc, None, None).await;
 
     let handle = registry.get(1).await.unwrap();
     let chara = handle.character.read().await;
@@ -1639,6 +1641,111 @@ async fn completed_quests_bitfield_roundtrips_through_db() {
     db.save_completed_quests(55, &fresh_bs).await.unwrap();
     let reloaded = db.load_completed_quests(55).await.unwrap();
     assert_eq!(reloaded, fresh_bs);
+}
+
+#[tokio::test]
+async fn set_quest_complete_flips_bitstream_both_directions() {
+    use crate::runtime::quest_apply::apply_set_quest_complete;
+
+    let db = crate::database::Database::open(tempdb()).await.unwrap();
+    use common::db::ConnCallExt;
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (77, 0, 0, 0, 'Debug')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let registry = ActorRegistry::new();
+    let character = Character::new(77);
+    registry
+        .insert(ActorHandle::new(77, ActorKindTag::Player, 100, 42, character))
+        .await;
+
+    // Set + verify.
+    apply_set_quest_complete(77, 110_042, true, &registry, &db).await;
+    assert!(db.is_quest_completed(77, 110_042).await.unwrap());
+    {
+        let c = registry.get(77).await.unwrap().character.read().await.clone();
+        assert!(c.quest_journal.is_completed(110_042));
+    }
+
+    // Clear + verify.
+    apply_set_quest_complete(77, 110_042, false, &registry, &db).await;
+    assert!(!db.is_quest_completed(77, 110_042).await.unwrap());
+    {
+        let c = registry.get(77).await.unwrap().character.read().await.clone();
+        assert!(!c.quest_journal.is_completed(110_042));
+    }
+
+    // Out-of-range id is a silent no-op (matches Meteor's Bitstream clamp).
+    apply_set_quest_complete(77, 50_000, true, &registry, &db).await;
+    assert!(!db.is_quest_completed(77, 50_000).await.unwrap());
+}
+
+#[tokio::test]
+async fn runtime_drain_fans_out_quest_commands_across_arms() {
+    use crate::actor::quest::{Quest, quest_actor_id};
+    use crate::lua::LuaCommandKind;
+    use crate::runtime::quest_apply::apply_runtime_lua_commands;
+
+    let db = crate::database::Database::open(tempdb()).await.unwrap();
+    use common::db::ConnCallExt;
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (33, 0, 0, 0, 'Drain')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let registry = ActorRegistry::new();
+    let mut character = Character::new(33);
+    let mut quest = Quest::new(quest_actor_id(110_100), "Test".to_string());
+    quest.clear_dirty();
+    character.quest_journal.add(quest);
+    registry
+        .insert(ActorHandle::new(33, ActorKindTag::Player, 100, 55, character))
+        .await;
+    let world = WorldManager::new();
+
+    let cmds = vec![
+        LuaCommandKind::QuestSetFlag {
+            player_id: 33,
+            quest_id: 110_100,
+            bit: 5,
+        },
+        LuaCommandKind::QuestSetCounter {
+            player_id: 33,
+            quest_id: 110_100,
+            idx: 1,
+            value: 42,
+        },
+        LuaCommandKind::SetQuestComplete {
+            player_id: 33,
+            quest_id: 110_050,
+            flag: true,
+        },
+    ];
+    apply_runtime_lua_commands(cmds, &registry, &db, &world, None).await;
+
+    // Quest mutations landed on the live struct.
+    let c = registry.get(33).await.unwrap().character.read().await.clone();
+    let q = c.quest_journal.get(110_100).expect("quest");
+    assert!(q.get_flag(5));
+    assert_eq!(q.get_counter(1), 42);
+    // Completion bit set via the direct path.
+    assert!(c.quest_journal.is_completed(110_050));
+    assert!(db.is_quest_completed(33, 110_050).await.unwrap());
 }
 
 #[tokio::test]
