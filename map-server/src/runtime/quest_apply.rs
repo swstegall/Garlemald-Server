@@ -159,6 +159,15 @@ pub async fn apply_runtime_lua_command(
             apply_add_gil(actor_id, amount, db).await;
             true
         }
+        LC::AddItem {
+            actor_id,
+            item_package,
+            item_id,
+            quantity,
+        } => {
+            apply_add_item(actor_id, item_package, item_id, quantity, db).await;
+            true
+        }
         _ => false,
     }
 }
@@ -541,18 +550,45 @@ pub async fn apply_add_exp(
         return;
     };
     let class_slot = class_id as usize;
-    let new_exp = {
+    // Read-modify-write inside the write lock so a concurrent AddExp
+    // doesn't lose a level-up crossing to a race. `new_exp` and
+    // `new_level` are the post-rollover values.
+    let Some((new_exp, new_level, levels_gained)) = ({
         let mut c = handle.character.write().await;
         if class_slot >= c.battle_save.skill_point.len() {
             tracing::warn!(class = class_id, "AddExp: class_id out of range");
-            return;
+            None
+        } else {
+            let prior_sp = c.battle_save.skill_point[class_slot];
+            let combined = prior_sp.saturating_add(exp).max(0);
+            let prior_level = c
+                .battle_save
+                .skill_level
+                .get(class_slot)
+                .copied()
+                .unwrap_or(1)
+                .max(1);
+            let (lvl, sp, gained) =
+                crate::battle::save::level_up_if_threshold_crossed(prior_level, combined);
+            c.battle_save.skill_point[class_slot] = sp;
+            if gained > 0 {
+                if let Some(slot) = c.battle_save.skill_level.get_mut(class_slot) {
+                    *slot = lvl;
+                }
+                // If this class is the active slot, also refresh the
+                // top-level `chara.level` the stat pipeline reads. No
+                // other class gets reflected into `chara.level` — the
+                // player has one active class at a time.
+                if c.chara.class as i32 == class_id as i32 {
+                    c.chara.level = lvl;
+                }
+            }
+            Some((sp, lvl, gained))
         }
-        let updated = c.battle_save.skill_point[class_slot]
-            .saturating_add(exp)
-            .max(0);
-        c.battle_save.skill_point[class_slot] = updated;
-        updated
+    }) else {
+        return;
     };
+
     if let Err(e) = db.set_exp(actor_id, class_id, new_exp).await {
         tracing::warn!(
             actor = actor_id,
@@ -561,11 +597,29 @@ pub async fn apply_add_exp(
             "AddExp: DB persist failed",
         );
     }
+    if levels_gained > 0 {
+        if let Err(e) = db.set_level(actor_id, class_id, new_level).await {
+            tracing::warn!(
+                actor = actor_id,
+                class = class_id,
+                err = %e,
+                "AddExp: set_level DB persist failed",
+            );
+        }
+        tracing::info!(
+            actor = actor_id,
+            class = class_id,
+            new_level,
+            levels_gained,
+            "AddExp: level up",
+        );
+    }
     tracing::info!(
         actor = actor_id,
         class = class_id,
         delta = exp,
-        total = new_exp,
+        skill_point = new_exp,
+        level = new_level,
         "AddExp applied",
     );
 }
@@ -630,6 +684,80 @@ pub async fn apply_set_quest_complete(
         flag,
         "SetQuestComplete applied",
     );
+}
+
+/// Grant one stack of `item_id` to the NORMAL bag on `actor_id`.
+/// Used by:
+///  * Gathering's `HarvestReward` Lua helper when the strike minigame
+///    lands a copper/rock-salt/ore drop (actor_id = player character
+///    id, item_package = `PKG_NORMAL = 0`).
+///  * Future `onReward` quest-finish hooks once those land.
+///
+/// Persistence is direct-DB via [`Database::add_harvest_item`] — the
+/// in-memory `ItemPackage` on `Player` is not yet accessible from the
+/// registry (`Player` is not in `ActorRegistry`; the registry stores
+/// only the `Character` sub-struct). The player picks up the new
+/// stack on the next inventory resync / zone-in, which matches
+/// retail 1.x behaviour where the `textInputWidget` remains open and
+/// the bag only refreshes on the next `/_init` bundle.
+///
+/// Silently no-ops for:
+///  * non-NORMAL packages (currency / key items go through their own
+///    paths — `AddGil` and a future AddKeyItem),
+///  * zero or negative quantity (`player:AddItem(..., 0)` is a legal
+///    Lua no-op that shouldn't insert a zero-quantity row),
+///  * item id 0.
+pub async fn apply_add_item(
+    actor_id: u32,
+    item_package: u16,
+    item_id: u32,
+    quantity: i32,
+    db: &Database,
+) {
+    if quantity <= 0 || item_id == 0 {
+        return;
+    }
+    // Route currency stacks through add_gil so the 1_000_001 gil row
+    // stays the single-stack well-known layout. The gathering path
+    // never lands here (Copper Ore is a NORMAL-bag item), but Lua
+    // scripts that incorrectly call `GetItemPackage(99):AddItem(1000001, 10)`
+    // should still do the right thing.
+    if item_package == crate::inventory::PKG_CURRENCY_CRYSTALS {
+        apply_add_gil(actor_id, quantity, db).await;
+        return;
+    }
+    // Everything else lands in NORMAL for the first cut. Key-items /
+    // bazaar / trade bags get their own paths as they're wired up.
+    if item_package != crate::inventory::PKG_NORMAL {
+        tracing::debug!(
+            actor = actor_id,
+            package = item_package,
+            item = item_id,
+            qty = quantity,
+            "AddItem: non-NORMAL packages not yet implemented — logging only",
+        );
+        return;
+    }
+    match db.add_harvest_item(actor_id, item_id, quantity, 1).await {
+        Ok(total) => {
+            tracing::info!(
+                actor = actor_id,
+                item = item_id,
+                delta = quantity,
+                total,
+                "AddItem applied",
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                actor = actor_id,
+                item = item_id,
+                delta = quantity,
+                err = %e,
+                "AddItem: DB persist failed",
+            );
+        }
+    }
 }
 
 pub async fn apply_add_gil(actor_id: u32, amount: i32, db: &Database) {

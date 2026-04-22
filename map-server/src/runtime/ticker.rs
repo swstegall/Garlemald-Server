@@ -82,6 +82,12 @@ pub struct GameTicker {
     /// `onKillBNpc` can fire from the ticker's `dispatch_battle_event`
     /// path. Test harnesses pass `None`; main.rs wires the real engine.
     pub lua: Option<Arc<LuaEngine>>,
+    /// Shared gamedata catalogs (items, quests, recipes, passive GL).
+    /// Pulled from `lua.catalogs()` when a real `LuaEngine` is present;
+    /// otherwise an empty instance so test harnesses don't need to wire
+    /// up Catalogs just to run the ticker. The dispatchers consume this
+    /// (gear-paramBonus summer reads `items`).
+    pub catalogs: Arc<crate::lua::Catalogs>,
     /// Server-start wall-clock — `now_ms` on each tick is relative to this.
     start: Instant,
 }
@@ -103,12 +109,17 @@ impl GameTicker {
         db: Arc<Database>,
         lua: Option<Arc<LuaEngine>>,
     ) -> Self {
+        let catalogs = lua
+            .as_ref()
+            .map(|l| l.catalogs().clone())
+            .unwrap_or_else(|| Arc::new(crate::lua::Catalogs::default()));
         Self {
             config,
             world,
             registry,
             db,
             lua,
+            catalogs,
             start: Instant::now(),
         }
     }
@@ -162,7 +173,14 @@ impl GameTicker {
             }
 
             for e in status_outbox.drain() {
-                dispatch_status_event(&e, &self.registry, &self.world, &self.db).await;
+                dispatch_status_event(
+                    &e,
+                    &self.registry,
+                    &self.world,
+                    &self.db,
+                    &self.catalogs,
+                )
+                .await;
             }
             for e in battle_outbox.drain() {
                 dispatch_battle_event(

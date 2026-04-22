@@ -35,6 +35,7 @@ mod database;
 mod director;
 mod event;
 mod gamedata;
+mod gathering;
 mod group;
 mod inventory;
 mod lua;
@@ -112,6 +113,29 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Populate the item catalog used by (a) Lua's GetItemGamedata
+    // global, (b) the gear-paramBonus summer on Player stat recalc.
+    // Non-fatal: a missing catalog just means both of those call sites
+    // silently no-op (no gear bonuses applied, Lua sees nil).
+    match db.get_item_gamedata().await {
+        Ok(items) => {
+            let count = items.len();
+            let with_bonuses = items.values().filter(|i| !i.gear_bonuses.is_empty()).count();
+            lua.catalogs().install_items(items);
+            tracing::info!(
+                count,
+                with_bonuses,
+                "gamedata_items catalog loaded (items with parsed paramBonus gear_bonuses)"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "gamedata_items load failed — Player gear stat bonuses will not apply",
+            );
+        }
+    }
+
     // Populate the crafting recipe + passive-guildleve catalogs used by
     // `CraftCommand.lua`. Both are non-fatal — if either load fails the
     // CraftJudge Lua flow simply fails the first GetRecipeResolver() or
@@ -139,6 +163,26 @@ async fn main() -> Result<()> {
             tracing::warn!(
                 error = %e,
                 "gamedata_passivegl_craft load failed — local crafting leves unavailable",
+            );
+        }
+    }
+
+    // Gathering catalog — DummyCommand.lua (mining/logging/fishing)
+    // reads `GetGatherResolver():GetNode(id)` / `:BuildAimSlots(id)` to
+    // pick drops for a clicked node. Load failure is non-fatal: Lua
+    // falls through to the empty resolver and the minigame simply
+    // reports no drops.
+    match db.load_gather_resolver().await {
+        Ok(resolver) => {
+            let nodes = resolver.num_nodes();
+            let items = resolver.num_items();
+            lua.catalogs().install_gather_resolver(resolver);
+            tracing::info!(nodes, items, "gather-node catalog loaded");
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "gather-node catalog load failed — DummyCommand.lua will run with no drops",
             );
         }
     }

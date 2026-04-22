@@ -590,7 +590,14 @@ async fn equip_event_writes_db_row_and_sends_bracket_packets() {
     );
 
     for e in outbox.drain() {
-        dispatch_inventory_event(&e, &registry, &world, &db).await;
+        dispatch_inventory_event(
+            &e,
+            &registry,
+            &world,
+            &db,
+            &Arc::new(crate::lua::Catalogs::default()),
+        )
+        .await;
     }
 
     // DB row exists for class=GLA (since SLOT_BODY is not an undergarment).
@@ -605,12 +612,19 @@ async fn equip_event_writes_db_row_and_sends_bracket_packets() {
     );
 
     // Client receives the bracket: begin_change, set_begin, linked_x01,
-    // set_end, end_change.
+    // set_end, end_change — 5 inventory packets. Post-2026-04-22 the
+    // equip-triggered RecalcStats also emits the HP/MP state bundle
+    // (2 subs — chara + player variants) since equipping non-zero-HP
+    // gear flips the pool values from zero to non-zero, so the total
+    // is now 7.
     let mut received = 0;
     while rx.try_recv().is_ok() {
         received += 1;
     }
-    assert_eq!(received, 5, "expected 5 inventory packets in the bracket");
+    assert_eq!(
+        received, 7,
+        "expected 5 inventory packets + 2 HP/MP state bundle packets"
+    );
 }
 
 #[tokio::test]
@@ -660,6 +674,7 @@ async fn packet_items_batches_by_size_bucket() {
         &registry,
         &world,
         &db,
+        &Arc::new(crate::lua::Catalogs::default()),
     )
     .await;
 
@@ -684,11 +699,12 @@ async fn recalc_stats_event_derives_secondaries_for_player() {
             .expect("db stub"),
     );
 
-    // Player with seeded primary stats. Secondaries start at zero.
+    // A PUG L10 player. The class+level baseline seeder produces
+    // primary = 8 + 10*2 = 28 with a +2 PUG emphasis on STR and DEX,
+    // so STR=DEX=30 and VIT=INT=MND=PIE=28.
     let mut character = Character::new(1);
-    character.chara.mods.set(Modifier::Strength, 90.0);
-    character.chara.mods.set(Modifier::Vitality, 60.0);
-    character.chara.mods.set(Modifier::Intelligence, 40.0);
+    character.chara.class = crate::gamedata::CLASSID_PUG as i16;
+    character.chara.level = 10;
     registry
         .insert(ActorHandle::new(
             1,
@@ -704,17 +720,19 @@ async fn recalc_stats_event_derives_secondaries_for_player() {
         &registry,
         &world,
         &db,
+        &Arc::new(crate::lua::Catalogs::default()),
     )
     .await;
 
     let chara = registry.get(1).await.unwrap().character;
     let c = chara.read().await;
-    // floor(90 * 0.667) = 60
-    assert_eq!(c.chara.mods.get(Modifier::Attack), 60.0);
-    // floor(60 * 0.667) = 40
-    assert_eq!(c.chara.mods.get(Modifier::Defense), 40.0);
-    // floor(40 * 0.25) = 10
-    assert_eq!(c.chara.mods.get(Modifier::AttackMagicPotency), 10.0);
+    // floor(30 * 0.667) = 20 (STR → Attack, DEX → Accuracy)
+    assert_eq!(c.chara.mods.get(Modifier::Attack), 20.0);
+    assert_eq!(c.chara.mods.get(Modifier::Accuracy), 20.0);
+    // floor(28 * 0.667) = 18 (VIT → Defense)
+    assert_eq!(c.chara.mods.get(Modifier::Defense), 18.0);
+    // floor(28 * 0.25) = 7 (INT → AttackMagicPotency)
+    assert_eq!(c.chara.mods.get(Modifier::AttackMagicPotency), 7.0);
 }
 
 #[tokio::test]
@@ -751,6 +769,7 @@ async fn recalc_stats_event_skips_derivation_for_npc() {
         &registry,
         &world,
         &db,
+        &Arc::new(crate::lua::Catalogs::default()),
     )
     .await;
 
@@ -776,11 +795,11 @@ async fn equip_event_triggers_stat_recalc() {
             .expect("db stub"),
     );
 
-    // Seed the player with a non-zero STR so the post-equip derivation
-    // produces a visible effect.
+    // GLA L15 — baseline produces primary = 8 + 15*2 = 38, with the
+    // +2 GLA emphasis applied to VIT and STR, so VIT=STR=40.
     let mut character = Character::new(1);
     character.chara.class = crate::actor::player::CLASSID_GLA as i16;
-    character.chara.mods.set(Modifier::Strength, 30.0);
+    character.chara.level = 15;
     registry
         .insert(ActorHandle::new(
             1,
@@ -814,14 +833,24 @@ async fn equip_event_triggers_stat_recalc() {
     );
 
     for e in outbox.drain() {
-        dispatch_inventory_event(&e, &registry, &world, &db).await;
+        dispatch_inventory_event(
+            &e,
+            &registry,
+            &world,
+            &db,
+            &Arc::new(crate::lua::Catalogs::default()),
+        )
+        .await;
     }
 
-    // DbEquip fires apply_recalc_stats → apply_player_stat_derivation.
-    // floor(30 * 0.667) = 20 → Attack should rise by 20.
+    // DbEquip fires apply_recalc_stats → reset → baseline → gear_sum →
+    // derivation. The equipped item (catalog 5000) has no gamedata row
+    // in this harness and empty Catalogs, so gear_sum is a no-op. That
+    // leaves baseline's STR=40 (GLA L15 with +2 emphasis) feeding
+    // derivation: Attack = floor(40 * 0.667) = 26.
     let chara = registry.get(1).await.unwrap().character;
     let c = chara.read().await;
-    assert_eq!(c.chara.mods.get(Modifier::Attack), 20.0);
+    assert_eq!(c.chara.mods.get(Modifier::Attack), 26.0);
 }
 
 #[tokio::test]
@@ -2114,6 +2143,474 @@ fn passive_guildleve_view_craft_success_end_to_end() {
 // Primary-stat baseline seeder (Tier 1 #3 follow-up).
 // =============================================================================
 
+/// Full-pipeline gear-sum integration test. Wires real DB rows +
+/// Catalogs + RecalcStats through the dispatcher, confirming a
+/// paramBonus-bearing equipped item lifts the derived Attack above the
+/// baseline-only value. This is the regression guard for the Tier 1 #3
+/// tail (A) — "gear paramBonus summing not wired" — that the preceding
+/// work closes.
+#[tokio::test]
+async fn equipped_item_param_bonus_lifts_derived_secondary() {
+    use crate::actor::modifier::Modifier;
+    use crate::data::ItemData;
+    use crate::runtime::dispatcher::dispatch_status_event;
+    use crate::status::outbox::StatusEvent;
+    use common::db::ConnCallExt;
+    use rusqlite::named_params;
+    use std::sync::Arc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+
+    // Install a paramBonus-bearing item (STR+10) into Catalogs.
+    let catalogs = Arc::new(crate::lua::Catalogs::default());
+    let mut items = std::collections::HashMap::new();
+    items.insert(
+        777_u32,
+        ItemData {
+            id: 777,
+            gear_bonuses: vec![(Modifier::Strength.as_u32(), 10)],
+            ..Default::default()
+        },
+    );
+    catalogs.install_items(items);
+
+    // Seed server_items + characters_inventory_equipment so the
+    // equipped-catalog-ids loader has something to return. The
+    // equipped item is server_items.id = 500 → catalog 777 (STR+10).
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                "INSERT INTO server_items (id, itemId, quantity, quality) VALUES (500, 777, 1, 1)",
+                [],
+            )?;
+            c.execute(
+                "INSERT INTO characters_inventory_equipment (characterId, classId, equipSlot, itemId)
+                 VALUES (:cid, :class, :slot, :iid)",
+                named_params! {
+                    ":cid": 1_u32,
+                    ":class": crate::gamedata::CLASSID_PUG as u8,
+                    ":slot": 3_u16, // SLOT_BODY
+                    ":iid": 500_u64,
+                },
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    // PUG L5 — baseline STR = 8 + 5*2 + 2 (emphasis) = 20; + gear = 30.
+    let mut character = Character::new(1);
+    character.chara.class = crate::gamedata::CLASSID_PUG as i16;
+    character.chara.level = 5;
+    registry
+        .insert(ActorHandle::new(
+            1,
+            ActorKindTag::Player,
+            100,
+            42,
+            character,
+        ))
+        .await;
+
+    dispatch_status_event(
+        &StatusEvent::RecalcStats { owner_actor_id: 1 },
+        &registry,
+        &world,
+        &db,
+        &catalogs,
+    )
+    .await;
+
+    let handle = registry.get(1).await.unwrap();
+    let c = handle.character.read().await;
+    assert_eq!(
+        c.chara.mods.get(Modifier::Strength),
+        30.0,
+        "baseline STR=20 + gear STR+10 → 30 (got {})",
+        c.chara.mods.get(Modifier::Strength)
+    );
+    assert_eq!(
+        c.chara.mods.get(Modifier::Attack),
+        20.0,
+        "floor(30 * 0.667) = 20 (got {})",
+        c.chara.mods.get(Modifier::Attack)
+    );
+}
+
+/// Equipping a gear paramBonus that changes Hp sends a
+/// `charaWork/stateAtQuicklyForAll` bundle to the owner's client. This
+/// is the regression guard for Tier 1 #3 gap C — pre-change, apply_recalc
+/// would mutate the Character but emit nothing.
+#[tokio::test]
+async fn hp_change_on_equip_emits_state_bundle_to_self() {
+    use crate::actor::modifier::Modifier;
+    use crate::data::ItemData;
+    use crate::packets::opcodes::OP_SET_ACTOR_PROPERTY;
+    use crate::runtime::dispatcher::dispatch_status_event;
+    use crate::status::outbox::StatusEvent;
+    use common::db::ConnCallExt;
+    use rusqlite::named_params;
+    use std::sync::Arc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+
+    // Hp+500 item at catalog id 555.
+    let catalogs = Arc::new(crate::lua::Catalogs::default());
+    let mut items = std::collections::HashMap::new();
+    items.insert(
+        555_u32,
+        ItemData {
+            id: 555,
+            gear_bonuses: vec![(Modifier::Hp.as_u32(), 500)],
+            ..Default::default()
+        },
+    );
+    catalogs.install_items(items);
+
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                "INSERT INTO server_items (id, itemId, quantity, quality) VALUES (600, 555, 1, 1)",
+                [],
+            )?;
+            c.execute(
+                "INSERT INTO characters_inventory_equipment (characterId, classId, equipSlot, itemId)
+                 VALUES (:cid, :class, :slot, :iid)",
+                named_params! {
+                    ":cid": 1_u32,
+                    ":class": crate::gamedata::CLASSID_GLA as u8,
+                    ":slot": crate::actor::player::SLOT_BODY,
+                    ":iid": 600_u64,
+                },
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    // Actor zone-registered so broadcast_around_actor can find them.
+    {
+        let mut zone = crate::zone::zone::Zone::new(
+            100, "t", 1, "/T", 0, 0, 0, false, false, false, false, false, Some(&StubNavmeshLoader),
+        );
+        let mut ob = AreaOutbox::new();
+        zone.core.add_actor(
+            StoredActor {
+                actor_id: 1,
+                kind: ActorKind::Player,
+                position: common::Vector3::ZERO,
+                grid: (0, 0),
+                is_alive: true,
+            },
+            &mut ob,
+        );
+        world.register_zone(zone).await;
+    }
+    let mut character = Character::new(1);
+    character.chara.class = crate::gamedata::CLASSID_GLA as i16;
+    character.chara.level = 10;
+    registry
+        .insert(ActorHandle::new(
+            1,
+            ActorKindTag::Player,
+            100,
+            42,
+            character,
+        ))
+        .await;
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(32);
+    world
+        .register_client(42, ClientHandle::new(42, tx))
+        .await;
+
+    dispatch_status_event(
+        &StatusEvent::RecalcStats { owner_actor_id: 1 },
+        &registry,
+        &world,
+        &db,
+        &catalogs,
+    )
+    .await;
+
+    // Drain and look for 0x0137 SetActorProperty packets addressed to
+    // the actor — those carry the state_at_quickly bundle.
+    //
+    // Layout from common::subpacket::SubPacket::to_bytes:
+    //   offset  0..16  SubPacketHeader (size u16, type u16, source u32,
+    //                                    target u32, unknown1 u32)
+    //   offset 16..32  GameMessageHeader (unknown4 u16, opcode u16, …)
+    //   offset 32+     packet body
+    // Opcode sits at offset 18.
+    let mut state_property_packets = 0;
+    while let Ok(bytes) = rx.try_recv() {
+        if bytes.len() >= 20 {
+            let opcode = u16::from_le_bytes([bytes[18], bytes[19]]);
+            if opcode == OP_SET_ACTOR_PROPERTY {
+                state_property_packets += 1;
+            }
+        }
+    }
+    assert!(
+        state_property_packets >= 2,
+        "expected at least 2 SetActorProperty packets (chara + player variants of state bundle), got {state_property_packets}"
+    );
+}
+
+/// AddExp that crosses a level threshold rolls the level over, persists
+/// both the new skill_point and the new skill_level, and updates the
+/// in-memory `chara.level` for the active class.
+#[tokio::test]
+async fn addexp_past_threshold_levels_up_and_persists() {
+    use common::db::ConnCallExt;
+    use rusqlite::named_params;
+    use std::sync::Arc;
+
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+
+    let mut character = Character::new(7);
+    character.chara.class = crate::gamedata::CLASSID_GLA as i16;
+    character.chara.level = 1;
+    character.battle_save.skill_level[crate::gamedata::CLASSID_GLA as usize] = 1;
+    registry
+        .insert(ActorHandle::new(
+            7,
+            ActorKindTag::Player,
+            100,
+            42,
+            character,
+        ))
+        .await;
+
+    // Seed DB rows so set_exp + set_level have targets.
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (7, 0, 0, 0, 'Leveler')",
+                [],
+            )?;
+            c.execute(
+                r"INSERT INTO characters_class_exp (characterId) VALUES (7)",
+                [],
+            )?;
+            c.execute(
+                r"INSERT INTO characters_class_levels (characterId) VALUES (7)",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    // 570 (1→2) + 700 (2→3) + 1 surplus = 1271 SP.
+    crate::runtime::quest_apply::apply_add_exp(
+        7,
+        crate::gamedata::CLASSID_GLA,
+        1271,
+        &registry,
+        &db,
+    )
+    .await;
+
+    let handle = registry.get(7).await.unwrap();
+    let c = handle.character.read().await;
+    assert_eq!(c.chara.level, 3, "active class level should roll to 3");
+    assert_eq!(
+        c.battle_save.skill_level[crate::gamedata::CLASSID_GLA as usize],
+        3,
+        "battle_save skill_level should track the active class"
+    );
+    assert_eq!(
+        c.battle_save.skill_point[crate::gamedata::CLASSID_GLA as usize],
+        1,
+        "surplus SP (1271 - 570 - 700 = 1) should carry over"
+    );
+    drop(c);
+    drop(handle);
+
+    // DB persisted both rows.
+    let (db_lvl, db_sp) = db
+        .conn_for_test()
+        .call_db(|c| {
+            let lvl: i32 = c.query_row(
+                "SELECT gla FROM characters_class_levels WHERE characterId = 7",
+                [],
+                |r| r.get(0),
+            )?;
+            let sp: i32 = c.query_row(
+                "SELECT gla FROM characters_class_exp WHERE characterId = 7",
+                [],
+                |r| r.get(0),
+            )?;
+            Ok((lvl, sp))
+        })
+        .await
+        .unwrap();
+    assert_eq!(db_lvl, 3);
+    assert_eq!(db_sp, 1);
+
+    // Second AddExp on the already-levelled character must not bump
+    // the level a second time for the same SP — idempotency guard.
+    let _ = named_params! {};
+    crate::runtime::quest_apply::apply_add_exp(
+        7,
+        crate::gamedata::CLASSID_GLA,
+        100,
+        &registry,
+        &db,
+    )
+    .await;
+    let handle = registry.get(7).await.unwrap();
+    let c = handle.character.read().await;
+    assert_eq!(c.chara.level, 3);
+    assert_eq!(
+        c.battle_save.skill_point[crate::gamedata::CLASSID_GLA as usize],
+        101,
+    );
+}
+
+/// End-to-end weapon pipeline: equipped main-hand weapon's attributes
+/// surface on the modifier map after the dispatcher runs its full
+/// recalc, and the resulting `attack_calculate_base_damage` read is
+/// non-zero (i.e. the placeholder `Random.Next(10) * 10` is truly
+/// gone).
+#[tokio::test]
+async fn equipped_mainhand_weapon_populates_modifiers_and_damage() {
+    use crate::actor::modifier::Modifier;
+    use crate::battle::utils::{
+        CombatView, FixedRng, attack_calculate_base_damage,
+    };
+    use crate::data::{ItemData, WeaponAttributes};
+    use crate::runtime::dispatcher::dispatch_status_event;
+    use crate::status::outbox::StatusEvent;
+    use common::db::ConnCallExt;
+    use rusqlite::named_params;
+    use std::sync::Arc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+
+    // Catalog: item 888 is a weapon with known attributes.
+    let catalogs = Arc::new(crate::lua::Catalogs::default());
+    let mut items = std::collections::HashMap::new();
+    items.insert(
+        888_u32,
+        ItemData {
+            id: 888,
+            weapon: Some(WeaponAttributes {
+                delay_ms: 2500,
+                attack_type: 1,
+                hit_count: 1,
+                damage_power: 20,
+                attack: 3,
+                parry: 0,
+            }),
+            ..Default::default()
+        },
+    );
+    catalogs.install_items(items);
+
+    // server_items + equipment rows — item_id is the catalog id (888),
+    // server_items.id is the unique instance id (501). Main-hand slot.
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                "INSERT INTO server_items (id, itemId, quantity, quality) VALUES (501, 888, 1, 1)",
+                [],
+            )?;
+            c.execute(
+                "INSERT INTO characters_inventory_equipment (characterId, classId, equipSlot, itemId)
+                 VALUES (:cid, :class, :slot, :iid)",
+                named_params! {
+                    ":cid": 1_u32,
+                    ":class": crate::gamedata::CLASSID_PUG as u8,
+                    ":slot": crate::actor::player::SLOT_MAINHAND,
+                    ":iid": 501_u64,
+                },
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    // PUG L10 — baseline STR = 8+10*2+2 (emphasis) = 30.
+    let mut character = Character::new(1);
+    character.chara.class = crate::gamedata::CLASSID_PUG as i16;
+    character.chara.level = 10;
+    registry
+        .insert(ActorHandle::new(
+            1,
+            ActorKindTag::Player,
+            100,
+            42,
+            character,
+        ))
+        .await;
+
+    dispatch_status_event(
+        &StatusEvent::RecalcStats { owner_actor_id: 1 },
+        &registry,
+        &world,
+        &db,
+        &catalogs,
+    )
+    .await;
+
+    let handle = registry.get(1).await.unwrap();
+    let c = handle.character.read().await;
+    // Weapon-scoped modifiers set by apply_player_weapon_stats.
+    assert_eq!(c.chara.mods.get(Modifier::Delay), 2500.0);
+    assert_eq!(c.chara.mods.get(Modifier::AttackType), 1.0);
+    assert_eq!(c.chara.mods.get(Modifier::HitCount), 1.0);
+    assert_eq!(c.chara.mods.get(Modifier::WeaponDamagePower), 20.0);
+    // Attack = STR_derived (floor(30 * 0.667) = 20) + weapon.attack (3) = 23.
+    assert_eq!(c.chara.mods.get(Modifier::Attack), 23.0);
+
+    // Feed the modifier snapshot into the base-damage formula and
+    // confirm it produces a non-zero number rather than the old
+    // placeholder 0..=90 regardless of stats.
+    let mods_snapshot = c.chara.mods.clone();
+    drop(c);
+    drop(handle);
+    let atk_view = CombatView {
+        actor_id: 1,
+        level: 10,
+        max_hp: 1000,
+        mods: &mods_snapshot,
+        has_aegis_boon: false,
+        has_protect: false,
+        has_shell: false,
+        has_stoneskin: false,
+    };
+    // rng=0.0 → minimum deviation (0.96). base = 20 + 0.85*30 + 23
+    // = 20 + 25.5 + 23 = 68.5; × 0.96 = 65.76 → rounds to 66.
+    let mut rng = FixedRng::new(&[0.0]);
+    assert_eq!(attack_calculate_base_damage(&atk_view, &mut rng), 66);
+}
+
 /// Regression guard for the "derivation ran on zeros" gap — with a fresh
 /// Player character (no manual stat seeding), firing `RecalcStats`
 /// through the dispatcher path must produce non-zero secondaries. Pre-
@@ -2156,6 +2653,7 @@ async fn recalc_stats_event_on_zero_player_produces_nonzero_secondaries() {
         &registry,
         &world,
         &db,
+        &Arc::new(crate::lua::Catalogs::default()),
     )
     .await;
 
@@ -2173,4 +2671,321 @@ async fn recalc_stats_event_on_zero_player_produces_nonzero_secondaries() {
         c > 0.0,
         "dispatch RecalcStats on a zero-init Player should leave Attack > 0 — got {c}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Gathering — Tier 3 #12
+// ---------------------------------------------------------------------------
+
+/// DB schema + seed round-trip: `gamedata_gather_nodes` +
+/// `gamedata_gather_node_items` load into a `GatherResolver` that can
+/// resolve both templates (1001/1002) seeded by migration 044/045.
+#[tokio::test]
+async fn load_gather_resolver_round_trips_seeded_rows() {
+    let db = crate::database::Database::open(tempdb())
+        .await
+        .expect("db stub");
+    let resolver = db
+        .load_gather_resolver()
+        .await
+        .expect("gather catalog load");
+    assert!(resolver.num_nodes() >= 2, "seeded nodes missing");
+    assert!(resolver.num_items() >= 8, "seeded item rows missing");
+
+    let node = resolver.get_node(1001).expect("node 1001");
+    assert_eq!(node.grade, 2);
+    assert_eq!(node.attempts, 2);
+    assert_eq!(node.num_items(), 3);
+    assert_eq!(
+        resolver.get_item(3).expect("copper ore").item_catalog_id,
+        10_001_006,
+    );
+
+    let node2 = resolver.get_node(1002).expect("node 1002");
+    assert_eq!(node2.attempts, 4);
+    assert_eq!(node2.num_items(), 5);
+}
+
+/// Spawn loader round-trips the two seeded rows and every row carries
+/// a valid harvest-type + position triple.
+#[tokio::test]
+async fn load_gather_node_spawns_round_trips_seeded_rows() {
+    let db = crate::database::Database::open(tempdb())
+        .await
+        .expect("db stub");
+    let spawns = db
+        .load_gather_node_spawns()
+        .await
+        .expect("load gather spawns");
+    assert_eq!(spawns.len(), 2);
+    for s in &spawns {
+        assert!(crate::gathering::is_valid_harvest_type(s.harvest_type));
+        assert!(s.harvest_node_id >= 1001);
+        assert!(s.zone_id > 0);
+    }
+}
+
+/// Aim-slot pivot lands each seeded node-1001 item at the correct aim
+/// slot (aim/10 + 1). Mirrors the client-side `_waitForTurning`
+/// mapping.
+#[tokio::test]
+async fn gather_resolver_build_aim_slots_matches_seeded_layout() {
+    let db = crate::database::Database::open(tempdb())
+        .await
+        .expect("db stub");
+    let resolver = db
+        .load_gather_resolver()
+        .await
+        .expect("gather catalog load");
+    let slots = resolver
+        .build_aim_slots(1001)
+        .expect("aim slots for seeded node");
+    // Node 1001 references items 1 (aim 30 → slot 4), 2 (aim 10 → slot 2),
+    // 3 (aim 20 → slot 3).
+    assert!(slots[1].empty == false && slots[1].item_key == 2); // Bone Chip
+    assert!(slots[2].empty == false && slots[2].item_key == 3); // Copper Ore
+    assert!(slots[3].empty == false && slots[3].item_key == 1); // Rock Salt
+    assert_eq!(slots.iter().filter(|s| !s.empty).count(), 3);
+}
+
+/// Lua binding: `GetGatherResolver():BuildAimSlots(id)` returns a
+/// table shaped like the old `BuildHarvestNode` helper — 11 rows,
+/// each either the `{0,0,0,0}` empty sentinel or a populated
+/// `{itemCatalogId, remainder, sweetspot, maxYield}` tuple.
+#[tokio::test]
+async fn lua_gather_resolver_build_aim_slots_returns_eleven_row_table() {
+    use crate::lua::LuaEngine;
+
+    let db = crate::database::Database::open(tempdb())
+        .await
+        .expect("db stub");
+    let resolver = db
+        .load_gather_resolver()
+        .await
+        .expect("gather catalog load");
+    let script_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .join("scripts/lua");
+    let engine = LuaEngine::new(&script_root);
+    engine.catalogs().install_gather_resolver(resolver);
+
+    // Load an empty probe so globals are installed, then evaluate.
+    let probe = script_root.join("commands/__probe_gather.lua");
+    std::fs::write(&probe, "").unwrap();
+    let (lua, _queue) = engine.load_script(&probe).expect("load probe");
+
+    let (num_slots, first_kind, first_item, first_yield, slot4_item): (
+        i64,
+        String,
+        i64,
+        i64,
+        i64,
+    ) = lua
+        .load(
+            r#"
+            local slots = GetGatherResolver():BuildAimSlots(1001)
+            local n = 0
+            for i = 1, 11 do n = n + (slots[i] ~= nil and 1 or 0) end
+            local s1 = slots[1]
+            local firstKind = s1.empty and "empty" or "filled"
+            -- Slot 4 = Rock Salt (catalog 10009104, yield 4) from node 1001.
+            local s4 = slots[4]
+            return n, firstKind, s1[1], s1[4], s4[1]
+        "#,
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(num_slots, 11);
+    // Slot 1 is always populated or empty; on node 1001 the lowest
+    // populated slot is 2 (aim=10) so slot 1 should be the empty
+    // sentinel.
+    assert_eq!(first_kind, "empty");
+    assert_eq!(first_item, 0);
+    assert_eq!(first_yield, 0);
+    // Slot 4 holds Rock Salt (catalog 10009104, yield 4).
+    assert_eq!(slot4_item, 10_009_104);
+
+    let _ = std::fs::remove_file(&probe);
+}
+
+/// `HarvestReward`-path smoke: applying `LuaCommand::AddItem` through
+/// the runtime drain persists a fresh `characters_inventory` row in
+/// NORMAL bag, and a second application of the same (item, quality)
+/// increments the existing row rather than adding a new one.
+#[tokio::test]
+async fn add_item_creates_and_increments_characters_inventory_row() {
+    use common::db::ConnCallExt;
+
+    let db = crate::database::Database::open(tempdb())
+        .await
+        .expect("db stub");
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (42, 0, 0, 0, 'Prospector')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    // First harvest: 3 copper ore, quality 1.
+    assert_eq!(
+        db.add_harvest_item(42, 10_001_006, 3, 1).await.unwrap(),
+        3,
+    );
+    let (rows_after_first, qty_after_first): (i64, i32) = db
+        .conn_for_test()
+        .call_db(|c| {
+            let n: i64 = c.query_row(
+                r"SELECT COUNT(*) FROM characters_inventory
+                  WHERE characterId = 42 AND itemPackage = 0",
+                [],
+                |r| r.get(0),
+            )?;
+            let q: i32 = c.query_row(
+                r"SELECT si.quantity
+                  FROM characters_inventory ci
+                  INNER JOIN server_items si ON ci.serverItemId = si.id
+                  WHERE ci.characterId = 42 AND ci.itemPackage = 0
+                  LIMIT 1",
+                [],
+                |r| r.get(0),
+            )?;
+            Ok((n, q))
+        })
+        .await
+        .unwrap();
+    assert_eq!(rows_after_first, 1);
+    assert_eq!(qty_after_first, 3);
+
+    // Second harvest: 2 more copper ore — stack merges in place.
+    assert_eq!(
+        db.add_harvest_item(42, 10_001_006, 2, 1).await.unwrap(),
+        5,
+    );
+    let (rows_after_second, qty_after_second): (i64, i32) = db
+        .conn_for_test()
+        .call_db(|c| {
+            let n: i64 = c.query_row(
+                r"SELECT COUNT(*) FROM characters_inventory
+                  WHERE characterId = 42 AND itemPackage = 0",
+                [],
+                |r| r.get(0),
+            )?;
+            let q: i32 = c.query_row(
+                r"SELECT si.quantity
+                  FROM characters_inventory ci
+                  INNER JOIN server_items si ON ci.serverItemId = si.id
+                  WHERE ci.characterId = 42 AND ci.itemPackage = 0
+                  LIMIT 1",
+                [],
+                |r| r.get(0),
+            )?;
+            Ok((n, q))
+        })
+        .await
+        .unwrap();
+    assert_eq!(rows_after_second, 1, "second harvest should merge, not spill");
+    assert_eq!(qty_after_second, 5);
+
+    // Third harvest: different item (Rock Salt) lands in a new slot.
+    assert_eq!(
+        db.add_harvest_item(42, 10_009_104, 4, 1).await.unwrap(),
+        4,
+    );
+    let rows_after_third: i64 = db
+        .conn_for_test()
+        .call_db(|c| {
+            let n: i64 = c.query_row(
+                r"SELECT COUNT(*) FROM characters_inventory
+                  WHERE characterId = 42 AND itemPackage = 0",
+                [],
+                |r| r.get(0),
+            )?;
+            Ok(n)
+        })
+        .await
+        .unwrap();
+    assert_eq!(rows_after_third, 2, "different item should spill into a new slot");
+}
+
+/// `apply_add_item` routes through the runtime command drain — the
+/// same path battle-hooks use for `onKillBNpc`-emitted
+/// `player:AddExp(100)` — and lands a real `characters_inventory`
+/// row.
+#[tokio::test]
+async fn runtime_drain_add_item_persists_to_characters_inventory() {
+    use crate::lua::command::LuaCommand;
+    use crate::runtime::quest_apply::apply_runtime_lua_commands;
+    use common::db::ConnCallExt;
+
+    let world = std::sync::Arc::new(WorldManager::new());
+    let registry = std::sync::Arc::new(ActorRegistry::new());
+    let db = std::sync::Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (55, 0, 0, 0, 'Harvester')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let cmds = vec![LuaCommand::AddItem {
+        actor_id: 55,
+        item_package: crate::inventory::PKG_NORMAL,
+        item_id: 10_001_006,
+        quantity: 7,
+    }];
+    apply_runtime_lua_commands(cmds, &registry, &db, &world, None).await;
+
+    let qty: i32 = db
+        .conn_for_test()
+        .call_db(|c| {
+            let q: i32 = c.query_row(
+                r"SELECT si.quantity
+                  FROM characters_inventory ci
+                  INNER JOIN server_items si ON ci.serverItemId = si.id
+                  WHERE ci.characterId = 55 AND ci.itemPackage = 0 AND si.itemId = 10001006",
+                [],
+                |r| r.get(0),
+            )?;
+            Ok(q)
+        })
+        .await
+        .unwrap();
+    assert_eq!(qty, 7);
+}
+
+/// Parse-all smoke: the rewritten `DummyCommand.lua` still loads
+/// without a syntax error. Guards against future accidental
+/// reintroduction of the lowercase `getItemPackage` / `addItem` /
+/// `!=`-for-`~=` upstream typos.
+#[tokio::test]
+async fn ported_dummy_command_lua_parses() {
+    use crate::lua::LuaEngine;
+
+    let script_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .join("scripts/lua");
+    let script = script_root.join("commands/DummyCommand.lua");
+    if !script.exists() {
+        return;
+    }
+    let engine = LuaEngine::new(&script_root);
+    engine
+        .load_script(&script)
+        .expect("DummyCommand.lua should parse after the resolver-driven rewrite");
 }

@@ -51,7 +51,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use mlua::{Function, Lua, MultiValue, Value};
 
-use self::catalogs::Catalogs;
+pub use self::catalogs::Catalogs;
 use self::command::{CommandQueue, LuaCommand};
 use self::globals::install_globals;
 use self::paths::PathResolver;

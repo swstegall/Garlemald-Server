@@ -151,8 +151,15 @@ impl Character {
             };
             self.set_mp(mp);
         }
-        // HitCount always starts at 1 — dual-wield etc. bumps it later.
-        self.chara.mods.set(Modifier::HitCount, 1.0);
+        // HitCount defaults to 1 (single-hit h2h fists) but yields to
+        // the equipped main-hand's `frequency` column — the weapon
+        // pipeline stage (`apply_player_weapon_stats`) sets HitCount
+        // before this runs, so we only plant the 1.0 default when
+        // nothing else has touched it. Using seed-if-zero semantics
+        // matches how `apply_player_stat_baseline` treats primaries.
+        if self.chara.mods.get(Modifier::HitCount) <= 0.0 {
+            self.chara.mods.set(Modifier::HitCount, 1.0);
+        }
     }
 
     /// Port of `Character.RecalculateStats`. The C# original is a
@@ -298,6 +305,170 @@ impl Character {
         }
     }
 
+    /// Zero the stats that the Player stat pipeline — baseline + gear
+    /// sum + derivation — writes into. Called by the dispatcher before
+    /// each Player recalc pass so the pipeline is idempotent: baseline
+    /// re-seeds, gear sum re-adds current-equipped bonuses, derivation
+    /// re-derives secondaries.
+    ///
+    /// **Deliberately narrow.** Only the stats this pipeline writes get
+    /// reset — primaries (STR/VIT/DEX/INT/MND/PIE), Hp/Mp/Tp pools, and
+    /// the six physical + four magic secondaries
+    /// [`apply_player_stat_derivation`] `add`s to. Status-effect
+    /// modifiers (Haste, Regen, Refresh, resistances, …) and combat-
+    /// frame flags (Stealth, CanBlock) stay untouched because they have
+    /// their own add/remove lifecycle — the status-effect `tick` + the
+    /// equip-time weapon seeder own them. Touching them here would
+    /// strip a live buff during an unrelated RecalcStats (e.g. status-
+    /// gain triggers recalc, which would then erase the buff it was
+    /// supposed to apply).
+    ///
+    /// Player-only: NPCs/BattleNpcs get their primaries from
+    /// `server_battlenpc_*_mods` seeds at spawn and never want them
+    /// zeroed. The dispatcher guards this call with `is_player`.
+    pub fn reset_player_bonus_stats(&mut self) {
+        use Modifier::*;
+        for m in [
+            Hp,
+            Mp,
+            Tp,
+            Strength,
+            Vitality,
+            Dexterity,
+            Intelligence,
+            Mind,
+            Piety,
+            Attack,
+            Accuracy,
+            Defense,
+            AttackMagicPotency,
+            HealingMagicPotency,
+            MagicAccuracy,
+            MagicEvasion,
+            EnfeeblingMagicPotency,
+            // Weapon-scoped — reset so unequipping a weapon doesn't
+            // leave the prior Delay / HitCount / damage-power lingering
+            // on a now-bare-fisted character.
+            Delay,
+            AttackType,
+            HitCount,
+            Parry,
+            WeaponDamagePower,
+        ] {
+            self.chara.mods.set(m, 0.0);
+        }
+    }
+
+    /// Walk equipped items and sum each item's pre-parsed
+    /// `gear_bonuses` into the Character's modifier map. Called after
+    /// [`apply_player_stat_baseline`] and before
+    /// [`apply_player_stat_derivation`] so the summed primaries feed
+    /// the derivation step.
+    ///
+    /// `equipped_by_slot` — equip slot id → catalog id, as returned by
+    /// [`Database::load_equipped_catalog_ids`](crate::database::Database::load_equipped_catalog_ids).
+    /// `items` — catalog id → [`ItemData`](crate::data::ItemData), the
+    /// boot-loaded gamedata.
+    ///
+    /// Missing catalog ids (item in DB but no gamedata row) are silently
+    /// skipped — this is pre-production Meteor data and some stale
+    /// inventory rows exist. Items with an empty `gear_bonuses` vector
+    /// (non-equipment items accidentally equipped, or equipment rows
+    /// with no paramBonus columns) are no-ops.
+    ///
+    /// Uses `add` so repeat calls stack — the dispatcher calls
+    /// [`reset_player_bonus_stats`] before this to make the pipeline
+    /// idempotent.
+    pub fn apply_player_gear_stats(
+        &mut self,
+        items: &std::collections::HashMap<u32, crate::data::ItemData>,
+        equipped_by_slot: &std::collections::HashMap<u16, u32>,
+    ) {
+        for &catalog_id in equipped_by_slot.values() {
+            let Some(item) = items.get(&catalog_id) else {
+                continue;
+            };
+            for (mod_id, delta) in &item.gear_bonuses {
+                self.chara.mods.add_raw(*mod_id, *delta as f64);
+            }
+        }
+    }
+
+    /// Apply weapon attributes from the equipped main-hand (and
+    /// offhand, for dual-wield) onto the character's modifier map.
+    ///
+    /// Unlike [`apply_player_gear_stats`] which *adds* paramBonus
+    /// deltas across every slot, this function **sets** weapon-scoped
+    /// modifiers from the main-hand item (Delay, AttackType, HitCount)
+    /// and *adds* flat Attack/Parry bonuses from both hands. The
+    /// semantic difference: equipping a new weapon replaces the
+    /// previous one's Delay rather than stacking, while flat
+    /// Attack/Parry stack (matching Meteor's equip logic).
+    ///
+    /// Called after [`apply_player_gear_stats`] so the
+    /// `Modifier::HitCount = 1.0` set by `calculate_base_stats` is the
+    /// right baseline: if a weapon is equipped this overrides it; if
+    /// no weapon is equipped the 1.0 default survives (h2h fists).
+    pub fn apply_player_weapon_stats(
+        &mut self,
+        items: &std::collections::HashMap<u32, crate::data::ItemData>,
+        equipped_by_slot: &std::collections::HashMap<u16, u32>,
+    ) {
+        use crate::actor::player::{SLOT_MAINHAND, SLOT_OFFHAND};
+
+        let main = equipped_by_slot
+            .get(&SLOT_MAINHAND)
+            .and_then(|cid| items.get(cid))
+            .and_then(|i| i.weapon);
+        let off = equipped_by_slot
+            .get(&SLOT_OFFHAND)
+            .and_then(|cid| items.get(cid))
+            .and_then(|i| i.weapon);
+
+        if let Some(w) = main {
+            // Main-hand scoped: replace the previous weapon's values.
+            self.chara.mods.set(Modifier::Delay, w.delay_ms as f64);
+            self.chara
+                .mods
+                .set(Modifier::AttackType, w.attack_type as f64);
+            self.chara.mods.set(Modifier::HitCount, w.hit_count as f64);
+            // Flat bonuses add to whatever paramBonus gear_bonuses
+            // already contributed.
+            self.chara.mods.add(Modifier::Attack, w.attack as f64);
+            self.chara.mods.add(Modifier::Parry, w.parry as f64);
+        }
+        if let Some(w) = off {
+            // Offhand doesn't override Delay/HitCount — those stay on
+            // the main-hand. Only its flat Attack/Parry stack.
+            self.chara.mods.add(Modifier::Attack, w.attack as f64);
+            self.chara.mods.add(Modifier::Parry, w.parry as f64);
+        }
+    }
+
+    /// Raw `damage_power` of the equipped main-hand weapon, or 0 if no
+    /// weapon is equipped. Read by
+    /// [`attack_calculate_base_damage`](crate::battle::utils::attack_calculate_base_damage)
+    /// off the `CombatView` — stored as [`Modifier::WeaponDamagePower`]
+    /// so the combat math can access it without re-plumbing item
+    /// lookups through the CombatView builder. Called during the
+    /// weapon pipeline stage alongside [`apply_player_weapon_stats`].
+    pub fn apply_player_weapon_damage_power(
+        &mut self,
+        items: &std::collections::HashMap<u32, crate::data::ItemData>,
+        equipped_by_slot: &std::collections::HashMap<u16, u32>,
+    ) {
+        use crate::actor::player::SLOT_MAINHAND;
+        let power = equipped_by_slot
+            .get(&SLOT_MAINHAND)
+            .and_then(|cid| items.get(cid))
+            .and_then(|i| i.weapon)
+            .map(|w| w.damage_power as f64)
+            .unwrap_or(0.0);
+        self.chara
+            .mods
+            .set(Modifier::WeaponDamagePower, power);
+    }
+
     /// Port of the Player-specific tail of `Player.CalculateBaseStats`:
     /// derive physical/magic secondaries from the primary ability scores.
     /// Meteor uses `AddMod` (additive), so repeated calls stack — match
@@ -315,15 +486,14 @@ impl Character {
     /// so it adds a constant 4 to Hp regardless of VIT. Treated as a
     /// known-bad Meteor line rather than copied verbatim.
     ///
-    /// **Call ordering with [`apply_player_stat_baseline`]:** baseline
-    /// runs first (seeds primaries with `set`), derivation second
-    /// (reads primaries and adds secondaries). Between those two steps
-    /// is where a future gear-paramBonus summer will slot in —
-    /// `gamedata_items_equipment.paramBonusType*` ids `15001..=15100`
-    /// map 1:1 to [`Modifier`] ids via `paramBonusType - 15001`, so the
-    /// summer's job is to walk equipped slots, resolve each to an
-    /// [`ItemData`](crate::data::ItemData) with pre-parsed bonuses, and
-    /// `add_mod` them before derivation reads primaries.
+    /// **Call ordering inside `apply_recalc_stats`:**
+    ///   1. [`reset_player_bonus_stats`] zeroes the targets.
+    ///   2. [`apply_player_stat_baseline`] seeds primaries (from class
+    ///      + level) and Hp/Mp/Tp pools.
+    ///   3. [`apply_player_gear_stats`] adds paramBonus bonuses from
+    ///      equipped items.
+    ///   4. This derivation reads the resulting primaries and writes
+    ///      secondaries.
     pub fn apply_player_stat_derivation(&mut self) {
         use Modifier::*;
         let str_v = self.chara.mods.get(Strength);
@@ -668,6 +838,265 @@ mod recalc_tests {
         assert!(c.chara.mods.get(Modifier::Attack) > 0.0);
         assert!(c.chara.mods.get(Modifier::Accuracy) > 0.0);
         assert!(c.chara.mods.get(Modifier::Defense) > 0.0);
+    }
+
+    #[test]
+    fn reset_player_bonus_stats_zeroes_targets_only() {
+        use crate::actor::modifier::Modifier;
+        let mut c = Character::new(1);
+        // Pipeline targets — must be zeroed by reset.
+        c.chara.mods.set(Modifier::Strength, 40.0);
+        c.chara.mods.set(Modifier::Vitality, 40.0);
+        c.chara.mods.set(Modifier::Hp, 1000.0);
+        c.chara.mods.set(Modifier::Attack, 50.0);
+        // Non-pipeline mods — must survive (status effects, resistances).
+        c.chara.mods.set(Modifier::Haste, 15.0);
+        c.chara.mods.set(Modifier::Regen, 7.0);
+        c.chara.mods.set(Modifier::FireResistance, 100.0);
+        c.chara.mods.set(Modifier::Stealth, 1.0);
+
+        c.reset_player_bonus_stats();
+
+        assert_eq!(c.chara.mods.get(Modifier::Strength), 0.0);
+        assert_eq!(c.chara.mods.get(Modifier::Vitality), 0.0);
+        assert_eq!(c.chara.mods.get(Modifier::Hp), 0.0);
+        assert_eq!(c.chara.mods.get(Modifier::Attack), 0.0);
+        // Non-target mods must not be touched — status effects own their
+        // own add/remove lifecycle.
+        assert_eq!(c.chara.mods.get(Modifier::Haste), 15.0);
+        assert_eq!(c.chara.mods.get(Modifier::Regen), 7.0);
+        assert_eq!(c.chara.mods.get(Modifier::FireResistance), 100.0);
+        assert_eq!(c.chara.mods.get(Modifier::Stealth), 1.0);
+    }
+
+    #[test]
+    fn apply_player_gear_stats_sums_bonuses_across_slots() {
+        use crate::actor::modifier::Modifier;
+        use crate::data::ItemData;
+        use std::collections::HashMap;
+
+        let mut items = HashMap::new();
+        // Item 100: STR+5, VIT+3 (modifier ids 3 and 4).
+        items.insert(
+            100u32,
+            ItemData {
+                id: 100,
+                gear_bonuses: vec![(Modifier::Strength.as_u32(), 5), (Modifier::Vitality.as_u32(), 3)],
+                ..Default::default()
+            },
+        );
+        // Item 200: STR+7 (stacks with item 100 for total STR bonus = 12).
+        items.insert(
+            200u32,
+            ItemData {
+                id: 200,
+                gear_bonuses: vec![(Modifier::Strength.as_u32(), 7)],
+                ..Default::default()
+            },
+        );
+        // Item 300: no bonuses (non-equipment item accidentally referenced).
+        items.insert(
+            300u32,
+            ItemData {
+                id: 300,
+                gear_bonuses: vec![],
+                ..Default::default()
+            },
+        );
+
+        let mut equipped: HashMap<u16, u32> = HashMap::new();
+        equipped.insert(0, 100); // slot 0 → item 100
+        equipped.insert(1, 200); // slot 1 → item 200
+        equipped.insert(2, 300); // slot 2 → item 300 (no-op)
+        equipped.insert(3, 999); // slot 3 → unknown catalog id (skipped)
+
+        let mut c = Character::new(1);
+        c.apply_player_gear_stats(&items, &equipped);
+
+        assert_eq!(c.chara.mods.get(Modifier::Strength), 12.0);
+        assert_eq!(c.chara.mods.get(Modifier::Vitality), 3.0);
+        assert_eq!(c.chara.mods.get(Modifier::Dexterity), 0.0);
+    }
+
+    #[test]
+    fn gear_stats_add_on_top_of_baseline() {
+        // End-to-end Character-side chain: reset → baseline → gear_sum.
+        // A PUG L5 starts with baseline STR = 8 + 5*2 + 2 (emphasis) = 20;
+        // a STR+10 item then pushes STR to 30.
+        use crate::actor::modifier::Modifier;
+        use crate::data::ItemData;
+        use std::collections::HashMap;
+
+        let mut items = HashMap::new();
+        items.insert(
+            1000u32,
+            ItemData {
+                id: 1000,
+                gear_bonuses: vec![(Modifier::Strength.as_u32(), 10)],
+                ..Default::default()
+            },
+        );
+        let mut equipped: HashMap<u16, u32> = HashMap::new();
+        equipped.insert(0, 1000);
+
+        let mut c = Character::new(1);
+        c.chara.class = crate::gamedata::CLASSID_PUG as i16;
+        c.chara.level = 5;
+
+        c.reset_player_bonus_stats();
+        c.apply_player_stat_baseline();
+        c.apply_player_gear_stats(&items, &equipped);
+        c.apply_player_stat_derivation();
+
+        // Baseline: 8 + 5*2 = 18 primary, +2 PUG emphasis on STR = 20.
+        // Gear: +10 → STR = 30.
+        assert_eq!(c.chara.mods.get(Modifier::Strength), 30.0);
+        // Derivation: floor(30 * 0.667) = 20.
+        assert_eq!(c.chara.mods.get(Modifier::Attack), 20.0);
+    }
+
+    #[test]
+    fn apply_player_weapon_stats_sets_mainhand_delay_hitcount_and_adds_both_hands_attack() {
+        use crate::actor::modifier::Modifier;
+        use crate::actor::player::{SLOT_MAINHAND, SLOT_OFFHAND};
+        use crate::data::{ItemData, WeaponAttributes};
+        use std::collections::HashMap;
+
+        let mut items = HashMap::new();
+        items.insert(
+            100u32,
+            ItemData {
+                id: 100,
+                weapon: Some(WeaponAttributes {
+                    delay_ms: 2800,
+                    attack_type: 2,
+                    hit_count: 1,
+                    damage_power: 18,
+                    attack: 5,
+                    parry: 3,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+        items.insert(
+            200u32,
+            ItemData {
+                id: 200,
+                weapon: Some(WeaponAttributes {
+                    delay_ms: 9999, // offhand must NOT override mainhand's
+                    attack_type: 99,
+                    hit_count: 7,
+                    damage_power: 50,
+                    attack: 2,
+                    parry: 1,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+
+        let mut equipped: HashMap<u16, u32> = HashMap::new();
+        equipped.insert(SLOT_MAINHAND, 100);
+        equipped.insert(SLOT_OFFHAND, 200);
+
+        let mut c = Character::new(1);
+        c.apply_player_weapon_stats(&items, &equipped);
+
+        // Mainhand-scoped sets come from item 100.
+        assert_eq!(c.chara.mods.get(Modifier::Delay), 2800.0);
+        assert_eq!(c.chara.mods.get(Modifier::AttackType), 2.0);
+        assert_eq!(c.chara.mods.get(Modifier::HitCount), 1.0);
+        // Flat Attack/Parry stack across both hands: 5+2=7 and 3+1=4.
+        assert_eq!(c.chara.mods.get(Modifier::Attack), 7.0);
+        assert_eq!(c.chara.mods.get(Modifier::Parry), 4.0);
+    }
+
+    #[test]
+    fn apply_player_weapon_damage_power_reads_mainhand_only() {
+        use crate::actor::modifier::Modifier;
+        use crate::actor::player::{SLOT_MAINHAND, SLOT_OFFHAND};
+        use crate::data::{ItemData, WeaponAttributes};
+        use std::collections::HashMap;
+
+        let mut items = HashMap::new();
+        items.insert(
+            100u32,
+            ItemData {
+                id: 100,
+                weapon: Some(WeaponAttributes {
+                    damage_power: 18,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+        items.insert(
+            200u32,
+            ItemData {
+                id: 200,
+                weapon: Some(WeaponAttributes {
+                    damage_power: 999, // offhand power is ignored for the formula
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+
+        let mut equipped: HashMap<u16, u32> = HashMap::new();
+        equipped.insert(SLOT_MAINHAND, 100);
+        equipped.insert(SLOT_OFFHAND, 200);
+
+        let mut c = Character::new(1);
+        c.apply_player_weapon_damage_power(&items, &equipped);
+        assert_eq!(c.chara.mods.get(Modifier::WeaponDamagePower), 18.0);
+
+        // No main-hand → 0 (h2h fists).
+        let mut c2 = Character::new(2);
+        c2.apply_player_weapon_damage_power(&items, &HashMap::new());
+        assert_eq!(c2.chara.mods.get(Modifier::WeaponDamagePower), 0.0);
+    }
+
+    #[test]
+    fn reset_then_baseline_twice_stays_idempotent_with_gear() {
+        // Proves the pipeline is safe to re-run: two passes produce the
+        // same totals. Guards against "gear_sum doubles on re-equip".
+        use crate::actor::modifier::Modifier;
+        use crate::data::ItemData;
+        use std::collections::HashMap;
+
+        let mut items = HashMap::new();
+        items.insert(
+            1000u32,
+            ItemData {
+                id: 1000,
+                gear_bonuses: vec![(Modifier::Strength.as_u32(), 10)],
+                ..Default::default()
+            },
+        );
+        let mut equipped: HashMap<u16, u32> = HashMap::new();
+        equipped.insert(0, 1000);
+
+        let mut c = Character::new(1);
+        c.chara.class = crate::gamedata::CLASSID_PUG as i16;
+        c.chara.level = 5;
+
+        // First pass.
+        c.reset_player_bonus_stats();
+        c.apply_player_stat_baseline();
+        c.apply_player_gear_stats(&items, &equipped);
+        c.apply_player_stat_derivation();
+        let first_attack = c.chara.mods.get(Modifier::Attack);
+        let first_str = c.chara.mods.get(Modifier::Strength);
+
+        // Second pass.
+        c.reset_player_bonus_stats();
+        c.apply_player_stat_baseline();
+        c.apply_player_gear_stats(&items, &equipped);
+        c.apply_player_stat_derivation();
+
+        assert_eq!(c.chara.mods.get(Modifier::Strength), first_str);
+        assert_eq!(c.chara.mods.get(Modifier::Attack), first_attack);
     }
 
     #[test]

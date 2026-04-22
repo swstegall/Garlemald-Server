@@ -34,6 +34,7 @@ use common::db::ConnCallExt;
 use rusqlite::{OptionalExtension, named_params};
 use tokio_rusqlite::Connection;
 
+use crate::actor::modifier::decode_param_bonus_type;
 use crate::data::{InventoryItem, ItemData, ItemTag, SeamlessBoundary, ZoneEntrance};
 use crate::gamedata::{
     AppearanceFull, BattleCommand, BattleTrait, CharaBattleSave, CharaParameterSave, ChocoboData,
@@ -541,7 +542,19 @@ impl Database {
                 let mut stmt = c.prepare(
                     r"SELECT i.catalogID, i.name, i.singular, i.plural, i.icon, i.rarity,
                              i.itemUICategory, i.stackSize, i.itemLevel, i.equipLevel,
-                             i.price, i.buyPrice, i.sellPrice
+                             i.price, i.buyPrice, i.sellPrice,
+                             e.paramBonusType1,  e.paramBonusValue1,
+                             e.paramBonusType2,  e.paramBonusValue2,
+                             e.paramBonusType3,  e.paramBonusValue3,
+                             e.paramBonusType4,  e.paramBonusValue4,
+                             e.paramBonusType5,  e.paramBonusValue5,
+                             e.paramBonusType6,  e.paramBonusValue6,
+                             e.paramBonusType7,  e.paramBonusValue7,
+                             e.paramBonusType8,  e.paramBonusValue8,
+                             e.paramBonusType9,  e.paramBonusValue9,
+                             e.paramBonusType10, e.paramBonusValue10,
+                             w.damageInterval, w.damageAttributeType1, w.frequency,
+                             w.damagePower,    w.attack,               w.parry
                       FROM gamedata_items i
                       LEFT JOIN gamedata_items_equipment      e ON i.catalogID = e.catalogID
                       LEFT JOIN gamedata_items_accessory      a ON i.catalogID = a.catalogID
@@ -553,6 +566,76 @@ impl Database {
                 let rows: Vec<(u32, ItemData)> = stmt
                     .query_map([], |r| {
                         let id: u32 = r.get(0)?;
+                        // paramBonus columns live on the LEFT-JOIN'd
+                        // `gamedata_items_equipment` row and are NULL for
+                        // non-equipment items — fallback to -1 (the
+                        // empty-slot sentinel) so the parser skips them.
+                        let mut bonuses: Vec<(u32, i32)> = Vec::new();
+                        for slot in 0..10 {
+                            // columns: 13 (type1), 14 (value1), 15 (type2), 16 (value2), ...
+                            let type_idx = 13 + slot * 2;
+                            let val_idx = 14 + slot * 2;
+                            let ty: i32 = r
+                                .get::<_, Option<i32>>(type_idx)
+                                .ok()
+                                .flatten()
+                                .unwrap_or(-1);
+                            let val: i32 = r
+                                .get::<_, Option<i32>>(val_idx)
+                                .ok()
+                                .flatten()
+                                .unwrap_or(0);
+                            if let Some(mod_id) = decode_param_bonus_type(ty) {
+                                if val != 0 {
+                                    bonuses.push((mod_id, val));
+                                }
+                            }
+                        }
+                        // Weapon columns: 33 (damageInterval), 34
+                        // (damageAttributeType1), 35 (frequency), 36
+                        // (damagePower), 37 (attack), 38 (parry). The
+                        // LEFT JOIN fills NULL on non-weapons; we treat
+                        // "all six NULL" as "not a weapon" and leave
+                        // `ItemData.weapon` as None. A single non-NULL
+                        // column counts — damageInterval 0.0 is still a
+                        // valid (if useless) weapon row.
+                        let delay_s: Option<f64> =
+                            r.get::<_, Option<f64>>(33).ok().flatten();
+                        let attack_type: Option<i32> =
+                            r.get::<_, Option<i32>>(34).ok().flatten();
+                        let frequency: Option<i32> =
+                            r.get::<_, Option<i32>>(35).ok().flatten();
+                        let damage_power: Option<i32> =
+                            r.get::<_, Option<i32>>(36).ok().flatten();
+                        let attack: Option<i32> =
+                            r.get::<_, Option<i32>>(37).ok().flatten();
+                        let parry: Option<i32> =
+                            r.get::<_, Option<i32>>(38).ok().flatten();
+                        let weapon: Option<crate::data::WeaponAttributes> = if delay_s.is_none()
+                            && attack_type.is_none()
+                            && frequency.is_none()
+                            && damage_power.is_none()
+                            && attack.is_none()
+                            && parry.is_none()
+                        {
+                            None
+                        } else {
+                            Some(crate::data::WeaponAttributes {
+                                delay_ms: (delay_s.unwrap_or(0.0) * 1000.0).round().max(0.0)
+                                    as u32,
+                                attack_type: attack_type.unwrap_or(0).max(0) as u16,
+                                // HitCount defaults to 1 so a weapon
+                                // row with `frequency = 0` (bad data)
+                                // doesn't silently disable auto-attacks
+                                // when equipped.
+                                hit_count: frequency
+                                    .map(|f| f.max(1) as u16)
+                                    .unwrap_or(1),
+                                damage_power: damage_power.unwrap_or(0).max(0) as u16,
+                                attack: attack.unwrap_or(0).max(0) as u16,
+                                parry: parry.unwrap_or(0).max(0) as u16,
+                            })
+                        };
                         Ok((
                             id,
                             ItemData {
@@ -569,10 +652,58 @@ impl Database {
                                 price: r.get::<_, u32>(10).unwrap_or_default(),
                                 buy_price: r.get::<_, u32>(11).unwrap_or_default(),
                                 sell_price: r.get::<_, u32>(12).unwrap_or_default(),
+                                gear_bonuses: bonuses,
+                                weapon,
                                 ..Default::default()
                             },
                         ))
                     })?
+                    .collect::<rusqlite::Result<_>>()?;
+                Ok(rows)
+            })
+            .await?;
+        Ok(rows.into_iter().collect())
+    }
+
+    /// Fetch the set of currently-equipped catalog ids for a character
+    /// filtered by the class slot they're logged in as. JOINs
+    /// `characters_inventory_equipment` → `server_items` so the caller
+    /// receives `(equip_slot, catalog_id)` pairs ready for the gear-
+    /// paramBonus summer — the dispatcher can then cross-reference
+    /// catalog ids against the `ItemData` map.
+    ///
+    /// Undergarment rows were written with `classId = 0` (see
+    /// `inventory/referenced.rs` — the dispatcher's `DbEquip` arm forces
+    /// class 0 for SLOT_UNDERSHIRT / SLOT_UNDERGARMENT), so we include
+    /// them in the query alongside the active class.
+    pub async fn load_equipped_catalog_ids(
+        &self,
+        chara_id: u32,
+        class_id: u8,
+    ) -> Result<HashMap<u16, u32>> {
+        let rows = self
+            .conn
+            .call_db(move |c| {
+                let mut stmt = c.prepare(
+                    r"SELECT cie.equipSlot, si.itemId
+                      FROM characters_inventory_equipment cie
+                      JOIN server_items si ON si.id = cie.itemId
+                      WHERE cie.characterId = :cid
+                        AND (cie.classId = :class OR cie.classId = 0)",
+                )?;
+                let rows: Vec<(u16, u32)> = stmt
+                    .query_map(
+                        named_params! {
+                            ":cid": chara_id,
+                            ":class": class_id,
+                        },
+                        |r| {
+                            Ok((
+                                r.get::<_, u16>(0).unwrap_or_default(),
+                                r.get::<_, u32>(1).unwrap_or_default(),
+                            ))
+                        },
+                    )?
                     .collect::<rusqlite::Result<_>>()?;
                 Ok(rows)
             })
@@ -787,6 +918,219 @@ impl Database {
             })
             .await?;
         Ok(rows.into_iter().collect())
+    }
+
+    /// Load every row of `gamedata_gather_nodes` + `gamedata_gather_node_items`
+    /// into a [`GatherResolver`](crate::gathering::GatherResolver). Mirrors
+    /// the pattern used by [`Database::load_recipes`] — one catalog,
+    /// two indexes, built once at boot and shared across Lua VMs via
+    /// [`Catalogs::install_gather_resolver`](crate::lua::Catalogs::install_gather_resolver).
+    pub async fn load_gather_resolver(&self) -> Result<crate::gathering::GatherResolver> {
+        let (nodes, items) = self
+            .conn
+            .call_db(|c| {
+                let mut nodes_stmt = c.prepare(
+                    r"SELECT id, grade, attempts,
+                             item1, item2, item3, item4, item5, item6,
+                             item7, item8, item9, item10, item11
+                      FROM gamedata_gather_nodes
+                      ORDER BY id ASC",
+                )?;
+                let nodes: Vec<crate::gathering::GatherNode> = nodes_stmt
+                    .query_map([], |r| {
+                        let id: u32 = r.get(0)?;
+                        let grade: u8 = r.get::<_, i64>(1).unwrap_or(1).clamp(0, 255) as u8;
+                        let attempts: u8 = r.get::<_, i64>(2).unwrap_or(2).clamp(0, 255) as u8;
+                        let mut items: [Option<i64>; crate::gathering::NODE_ITEM_SLOTS] =
+                            [None; crate::gathering::NODE_ITEM_SLOTS];
+                        for (i, slot) in items.iter_mut().enumerate() {
+                            *slot = r.get::<_, Option<i64>>(3 + i).unwrap_or(None);
+                        }
+                        Ok(crate::gathering::GatherNode::from_raw(id, grade, attempts, items))
+                    })?
+                    .collect::<rusqlite::Result<_>>()?;
+                let mut items_stmt = c.prepare(
+                    r"SELECT id, itemCatalogId, remainder, aim, sweetspot, maxYield
+                      FROM gamedata_gather_node_items
+                      ORDER BY id ASC",
+                )?;
+                let items: Vec<crate::gathering::GatherNodeItem> = items_stmt
+                    .query_map([], |r| {
+                        Ok(crate::gathering::GatherNodeItem {
+                            id: r.get::<_, u32>(0)?,
+                            item_catalog_id: r.get::<_, u32>(1).unwrap_or_default(),
+                            remainder: r
+                                .get::<_, i64>(2)
+                                .unwrap_or(80)
+                                .clamp(0, 255) as u8,
+                            aim: r.get::<_, i64>(3).unwrap_or(50).clamp(0, 255) as u8,
+                            sweetspot: r
+                                .get::<_, i64>(4)
+                                .unwrap_or(30)
+                                .clamp(0, 255) as u8,
+                            max_yield: r.get::<_, u32>(5).unwrap_or(1),
+                        })
+                    })?
+                    .collect::<rusqlite::Result<_>>()?;
+                Ok((nodes, items))
+            })
+            .await?;
+        Ok(crate::gathering::GatherResolver::from_parts(nodes, items))
+    }
+
+    /// Load every row of `server_gather_node_spawns`. Returned in id
+    /// order so the world-manager can hand them to the spawn loop
+    /// without sorting. Each row is self-contained (private-area
+    /// membership lives on the row, not in a join table) so this is a
+    /// single SELECT.
+    pub async fn load_gather_node_spawns(
+        &self,
+    ) -> Result<Vec<crate::gathering::GatherNodeSpawn>> {
+        let rows = self
+            .conn
+            .call_db(|c| {
+                let mut stmt = c.prepare(
+                    r"SELECT id, actorClassId, uniqueId, zoneId,
+                             privateAreaName, privateAreaLevel,
+                             positionX, positionY, positionZ, rotation,
+                             harvestNodeId, harvestType
+                      FROM server_gather_node_spawns
+                      ORDER BY id ASC",
+                )?;
+                let rows: Vec<crate::gathering::GatherNodeSpawn> = stmt
+                    .query_map([], |r| {
+                        Ok(crate::gathering::GatherNodeSpawn {
+                            id: r.get::<_, u32>(0)?,
+                            actor_class_id: r.get::<_, u32>(1)?,
+                            unique_id: r.get::<_, String>(2).unwrap_or_default(),
+                            zone_id: r.get::<_, u32>(3)?,
+                            private_area_name: r.get::<_, String>(4).unwrap_or_default(),
+                            private_area_level: r.get::<_, i32>(5).unwrap_or_default(),
+                            position: (
+                                r.get::<_, f32>(6).unwrap_or_default(),
+                                r.get::<_, f32>(7).unwrap_or_default(),
+                                r.get::<_, f32>(8).unwrap_or_default(),
+                            ),
+                            rotation: r.get::<_, f32>(9).unwrap_or_default(),
+                            harvest_node_id: r.get::<_, u32>(10)?,
+                            harvest_type: r.get::<_, u32>(11).unwrap_or(
+                                crate::gathering::HARVEST_TYPE_MINE,
+                            ),
+                        })
+                    })?
+                    .collect::<rusqlite::Result<_>>()?;
+                Ok(rows)
+            })
+            .await?;
+        Ok(rows)
+    }
+
+    /// Grant a stack of a gathered item to `chara_id`'s NORMAL bag.
+    /// Matches the C# `Player.GetItemPackage(INVENTORY_NORMAL).AddItem(...)`
+    /// contract: if a partial stack of the same item+quality already
+    /// exists, top it up first; otherwise insert a fresh stack.
+    ///
+    /// This is the direct-DB write path used while the live ItemPackage
+    /// runtime state isn't yet addressable from the runtime command
+    /// drain (see `Player` not being in `ActorRegistry`). It parallels
+    /// [`Database::add_gil`] and is adequate for "you gathered N copper
+    /// ore" style flows where the grant is acknowledged on the next
+    /// inventory resync — which is also how the retail 1.x client
+    /// behaves while the minigame's `textInputWidget` is still shown.
+    /// Returns the new quantity of the stack that absorbed the grant.
+    pub async fn add_harvest_item(
+        &self,
+        chara_id: u32,
+        item_catalog_id: u32,
+        delta: i32,
+        quality: u8,
+    ) -> Result<i32> {
+        if delta <= 0 || item_catalog_id == 0 {
+            return Ok(0);
+        }
+        let total = self
+            .conn
+            .call_db(move |c| {
+                let tx = c.transaction()?;
+                // Merge into a pre-existing partial stack if one
+                // exists. `item_packages` NORMAL = 0. `stackSize` lives
+                // on `gamedata_items` (keyed by catalogID), not
+                // `server_items` — the LEFT JOIN lets the merge work
+                // even when the catalog row isn't seeded yet (common
+                // in the test harness). Stack-cap enforcement is
+                // deferred; treat any existing stack as capable of
+                // absorbing the delta.
+                let existing: Option<(i64, i32, i32, i32)> = tx
+                    .query_row(
+                        r"SELECT si.id, si.quantity, ci.slot, COALESCE(gi.stackSize, 99)
+                          FROM characters_inventory ci
+                          INNER JOIN server_items si ON ci.serverItemId = si.id
+                          LEFT JOIN gamedata_items gi ON si.itemId = gi.catalogID
+                          WHERE ci.characterId = :cid
+                            AND ci.itemPackage = 0
+                            AND si.itemId = :iid
+                            AND si.quality = :q",
+                        named_params! {
+                            ":cid": chara_id,
+                            ":iid": item_catalog_id,
+                            ":q": quality as i64,
+                        },
+                        |r| Ok((
+                            r.get::<_, i64>(0)?,
+                            r.get::<_, i32>(1)?,
+                            r.get::<_, i32>(2)?,
+                            r.get::<_, i32>(3).unwrap_or(99),
+                        )),
+                    )
+                    .optional()?;
+                let new_total = match existing {
+                    Some((sid, qty, _slot, _stack_max)) => {
+                        let updated = qty.saturating_add(delta).max(0);
+                        tx.execute(
+                            "UPDATE server_items SET quantity = :q WHERE id = :id",
+                            named_params! { ":q": updated, ":id": sid },
+                        )?;
+                        updated
+                    }
+                    None => {
+                        let seed = delta.max(0);
+                        tx.execute(
+                            r"INSERT INTO server_items (itemId, quantity, quality)
+                              VALUES (:iid, :q, :qual)",
+                            named_params! {
+                                ":iid": item_catalog_id,
+                                ":q": seed,
+                                ":qual": quality as i64,
+                            },
+                        )?;
+                        let sid = tx.last_insert_rowid();
+                        // Next empty slot = current NORMAL row count.
+                        // Matches `ItemPackage.end_of_list_index` in Rust.
+                        let next_slot: i32 = tx
+                            .query_row(
+                                r"SELECT COALESCE(MAX(slot), -1) + 1
+                                  FROM characters_inventory
+                                  WHERE characterId = :cid AND itemPackage = 0",
+                                named_params! { ":cid": chara_id },
+                                |r| r.get::<_, i32>(0),
+                            )
+                            .unwrap_or(0);
+                        tx.execute(
+                            r"INSERT INTO characters_inventory
+                                (characterId, itemPackage, serverItemId, slot)
+                              VALUES (:cid, 0, :sid, :slot)",
+                            named_params! {
+                                ":cid": chara_id, ":sid": sid, ":slot": next_slot,
+                            },
+                        )?;
+                        seed
+                    }
+                };
+                tx.commit()?;
+                Ok(new_total)
+            })
+            .await?;
+        Ok(total)
     }
 
     pub async fn load_global_status_effect_list(&self) -> Result<HashMap<u32, StatusEffectDef>> {

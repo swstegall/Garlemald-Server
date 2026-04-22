@@ -132,19 +132,43 @@ pub struct ItemTag {
     pub spiritbind: u16,
 }
 
+/// Mainhand/offhand weapon stats ported from `gamedata_items_weapon`.
+/// `None` on non-weapon items (the JOIN yields NULLs, parsed as None).
+///
+/// Loaded once at boot and read by `apply_player_weapon_stats` — unlike
+/// `gear_bonuses` which sums across all slots, weapon attributes come
+/// from the main-hand only (+ offhand for dual-wield / shield), and
+/// they're `set` into modifiers (replacing the previous weapon's
+/// values) rather than added.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct WeaponAttributes {
+    /// Auto-attack delay in milliseconds. DB stores `damageInterval`
+    /// as REAL seconds (typical: 2.5–4.0) — loader multiplies by 1000
+    /// and rounds to u32.
+    pub delay_ms: u32,
+    /// `damageAttributeType1` — hit type (Slashing / Piercing / Blunt /
+    /// etc.). Raw enum value as stored; feeds
+    /// [`Modifier::AttackType`].
+    pub attack_type: u16,
+    /// `frequency` — number of hits per swing. 1 = single-hit melee,
+    /// 2 = dual-wield / paired daggers, etc. Baseline is 1; populated
+    /// by the equipped weapon.
+    pub hit_count: u16,
+    /// `damagePower` — the raw weapon-damage component of auto-attacks.
+    /// Not a Modifier because nothing on the wire cares; stored on
+    /// ItemData and read by `attack_calculate_base_damage` directly
+    /// off the equipped item.
+    pub damage_power: u16,
+    /// `attack` — flat Attack stat bonus the weapon confers. Added to
+    /// [`Modifier::Attack`] on equip alongside paramBonus deltas.
+    pub attack: u16,
+    /// `parry` — flat Parry stat bonus. Added to [`Modifier::Parry`]
+    /// on equip.
+    pub parry: u16,
+}
+
 /// Reference data for an item, keyed by `item_id`. Populated from the
 /// `server_items` table on startup.
-///
-/// **TODO (gear-paramBonus follow-up to Tier 1 #3):** add pre-parsed
-/// gear bonuses here — one `Vec<(u32 /*modifier_id*/, i32 /*delta*/)>`
-/// field populated from `gamedata_items_equipment.paramBonusType1..10` /
-/// `paramBonusValue1..10`. The decoding rule is
-/// `modifier_id = paramBonusType - 15001` for types in `15001..=15100`
-/// (STR→Attack modifiers), ignoring the other ranges (`16xxx` class-
-/// kind flags, `20xxx` elemental resistances, `1015xxx` conditional/HQ
-/// bonuses not yet decoded). The summer itself slots into
-/// `runtime::dispatcher::apply_recalc_stats` between
-/// `apply_player_stat_baseline` and `apply_player_stat_derivation`.
 #[derive(Debug, Clone, Default)]
 pub struct ItemData {
     pub id: u32,
@@ -173,6 +197,28 @@ pub struct ItemData {
     pub is_tradable: bool,
     pub is_untradable: bool,
     pub is_soldable: bool,
+    /// Pre-parsed stat bonuses from `gamedata_items_equipment.paramBonus`.
+    /// Each pair is `(modifier_id, delta)` — add `delta` to
+    /// `Modifier::from_u32(modifier_id)` when this item is equipped.
+    ///
+    /// Decoding rule: `modifier_id = paramBonusType - 15001` for types
+    /// in `15001..=15100`. Other ranges are ignored — `16xxx` are item
+    /// class-kind flags (what job can equip), `20xxx` sit in an
+    /// unmapped Meteor-side namespace (possibly `ParamGrow`-class
+    /// effects), `1015xxx` is a `1_000_000`-offset conditional/HQ
+    /// variant of `15xxx` that never landed in Meteor's C# loader
+    /// either, and `-1` is the empty-slot sentinel. Bogus rows (e.g.
+    /// non-zero value at `-1` type) get dropped silently.
+    ///
+    /// Empty on non-equipment items (consumables, crafting materials,
+    /// crystal stacks) because `gamedata_items_equipment` has no row —
+    /// the loader's LEFT JOIN fills with `NULL` and we skip.
+    pub gear_bonuses: Vec<(u32, i32)>,
+    /// `Some` for weapons (main-hand / offhand / shields), `None`
+    /// otherwise. Read by `apply_player_weapon_stats` during recalc —
+    /// the main-hand entry drives Delay / HitCount / AttackType; both
+    /// hands contribute their `attack`/`parry` flats.
+    pub weapon: Option<WeaponAttributes>,
 }
 
 /// Seamless zone boundary. Port of `DataObjects/SeamlessBoundry.cs`. Each

@@ -962,39 +962,18 @@ impl PacketProcessor {
                 class_id,
                 exp,
             } => {
-                if exp == 0 {
-                    return;
-                }
-                let class_slot = class_id as usize;
-                let new_exp = {
-                    let mut c = handle.character.write().await;
-                    if class_slot >= c.battle_save.skill_point.len() {
-                        tracing::warn!(class = class_id, "AddExp: class_id out of range");
-                        return;
-                    }
-                    let updated = c.battle_save.skill_point[class_slot].saturating_add(exp).max(0);
-                    c.battle_save.skill_point[class_slot] = updated;
-                    updated
-                };
-                if let Err(e) = self.db.set_exp(actor_id, class_id, new_exp).await {
-                    tracing::warn!(
-                        actor = actor_id,
-                        class = class_id,
-                        err = %e,
-                        "AddExp: DB persist failed",
-                    );
-                }
-                tracing::info!(
-                    actor = actor_id,
-                    class = class_id,
-                    delta = exp,
-                    total = new_exp,
-                    "AddExp applied",
-                );
-                // Level-up detection + level-up packet emission + XP-gained
-                // client message deferred — needs the per-class level-curve
-                // table (Meteor's `Player.GetLevelThreshold(...)`) which
-                // hasn't been ported yet.
+                // Route through the shared runtime helper so this path,
+                // the `player:AddExp(...)` Lua command drain in
+                // `runtime/quest_apply.rs`, and any GM `!giveexp` share
+                // the same level-up rollover logic.
+                crate::runtime::quest_apply::apply_add_exp(
+                    actor_id,
+                    class_id,
+                    exp,
+                    &self.registry,
+                    &self.db,
+                )
+                .await;
             }
             LC::AddGil { actor_id, amount } => {
                 if amount == 0 {
@@ -1046,24 +1025,26 @@ impl PacketProcessor {
                 )
                 .await;
             }
-            // `onLogin` → `initClassItems` / `initRaceItems` emit these for
-            // brand-new characters. Full persistence + inventory packet
-            // emission lands with the phase-8 item pipeline; logging here
-            // confirms the hook traversed its full class/race branches so
-            // the follow-on `SavePlayTime` / `SendMessage` steps also ran.
+            // `onLogin` init items + every `HarvestReward` call route
+            // through here. Persistence is direct-DB via `add_harvest_item`
+            // (see `runtime::quest_apply::apply_add_item` for the shape);
+            // the in-memory `ItemPackage` pipeline isn't wired to the
+            // registry yet, so the player sees the new stack on the
+            // next inventory resync.
             LC::AddItem {
                 actor_id,
                 item_package,
                 item_id,
                 quantity,
             } => {
-                tracing::info!(
-                    actor = actor_id,
-                    package = item_package,
-                    item = item_id,
-                    qty = quantity,
-                    "AddItem captured (onLogin init items; persistence deferred)"
-                );
+                crate::runtime::quest_apply::apply_add_item(
+                    actor_id,
+                    item_package,
+                    item_id,
+                    quantity,
+                    &self.db,
+                )
+                .await;
             }
             LC::SendMessage {
                 actor_id,

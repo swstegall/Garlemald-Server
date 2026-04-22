@@ -30,7 +30,7 @@ use mlua::{Function, Lua, MultiValue, Value};
 
 use super::catalogs::Catalogs;
 use super::command::CommandQueue;
-use super::userdata::{LuaItemData, LuaRecipeResolver, LuaWorldManager};
+use super::userdata::{LuaGatherResolver, LuaItemData, LuaRecipeResolver, LuaWorldManager};
 
 /// Install the global functions referenced by `scripts/global.lua`.
 pub fn install_globals(
@@ -154,6 +154,23 @@ pub fn install_globals(
                 .map(|resolver| LuaRecipeResolver { resolver }))
         })?;
         globals.set("GetRecipeResolver", f)?;
+    }
+
+    // GetGatherResolver() → LuaGatherResolver | nil. Exposed to
+    // `DummyCommand.lua` (mining/logging/fishing) so the minigame
+    // can look up a harvestNodeId's aim-slot pivot without the
+    // pre-2026-04 hardcoded `harvestNodeContainer` / `harvestNodeItems`
+    // tables. Nil when the catalog failed to load — the minigame
+    // simply reports no drops, which is a better failure mode than
+    // a crash.
+    {
+        let cats = catalogs.clone();
+        let f = lua.create_function(move |_, _: ()| {
+            Ok(cats
+                .gather_resolver()
+                .map(|resolver| LuaGatherResolver { resolver }))
+        })?;
+        globals.set("GetGatherResolver", f)?;
     }
 
     // `print` → tracing::debug (so scripts don't spam stdout).

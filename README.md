@@ -160,13 +160,21 @@ garlemald-server/
 
 Garlemald Server stands on the shoulders of
 [Project Meteor Server](https://bitbucket.org/Ioncannon/project-meteor-server/)
-and [Seventh Umbral](https://github.com/Meteor-Project/SeventhUmbral),
-plus the broader FFXIV 1.0 preservation community whose wiki, Discord
-archives, packet captures, and quest transcripts made the port
-possible. See [`NOTICE.md`](NOTICE.md) for the full attribution list
-and [`LICENSE.md`](LICENSE.md) for the full terms of the
-**GNU Affero General Public License, version 3 or later**, under which
-this project is distributed.
+and [Seventh Umbral](https://github.com/Meteor-Project/SeventhUmbral)
+for the FFXIV 1.x side, and of
+[LandSandBoat](https://github.com/LandSandBoat/server) (and its
+**DarkStar Project** ancestor) for the FFXI-inherited portions of the
+combat, mob-AI, enmity, skillchain, status-effect, and mod-shelf
+subsystems that 1.x carried forward from FFXI. Additional
+indebtedness goes to the broader FFXIV 1.0 preservation community —
+the FFXIV Classic wiki, the Project Meteor Discord, the Mirke
+Menagerie archive, Gamer Escape, and the many packet-capture and
+spreadsheet contributors whose work made the port feasible. See
+[`NOTICE.md`](NOTICE.md) for the full attribution list (including the
+GPL-3 → AGPL-3 combined-work rules that apply to any verbatim
+LandSandBoat translations) and [`LICENSE.md`](LICENSE.md) for the full
+terms of the **GNU Affero General Public License, version 3 or later**,
+under which this project is distributed.
 
 ## Sister projects
 

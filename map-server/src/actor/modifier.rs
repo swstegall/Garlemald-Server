@@ -178,6 +178,18 @@ pub enum Modifier {
     Stoneskin = 129,
     KnockbackImmune = 130,
     Stealth = 131,
+
+    /// Raw `damagePower` of the currently-equipped main-hand weapon.
+    /// Garlemald-specific — not part of the Meteor enum and never
+    /// touches the wire. Lives in the modifier map so the combat-math
+    /// `CombatView` can read it without plumbing a separate item lookup
+    /// through every call site. Set by
+    /// [`Character::apply_player_weapon_damage_power`] during the
+    /// weapon pipeline stage; cleared by
+    /// [`Character::reset_player_bonus_stats`] between recalcs. Id is
+    /// outside Meteor's known ParamName range (≤ ~131), so no collision
+    /// with a yet-to-be-decoded paramBonus type is possible.
+    WeaponDamagePower = 200,
 }
 
 impl Modifier {
@@ -296,12 +308,41 @@ impl Modifier {
             129 => Self::Stoneskin,
             130 => Self::KnockbackImmune,
             131 => Self::Stealth,
+            200 => Self::WeaponDamagePower,
             _ => return None,
         })
     }
 
     pub fn as_u32(self) -> u32 {
         self as u32
+    }
+}
+
+/// Decode a `gamedata_items_equipment.paramBonusType*` value to the
+/// corresponding [`Modifier`] id.
+///
+/// Meteor's C# comment on the Modifier enum says "These line up with
+/// ParamNames starting at 15001 and appear on gear", i.e.
+/// `modifier_id = paramBonusType - 15001`. Only that range (gear stat
+/// bonuses) is understood — other ranges observed in the seed data
+/// (`16xxx` class-kind flags, `20xxx` unmapped in Meteor-side code,
+/// `1015xxx` = 1_000_000 + 15xxx conditional/HQ variant not decoded
+/// upstream) return `None` so the gear summer skips them silently.
+/// `-1` is the empty-slot sentinel used when an item only has e.g. 3
+/// of the 10 available bonus slots populated.
+///
+/// Upper bound `15100` is a conservative ceiling covering every
+/// currently-defined `Modifier` id plus room for future additions —
+/// the real current cap is ~60. Values between 15060 and 15100 that
+/// don't map to any [`Modifier`] variant simply produce a raw modifier
+/// id the [`ModifierMap`] stores but no code reads, which is harmless.
+pub fn decode_param_bonus_type(param_bonus_type: i32) -> Option<u32> {
+    const PARAM_BONUS_BASE: i32 = 15_001;
+    const PARAM_BONUS_MAX: i32 = 15_100;
+    if (PARAM_BONUS_BASE..=PARAM_BONUS_MAX).contains(&param_bonus_type) {
+        Some((param_bonus_type - PARAM_BONUS_BASE) as u32)
+    } else {
+        None
     }
 }
 
@@ -399,5 +440,21 @@ mod tests {
         let mut m = ModifierMap::new();
         m.set_raw(Modifier::Haste.as_u32(), 10.0);
         assert_eq!(m.get(Modifier::Haste), 10.0);
+    }
+
+    #[test]
+    fn decode_param_bonus_type_handles_known_and_unknown_ranges() {
+        // 15001 → Hp (id 0), 15004 → Strength (id 3), 15018 → Attack (17).
+        assert_eq!(decode_param_bonus_type(15_001), Some(0));
+        assert_eq!(decode_param_bonus_type(15_004), Some(3));
+        assert_eq!(decode_param_bonus_type(15_018), Some(17));
+        // Boundaries: 15100 in, 15101 out.
+        assert_eq!(decode_param_bonus_type(15_100), Some(99));
+        assert_eq!(decode_param_bonus_type(15_101), None);
+        // Empty-slot sentinel and non-modifier ranges skip.
+        assert_eq!(decode_param_bonus_type(-1), None);
+        assert_eq!(decode_param_bonus_type(16_009), None);
+        assert_eq!(decode_param_bonus_type(20_026), None);
+        assert_eq!(decode_param_bonus_type(1_015_063), None);
     }
 }

@@ -676,20 +676,53 @@ pub fn hit_dir_to_position(dir: HitDirection) -> super::command::BattleCommandPo
 }
 
 // ---------------------------------------------------------------------------
-// AttackUtils — auto-attack damage placeholder. The C# version returns a
-// pseudorandom 0..90 value; we mirror it while exposing the rng.
+// AttackUtils — auto-attack damage.
+//
+// Meteor's committed C# (`AttackUtils.cs::CalculateBaseDamage`) is a true
+// placeholder: `Random.Next(10) * 10` — 0..=90 regardless of attacker or
+// weapon. Now that the stat pipeline produces real STR + Attack +
+// WeaponDamagePower, we replace that with the formula Meteor's
+// `weaponskill.lua::CalculateDamage` *sketched out but left commented*:
+//
+//     base = basePotency + (0.85 * cappedStr) + (0.65 * cappedSec);
+//     dev  = 0.96 + (math.random() * 0.08);   -- "~8% max deviation"
+//     base = clamp(base * dev, 1, 9999);
+//
+// For auto-attacks, `basePotency` ≈ the weapon's raw `damagePower` and
+// `cappedSec` is the class's secondary stat. Since we don't yet track
+// per-class secondary caps or stat caps (Meteor never finished that
+// pass either), this implementation substitutes the derived `Attack`
+// modifier in place of `(0.65 * cappedSec)` — Attack is populated by
+// baseline + gear paramBonus + STR derivation, so it already carries
+// the "all the physical-hit contributors" summary the formula wants.
+//
+// **Pre-mitigation output.** The pipeline's
+// `calculate_physical_damage_taken` then subtracts `dlvl × defender
+// Defense` to get the final on-wire amount.
+//
+// Note on the `* 8` vs `* 0.08` typo: Meteor's commented-out Lua reads
+// `0.96 + (math.random() * 8)` which expands to 0.96..=8.96 — an 800%
+// damage swing that would immediately blow past the `clamp(_, 1, 9999)`
+// ceiling in ~100% of cases. The comment *above* the formula says
+// "The maximum deviation for weaponskills is ~8%", so the `* 8` is a
+// clear typo for `* 0.08`. We use the corrected 0.96..=1.04 range.
 // ---------------------------------------------------------------------------
 
-pub fn attack_calculate_base_damage(rng: &mut dyn Rng) -> i32 {
-    (rng.next_f64() * 10.0) as i32 * 10
+pub fn attack_calculate_base_damage(attacker: &CombatView<'_>, rng: &mut dyn Rng) -> i32 {
+    let str_v = attacker.get_mod(Modifier::Strength);
+    let attack_v = attacker.get_mod(Modifier::Attack);
+    let weapon_dmg = attacker.get_mod(Modifier::WeaponDamagePower);
+    let base = weapon_dmg + 0.85 * str_v + attack_v;
+    let dev = 0.96 + rng.next_f64() * 0.08;
+    ((base * dev).round() as i32).max(1).min(9999)
 }
 
 pub fn attack_calculate_damage(
-    _attacker: &CombatView<'_>,
+    attacker: &CombatView<'_>,
     _defender: &CombatView<'_>,
     rng: &mut dyn Rng,
 ) -> i32 {
-    attack_calculate_base_damage(rng)
+    attack_calculate_base_damage(attacker, rng)
 }
 
 // ---------------------------------------------------------------------------
@@ -895,5 +928,73 @@ mod tests {
         assert_eq!(get_chain_time_limit(0), 100);
         assert_eq!(get_chain_time_limit(2), 60);
         assert_eq!(get_chain_time_limit(99), 10);
+    }
+
+    #[test]
+    fn base_damage_floors_at_1_for_zero_inputs() {
+        // Defensive: a bare-fisted zero-stat attacker (no baseline, no
+        // weapon) must still produce at least 1 damage so auto-attacks
+        // don't silently no-op. The `.max(1)` in the formula handles
+        // this; the rng is only consulted to advance its cursor.
+        let mods = zero_mods();
+        let atk = stub_view(1, 100, &mods, 1);
+        let mut rng = FixedRng::new(&[0.0]);
+        assert_eq!(attack_calculate_base_damage(&atk, &mut rng), 1);
+    }
+
+    #[test]
+    fn base_damage_scales_with_str_and_weapon_power() {
+        // Minimum-deviation point (rng = 0.0 → dev = 0.96) so the math
+        // is deterministic. Weapon power 20 + STR 30 + Attack 10 →
+        // base = 20 + 0.85*30 + 10 = 55.5, × 0.96 = 53.28, rounds to 53.
+        let mut mods = ModifierMap::default();
+        mods.set(Modifier::Strength, 30.0);
+        mods.set(Modifier::Attack, 10.0);
+        mods.set(Modifier::WeaponDamagePower, 20.0);
+        let atk = stub_view(10, 1000, &mods, 1);
+        let mut rng = FixedRng::new(&[0.0]);
+        assert_eq!(attack_calculate_base_damage(&atk, &mut rng), 53);
+    }
+
+    #[test]
+    fn base_damage_deviation_is_within_eight_percent_band() {
+        // Two draws at the extremes of the 8% deviation band must
+        // bracket the center value. Catches a drift if someone
+        // "restores" Meteor's 800% typo.
+        let mut mods = ModifierMap::default();
+        mods.set(Modifier::Strength, 100.0);
+        let atk = stub_view(10, 1000, &mods, 1);
+
+        // rng = 0.0 → dev = 0.96 → 85.0 * 0.96 = 81.6 → 82
+        let mut rng_lo = FixedRng::new(&[0.0]);
+        let low = attack_calculate_base_damage(&atk, &mut rng_lo);
+
+        // rng = 0.9999 → dev ≈ 1.04 → 85.0 * 1.04 ≈ 88.4 → 88
+        let mut rng_hi = FixedRng::new(&[0.9999]);
+        let high = attack_calculate_base_damage(&atk, &mut rng_hi);
+
+        let center = 85.0f64; // 0.85 * 100.0
+        assert!(
+            (low as f64) < center && (high as f64) > center,
+            "expected {center} to be inside (low={low}, high={high})"
+        );
+        // Band width is 8% of center; low < high < center * 1.05.
+        assert!(
+            (high as f64) < center * 1.05,
+            "high={high} exceeded +5% of center={center} — deviation formula may be buggy"
+        );
+    }
+
+    #[test]
+    fn base_damage_clamps_at_9999() {
+        // Absurd inputs shouldn't overflow the clamp ceiling — the
+        // formula is the pre-mitigation value, and the wire field is
+        // u16; anything above 9999 is already wrong.
+        let mut mods = ModifierMap::default();
+        mods.set(Modifier::Strength, 100_000.0);
+        mods.set(Modifier::WeaponDamagePower, 100_000.0);
+        let atk = stub_view(10, 1000, &mods, 1);
+        let mut rng = FixedRng::new(&[0.5]);
+        assert_eq!(attack_calculate_base_damage(&atk, &mut rng), 9999);
     }
 }

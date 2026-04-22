@@ -732,6 +732,47 @@ CREATE TABLE IF NOT EXISTS gamedata_passivegl_craft (
     rewardQuantity4      INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS gamedata_gather_nodes (
+    id       INTEGER PRIMARY KEY,
+    grade    INTEGER NOT NULL DEFAULT 1,
+    attempts INTEGER NOT NULL DEFAULT 2,
+    item1    INTEGER DEFAULT NULL,
+    item2    INTEGER DEFAULT NULL,
+    item3    INTEGER DEFAULT NULL,
+    item4    INTEGER DEFAULT NULL,
+    item5    INTEGER DEFAULT NULL,
+    item6    INTEGER DEFAULT NULL,
+    item7    INTEGER DEFAULT NULL,
+    item8    INTEGER DEFAULT NULL,
+    item9    INTEGER DEFAULT NULL,
+    item10   INTEGER DEFAULT NULL,
+    item11   INTEGER DEFAULT NULL
+);
+
+CREATE TABLE IF NOT EXISTS gamedata_gather_node_items (
+    id            INTEGER PRIMARY KEY,
+    itemCatalogId INTEGER NOT NULL,
+    remainder     INTEGER NOT NULL DEFAULT 80,
+    aim           INTEGER NOT NULL DEFAULT 50,
+    sweetspot     INTEGER NOT NULL DEFAULT 30,
+    maxYield      INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS server_gather_node_spawns (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    actorClassId     INTEGER NOT NULL,
+    uniqueId         TEXT NOT NULL DEFAULT '',
+    zoneId           INTEGER NOT NULL,
+    privateAreaName  TEXT NOT NULL DEFAULT '',
+    privateAreaLevel INTEGER NOT NULL DEFAULT 0,
+    positionX        REAL NOT NULL,
+    positionY        REAL NOT NULL,
+    positionZ        REAL NOT NULL,
+    rotation         REAL NOT NULL DEFAULT 0.0,
+    harvestNodeId    INTEGER NOT NULL,
+    harvestType      INTEGER NOT NULL DEFAULT 22002
+);
+
 CREATE TABLE IF NOT EXISTS users (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     username     TEXT NOT NULL UNIQUE COLLATE NOCASE,

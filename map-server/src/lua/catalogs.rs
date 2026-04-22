@@ -30,6 +30,7 @@ use std::sync::{Arc, RwLock};
 use crate::crafting::{PassiveGuildleveData, RecipeResolver};
 use crate::data::ItemData;
 use crate::gamedata::{BattleCommand, GuildleveGamedata, QuestMeta, StatusEffectDef};
+use crate::gathering::GatherResolver;
 
 #[derive(Default)]
 pub struct Catalogs {
@@ -51,6 +52,10 @@ pub struct Catalogs {
     /// id (120001..=120452). Read-only after boot; the runtime-mutable
     /// per-player state lives on the quest journal.
     pub passive_guildleves: RwLock<HashMap<u32, PassiveGuildleveData>>,
+    /// Shared gathering resolver. Same Arc-under-lock shape as
+    /// `recipes` — every Lua VM clones the Arc into its local frame
+    /// for `GetGatherResolver():GetNode(...)` lookups.
+    pub gather_nodes: RwLock<Option<Arc<GatherResolver>>>,
 }
 
 impl Catalogs {
@@ -104,6 +109,19 @@ impl Catalogs {
         if let Ok(mut w) = self.passive_guildleves.write() {
             *w = data;
         }
+    }
+
+    pub fn install_gather_resolver(&self, resolver: GatherResolver) {
+        if let Ok(mut w) = self.gather_nodes.write() {
+            *w = Some(Arc::new(resolver));
+        }
+    }
+
+    /// Cheap `Arc` clone of the installed gathering resolver, or
+    /// `None` if `install_gather_resolver` hasn't run yet (fresh DB /
+    /// startup race).
+    pub fn gather_resolver(&self) -> Option<Arc<GatherResolver>> {
+        self.gather_nodes.read().ok().and_then(|w| w.clone())
     }
 
     /// Return a cheap `Arc` clone of the installed resolver, or `None`

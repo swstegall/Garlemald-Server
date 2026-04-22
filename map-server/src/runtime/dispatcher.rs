@@ -70,6 +70,7 @@ pub async fn dispatch_status_event(
     registry: &ActorRegistry,
     world: &WorldManager,
     db: &Database,
+    catalogs: &std::sync::Arc<crate::lua::Catalogs>,
 ) {
     match event {
         StatusEvent::DbSave { owner_actor_id } => {
@@ -122,7 +123,7 @@ pub async fn dispatch_status_event(
             apply_tp_delta(registry, *owner_actor_id, *delta).await;
         }
         StatusEvent::RecalcStats { owner_actor_id } => {
-            apply_recalc_stats(registry, *owner_actor_id).await;
+            apply_recalc_stats(registry, world, catalogs, db, *owner_actor_id).await;
         }
         StatusEvent::LuaCall {
             owner_actor_id,
@@ -356,7 +357,20 @@ async fn resolve_auto_attack(
     };
 
     let mut rng = ThreadRng;
-    let base = battle_utils::attack_calculate_base_damage(&mut rng);
+    // Compute base damage off an attacker-only CombatView — the defender
+    // view is only needed for post-base mitigation, which runs further
+    // down inside the defender lock scope via calculate_physical_damage_taken.
+    let atk_view_for_base = battle_utils::CombatView {
+        actor_id: attacker_actor_id,
+        level: atk_level,
+        max_hp: atk_max_hp,
+        mods: &atk_mods,
+        has_aegis_boon: false,
+        has_protect: false,
+        has_shell: false,
+        has_stoneskin: false,
+    };
+    let base = battle_utils::attack_calculate_base_damage(&atk_view_for_base, &mut rng);
 
     let mut result = CommandResult::for_target(defender_actor_id, 0, 0);
     result.amount = base.max(0) as u16;
@@ -652,6 +666,7 @@ pub async fn dispatch_inventory_event(
     registry: &ActorRegistry,
     world: &WorldManager,
     db: &Database,
+    catalogs: &std::sync::Arc<crate::lua::Catalogs>,
 ) {
     match event {
         // ---- DB mutations --------------------------------------------------
@@ -712,7 +727,7 @@ pub async fn dispatch_inventory_event(
                 )
                 .await
             {
-                Ok(()) => apply_recalc_stats(registry, *owner_actor_id).await,
+                Ok(()) => apply_recalc_stats(registry, world, catalogs, db, *owner_actor_id).await,
                 Err(e) => tracing::warn!(
                     owner = owner_actor_id,
                     slot = equip_slot,
@@ -730,7 +745,7 @@ pub async fn dispatch_inventory_event(
                 .unequip_item(*owner_actor_id, class_id, *equip_slot)
                 .await
             {
-                Ok(()) => apply_recalc_stats(registry, *owner_actor_id).await,
+                Ok(()) => apply_recalc_stats(registry, world, catalogs, db, *owner_actor_id).await,
                 Err(e) => tracing::warn!(
                     owner = owner_actor_id,
                     slot = equip_slot,
@@ -1144,37 +1159,149 @@ async fn apply_tp_delta(registry: &ActorRegistry, actor_id: u32, delta: i32) {
     }
 }
 
-/// Recompute HP/MP pools from the modifier map, then — for Players — apply
-/// Meteor's primary→secondary derivation (STR→Attack, VIT→Defense, etc.).
+/// Recompute HP/MP pools from the modifier map, then — for Players — run
+/// the four-stage stat pipeline (reset → baseline → gear sum → derivation).
 /// Dispatched from both `StatusEvent::RecalcStats` and the equip/unequip
 /// arms of `dispatch_inventory_event`.
 ///
-/// We do not broadcast HP/MP packets here yet. Gear-paramBonus summing
-/// is still pending so recomputed pools rarely differ from the pre-call
-/// values — add the delta-broadcast once the gear summer lands. The
-/// class+level baseline that now runs first does give non-zero primaries
-/// from login onwards, so `apply_player_stat_derivation` finally
-/// produces non-zero Attack/Accuracy/Defense for Players.
-async fn apply_recalc_stats(registry: &ActorRegistry, actor_id: u32) {
+/// **Player pipeline ordering is load-bearing:**
+///   1. [`Character::reset_player_bonus_stats`] — zeroes primaries +
+///      Hp/Mp/Tp + derived secondaries so the pipeline is idempotent.
+///      Without this, unequipping gear would never remove its stat
+///      contributions (gear_sum uses `add`).
+///   2. [`Character::apply_player_stat_baseline`] — class+level seeded
+///      placeholder (real per-level curves not reversed). Seeds the
+///      primaries freshly since step 1 zeroed them.
+///   3. [`Character::apply_player_gear_stats`] — sums paramBonus from
+///      currently-equipped items, mapping `paramBonusType -
+///      15001 → Modifier` per the decoder in `actor/modifier.rs`.
+///      Equipment comes from a DB roundtrip; the catalog from the
+///      `Catalogs::items` reader installed at boot.
+///   4. [`Character::apply_player_stat_derivation`] — STR→Attack,
+///      VIT→Defense, etc.
+///
+/// For Players, a post-pipeline diff of the four pool values drives the
+/// `charaWork/stateAtQuicklyForAll` broadcast — if any of hp/hpMax/mp/mpMax
+/// changed, both the owner and neighbor clients receive the bundle so
+/// nameplate HP bars and the self-HUD stay in sync with the new gear
+/// pool. Unchanged recalcs (status-effect tick routed through
+/// `StatusEvent::RecalcStats`, for example) produce no wire traffic.
+async fn apply_recalc_stats(
+    registry: &ActorRegistry,
+    world: &WorldManager,
+    catalogs: &std::sync::Arc<crate::lua::Catalogs>,
+    db: &crate::database::Database,
+    actor_id: u32,
+) {
     let Some(handle) = registry.get(actor_id).await else {
         return;
     };
     let is_player = handle.is_player();
-    let mut c = handle.character.write().await;
-    c.recalculate_stats();
-    if is_player {
-        // Order is load-bearing:
-        //   1. Baseline seeds primaries with `set` (idempotent).
-        //   2. TODO: gear-paramBonus summer `add`s bonuses here — pulls
-        //      `paramBonusType*`/`paramBonusValue*` from ItemData
-        //      (which needs the columns added to `Database::load_items`
-        //      and `ItemData`). Mapping: `modifier_id = paramBonusType
-        //      - 15001` for types in `15001..=15100`, ignore other
-        //      ranges (`16xxx` = class-kind flags, `20xxx` = element,
-        //      `1015xxx` = conditional bonuses not yet decoded).
-        //   3. Derivation `add`s secondaries from primaries.
-        c.apply_player_stat_baseline();
-        c.apply_player_stat_derivation();
+
+    // Resolve the active class *before* taking the write lock — the
+    // lookup itself reads the character, so holding a write lock for
+    // the roundtrip would deadlock on the registry's own shared state.
+    let class_id = if is_player {
+        resolve_current_class_id(registry, actor_id).await
+    } else {
+        0
+    };
+
+    // Load equipment catalog ids from DB outside the write lock. `.ok()`
+    // swallows the unlikely I/O error — an empty equipment set just
+    // means gear_sum skips, baseline + derivation still produce usable
+    // numbers.
+    let equipped: std::collections::HashMap<u16, u32> = if is_player {
+        db.load_equipped_catalog_ids(actor_id, class_id)
+            .await
+            .unwrap_or_default()
+    } else {
+        std::collections::HashMap::new()
+    };
+
+    let (pre_pools, post_pools, class_slot, main_skill_level) = {
+        let mut c = handle.character.write().await;
+        let pre = if is_player {
+            Some((c.chara.hp, c.chara.max_hp, c.chara.mp, c.chara.max_mp))
+        } else {
+            None
+        };
+        if is_player {
+            // Full Player pipeline — ordering load-bearing:
+            //   1. reset — zeroes the pipeline's targets so the rest
+            //      of the passes are idempotent.
+            //   2. baseline — seeds primaries + Hp/Mp/Tp from class+
+            //      level (seed-if-zero, so DB-persisted pool values
+            //      survive the reset→baseline round-trip at login).
+            //   3. gear_sum — additive paramBonus deltas from all slots.
+            //   4. weapon_stats — Delay/AttackType/HitCount from main-
+            //      hand (overrides any paramBonus HitCount); flat
+            //      Attack/Parry from both hands stack.
+            //   5. weapon_damage_power — main-hand `damagePower`
+            //      stashed on Modifier::WeaponDamagePower for the
+            //      auto-attack damage formula to read.
+            //   6. derivation — STR → Attack, VIT → Defense, etc.
+            //   7. recalculate_stats — project Hp/Mp mods onto the
+            //      character's HP/MP pools and plant the HitCount=1
+            //      h2h fallback if the weapon stage didn't set one.
+            c.reset_player_bonus_stats();
+            c.apply_player_stat_baseline();
+            if let Ok(items) = catalogs.items.read() {
+                c.apply_player_gear_stats(&items, &equipped);
+                c.apply_player_weapon_stats(&items, &equipped);
+                c.apply_player_weapon_damage_power(&items, &equipped);
+            }
+            c.apply_player_stat_derivation();
+        }
+        c.recalculate_stats();
+        let post = if is_player {
+            Some((c.chara.hp, c.chara.max_hp, c.chara.mp, c.chara.max_mp))
+        } else {
+            None
+        };
+        // `chara.class` is the active class slot — same value
+        // `state_main_skill[0]` stores on the DB side. `chara.level`
+        // mirrors `skill_level[class]` and is what the baseline +
+        // nameplate expect.
+        let main_skill = c.chara.class.max(0) as u8;
+        let main_skill_level = c.chara.level.max(1) as u16;
+        (pre, post, main_skill, main_skill_level)
+    };
+
+    // Broadcast HP/MP if any of the four pool values changed. Gating
+    // keeps no-op recalcs (e.g. status-effect tick reroute) quiet — a
+    // Player standing still with no equip events fires ~0 bundles/sec.
+    if let (Some(pre), Some(post)) = (pre_pools, post_pools)
+        && pre != post
+    {
+        let hp = post.0.max(0) as u16;
+        let hp_max = post.1.max(0) as u16;
+        let mp = post.2.max(0) as u16;
+        let mp_max = post.3.max(0) as u16;
+        // `tp` is read separately because it's on a different tick
+        // lifecycle than HP/MP — if TP didn't change we still need a
+        // value to fill the packet. Use the current snapshot.
+        let tp = {
+            let c = handle.character.read().await;
+            c.chara.tp
+        };
+        let mut subs = crate::packets::send::actor::build_chara_state_at_quickly_for_all(
+            actor_id, hp, hp_max, mp, mp_max, tp,
+        );
+        subs.extend(
+            crate::packets::send::actor::build_player_state_at_quickly_for_all(
+                actor_id,
+                hp,
+                hp_max,
+                class_slot,
+                main_skill_level,
+            ),
+        );
+        for sub in subs {
+            let bytes = sub.to_bytes();
+            send_to_self_if_player(registry, world, actor_id, bytes.clone()).await;
+            broadcast_to_neighbours(world, registry, actor_id, bytes).await;
+        }
     }
 }
 

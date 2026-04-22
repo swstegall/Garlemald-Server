@@ -35,6 +35,7 @@ use mlua::{AnyUserData, UserData, UserDataFields, UserDataMethods, Value};
 
 use super::command::{CommandQueue, LuaCommand};
 use crate::crafting::{Recipe, RecipeResolver};
+use crate::gathering::{GatherNode, GatherNodeItem, GatherResolver};
 
 fn push(queue: &Arc<Mutex<CommandQueue>>, cmd: LuaCommand) {
     CommandQueue::push(queue, cmd);
@@ -1934,3 +1935,136 @@ impl UserData for LuaRecipeResolver {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// LuaGatherNode / LuaGatherNodeItem / LuaGatherResolver — gathering catalog
+//
+// Dot-accessed fields keep Meteor-era field naming (`itemCatalogId`,
+// `maxYield`) so `DummyCommand.lua` can address them the same way
+// `CraftCommand.lua` addresses `chosenRecipe.resultItemID`. The resolver
+// exposes `BuildAimSlots(id)` which does the full Rust-side pivot the
+// old hardcoded Lua `BuildHarvestNode` helper was doing — returning an
+// 11-entry table with `{empty, itemKey, itemCatalogId, remainder,
+// sweetspot, maxYield}` per slot.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct LuaGatherNode {
+    pub inner: GatherNode,
+}
+
+impl UserData for LuaGatherNode {
+    fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
+        fields.add_field_method_get("id", |_, this| Ok(this.inner.id));
+        fields.add_field_method_get("grade", |_, this| Ok(this.inner.grade as u32));
+        fields.add_field_method_get("attempts", |_, this| Ok(this.inner.attempts as u32));
+        fields.add_field_method_get("numItems", |_, this| Ok(this.inner.num_items() as u32));
+    }
+
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("GetItemKeys", |lua, this, _: ()| {
+            let tbl = lua.create_table()?;
+            let mut i = 1i64;
+            for key in this.inner.active_item_keys() {
+                tbl.raw_set(i, key)?;
+                i += 1;
+            }
+            Ok(tbl)
+        });
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LuaGatherNodeItem {
+    pub inner: GatherNodeItem,
+}
+
+impl UserData for LuaGatherNodeItem {
+    fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
+        fields.add_field_method_get("id", |_, this| Ok(this.inner.id));
+        fields.add_field_method_get("itemCatalogId", |_, this| Ok(this.inner.item_catalog_id));
+        fields.add_field_method_get("remainder", |_, this| Ok(this.inner.remainder as u32));
+        fields.add_field_method_get("aim", |_, this| Ok(this.inner.aim as u32));
+        fields.add_field_method_get("sweetspot", |_, this| Ok(this.inner.sweetspot as u32));
+        fields.add_field_method_get("maxYield", |_, this| Ok(this.inner.max_yield));
+    }
+}
+
+#[derive(Clone)]
+pub struct LuaGatherResolver {
+    pub resolver: Arc<GatherResolver>,
+}
+
+impl UserData for LuaGatherResolver {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("GetNode", |_, this, id: u32| {
+            Ok(this
+                .resolver
+                .get_node(id)
+                .cloned()
+                .map(|n| LuaGatherNode { inner: n }))
+        });
+        methods.add_method("GetNodeItem", |_, this, id: u32| {
+            Ok(this
+                .resolver
+                .get_item(id)
+                .cloned()
+                .map(|i| LuaGatherNodeItem { inner: i }))
+        });
+        methods.add_method("GetNumNodes", |_, this, _: ()| {
+            Ok(this.resolver.num_nodes() as u32)
+        });
+        methods.add_method("GetNumItems", |_, this, _: ()| {
+            Ok(this.resolver.num_items() as u32)
+        });
+
+        // Build the 11-slot aim pivot table. Returns an array-style
+        // Lua table whose keys are 1..=11 and whose values are
+        // `{itemKey, itemCatalogId, remainder, sweetspot, maxYield}`
+        // sub-tables — matches the shape the old `BuildHarvestNode`
+        // helper in `DummyCommand.lua` was building. Empty slots
+        // render as `{0, 0, 0, 0, 0}` so index-based access in Lua
+        // doesn't need a nil guard.
+        methods.add_method("BuildAimSlots", |lua, this, node_id: u32| {
+            let Some(slots) = this.resolver.build_aim_slots(node_id) else {
+                return Ok(Value::Nil);
+            };
+            let tbl = lua.create_table()?;
+            for (i, slot) in slots.iter().enumerate() {
+                let row = lua.create_table()?;
+                if slot.empty {
+                    row.raw_set("empty", true)?;
+                    row.raw_set("itemKey", 0u32)?;
+                    row.raw_set("itemCatalogId", 0u32)?;
+                    row.raw_set("remainder", 0u32)?;
+                    row.raw_set("sweetspot", 0u32)?;
+                    row.raw_set("maxYield", 0u32)?;
+                    // Also mirror the old Lua shape `{0, 0, 0, 0}` so
+                    // positional indexing (`slot[1]`) works alongside
+                    // named access.
+                    row.raw_set(1i64, 0u32)?;
+                    row.raw_set(2i64, 0u32)?;
+                    row.raw_set(3i64, 0u32)?;
+                    row.raw_set(4i64, 0u32)?;
+                } else {
+                    row.raw_set("empty", false)?;
+                    row.raw_set("itemKey", slot.item_key)?;
+                    row.raw_set("itemCatalogId", slot.item_catalog_id)?;
+                    row.raw_set("remainder", slot.remainder as u32)?;
+                    row.raw_set("sweetspot", slot.sweetspot as u32)?;
+                    row.raw_set("maxYield", slot.max_yield)?;
+                    // Legacy `{itemId, remainder, sweetspot, yield}`
+                    // positional shape for scripts that still use
+                    // `nodeTable[i][1]` etc.
+                    row.raw_set(1i64, slot.item_catalog_id)?;
+                    row.raw_set(2i64, slot.remainder as u32)?;
+                    row.raw_set(3i64, slot.sweetspot as u32)?;
+                    row.raw_set(4i64, slot.max_yield)?;
+                }
+                tbl.raw_set(i as i64 + 1, row)?;
+            }
+            Ok(Value::Table(tbl))
+        });
+    }
+}
+

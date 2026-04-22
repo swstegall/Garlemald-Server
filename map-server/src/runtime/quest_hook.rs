@@ -370,6 +370,10 @@ mod tests {
                     r"INSERT INTO characters_class_exp (characterId) VALUES (7)",
                     [],
                 )?;
+                c.execute(
+                    r"INSERT INTO characters_class_levels (characterId) VALUES (7)",
+                    [],
+                )?;
                 Ok(())
             })
             .await
@@ -377,19 +381,31 @@ mod tests {
 
         fire_on_kill_bnpc(&handle, &lua, 1_000_999, &registry, &db, &world).await;
 
-        // Hook emitted AddExp → runtime drain → db.set_exp landed.
-        let gla = db
+        // Hook emitted AddExp → runtime drain → level-up rollover →
+        // db.set_exp + db.set_level land. 750 SP on a fresh L1 GLA
+        // crosses the 570 SP "1 → 2" threshold: final state is L2
+        // with 180 SP carried over.
+        let (gla_sp, gla_level) = db
             .conn_for_test()
             .call_db(|c| {
-                c.query_row(
+                let sp: i32 = c.query_row(
                     "SELECT gla FROM characters_class_exp WHERE characterId = 7",
                     [],
                     |r| r.get::<_, i32>(0),
-                )
+                )?;
+                let lvl: i32 = c
+                    .query_row(
+                        "SELECT gla FROM characters_class_levels WHERE characterId = 7",
+                        [],
+                        |r| r.get::<_, i32>(0),
+                    )
+                    .unwrap_or(0);
+                Ok((sp, lvl))
             })
             .await
             .unwrap();
-        assert_eq!(gla, 750);
+        assert_eq!(gla_sp, 180, "750 - 570 (1→2 threshold) = 180");
+        assert_eq!(gla_level, 2, "level rolled over from 1 to 2");
 
         let _ = std::fs::remove_dir_all(root);
     }
