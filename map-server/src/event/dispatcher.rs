@@ -152,19 +152,24 @@ pub async fn dispatch_event_event(
         // ---- DB + game message -----------------------------------------
         EventEvent::QuestSaveToDb {
             player_actor_id,
+            slot,
             quest_id,
-            phase,
+            sequence,
             flags,
-            data,
+            counter1,
+            counter2,
+            counter3,
         } => {
             if let Err(e) = db
                 .save_quest(
                     *player_actor_id,
-                    /* slot */ 0,
+                    *slot,
                     *quest_id,
-                    *phase,
-                    data,
+                    *sequence,
                     *flags,
+                    *counter1,
+                    *counter2,
+                    *counter3,
                 )
                 .await
             {

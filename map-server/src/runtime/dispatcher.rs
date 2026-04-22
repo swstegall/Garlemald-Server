@@ -169,10 +169,15 @@ pub async fn dispatch_battle_event(
         }
         | BattleEvent::Disengage { owner_actor_id }
         | BattleEvent::Spawn { owner_actor_id }
-        | BattleEvent::Die { owner_actor_id }
         | BattleEvent::Despawn { owner_actor_id }
         | BattleEvent::RecalcStats { owner_actor_id } => {
             tracing::debug!(owner = owner_actor_id, kind = ?event_tag(event), "battle event");
+        }
+        BattleEvent::Die { owner_actor_id } => {
+            apply_die(*owner_actor_id, registry, world, zone).await;
+        }
+        BattleEvent::Revive { owner_actor_id } => {
+            apply_revive(*owner_actor_id, registry, world, zone).await;
         }
         BattleEvent::TargetChange {
             owner_actor_id,
@@ -408,6 +413,8 @@ async fn resolve_auto_attack(
         zone,
     )
     .await;
+
+    die_if_defender_fell(defender_actor_id, registry, world, zone).await;
 }
 
 async fn resolve_action(
@@ -534,6 +541,8 @@ async fn resolve_action(
         zone,
     )
     .await;
+
+    die_if_defender_fell(defender_actor_id, registry, world, zone).await;
 }
 
 async fn broadcast_results(
@@ -1122,5 +1131,130 @@ async fn apply_recalc_stats(registry: &ActorRegistry, actor_id: u32) {
     c.recalculate_stats();
     if is_player {
         c.apply_player_stat_derivation();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Death / revive
+// ---------------------------------------------------------------------------
+
+/// Inline-post-damage death check. Called from `resolve_auto_attack` /
+/// `resolve_action` once the defender's write lock is released. If the
+/// defender's HP crossed to 0 on this frame and they're not already in
+/// the DEAD state, flip them into it and broadcast the wire change.
+/// Idempotent — a double-invoke for the same actor is a cheap no-op.
+async fn die_if_defender_fell(
+    defender_actor_id: u32,
+    registry: &ActorRegistry,
+    world: &WorldManager,
+    zone: &Arc<RwLock<Zone>>,
+) {
+    let Some(handle) = registry.get(defender_actor_id).await else {
+        return;
+    };
+    let (is_dead_now, already_marked) = {
+        let c = handle.character.read().await;
+        (
+            c.is_dead(),
+            c.base.current_main_state == crate::actor::MAIN_STATE_DEAD,
+        )
+    };
+    if !is_dead_now || already_marked {
+        return;
+    }
+    apply_die(defender_actor_id, registry, world, zone).await;
+}
+
+/// Port of Meteor's `DeathState.OnStart` tail: disengage the AI, flip
+/// `current_main_state` to DEAD, broadcast `SetActorState` around the
+/// owner. Status-effect cleanup (`LoseOnDeath` flag) is deferred — the
+/// status table lacks the flag surfacing today.
+pub(crate) async fn apply_die(
+    owner_actor_id: u32,
+    registry: &ActorRegistry,
+    world: &WorldManager,
+    zone: &Arc<RwLock<Zone>>,
+) {
+    let Some(handle) = registry.get(owner_actor_id).await else {
+        return;
+    };
+    {
+        let mut c = handle.character.write().await;
+        if c.base.current_main_state == crate::actor::MAIN_STATE_DEAD {
+            return;
+        }
+        // Force HP to zero so `is_dead` stays consistent if some caller
+        // invoked `apply_die` without a prior damage settle (e.g. a
+        // scripted `BattleNpc::die`).
+        if c.chara.hp > 0 {
+            c.chara.hp = 0;
+        }
+        c.base.current_main_state = crate::actor::MAIN_STATE_DEAD;
+        c.chara.new_main_state = crate::actor::MAIN_STATE_DEAD;
+        // Skip `internal_disengage` here — it would push a follow-up
+        // Disengage event. The state-change packet we emit below is
+        // load-bearing; the per-actor AI also picks the DEAD state on its
+        // next tick, which short-circuits Attack/Cast states without us
+        // needing an explicit Disengage broadcast.
+        c.ai_container.clear_states();
+    }
+    let sub = tx::build_set_actor_state(owner_actor_id, crate::actor::MAIN_STATE_DEAD as u8, 0);
+    let bytes = sub.to_bytes();
+    send_to_self_if_player(registry, world, owner_actor_id, bytes.clone()).await;
+    broadcast_around_actor(world, registry, zone, owner_actor_id, bytes).await;
+}
+
+/// Bring an actor back from the DEAD state. For Players this is the
+/// home-point revive button; for NPCs the spawner re-spawns them through
+/// the same entry point. Mirrors Meteor's `Spawn` tail used when
+/// `Modifier.Raise > 0` catches a player before the despawn timer fires.
+pub(crate) async fn apply_revive(
+    owner_actor_id: u32,
+    registry: &ActorRegistry,
+    world: &WorldManager,
+    zone: &Arc<RwLock<Zone>>,
+) {
+    let Some(handle) = registry.get(owner_actor_id).await else {
+        return;
+    };
+    {
+        let mut c = handle.character.write().await;
+        if c.base.current_main_state != crate::actor::MAIN_STATE_DEAD {
+            return;
+        }
+        let max_hp = c.chara.max_hp as i32;
+        let max_mp = c.chara.max_mp as i32;
+        c.set_hp(max_hp);
+        c.set_mp(max_mp);
+        c.base.current_main_state = crate::actor::MAIN_STATE_PASSIVE;
+        c.chara.new_main_state = crate::actor::MAIN_STATE_PASSIVE;
+    }
+    let sub = tx::build_set_actor_state(
+        owner_actor_id,
+        crate::actor::MAIN_STATE_PASSIVE as u8,
+        0,
+    );
+    let bytes = sub.to_bytes();
+    send_to_self_if_player(registry, world, owner_actor_id, bytes.clone()).await;
+    broadcast_around_actor(world, registry, zone, owner_actor_id, bytes).await;
+}
+
+/// The zone broadcaster excludes the source actor, so Players who die or
+/// revive wouldn't otherwise see their own state-change packet. Send it
+/// directly to their session.
+async fn send_to_self_if_player(
+    registry: &ActorRegistry,
+    world: &WorldManager,
+    owner_actor_id: u32,
+    bytes: Vec<u8>,
+) {
+    let Some(handle) = registry.get(owner_actor_id).await else {
+        return;
+    };
+    if !handle.is_player() {
+        return;
+    }
+    if let Some(client) = world.client(handle.session_id).await {
+        client.send_bytes(bytes).await;
     }
 }

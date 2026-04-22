@@ -121,6 +121,14 @@ pub enum BattleEvent {
     Die {
         owner_actor_id: u32,
     },
+    /// Bring a dead actor back to life. For Players this is the
+    /// home-point revive button; for NPCs the spawner's respawn timer
+    /// pushes this after a cooldown. The dispatcher resets HP/MP to max,
+    /// flips `current_main_state` back to `MAIN_STATE_PASSIVE`, and
+    /// broadcasts the state change around the actor.
+    Revive {
+        owner_actor_id: u32,
+    },
     Despawn {
         owner_actor_id: u32,
     },

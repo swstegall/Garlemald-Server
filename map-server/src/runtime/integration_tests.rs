@@ -909,6 +909,372 @@ async fn linkshell_chat_fans_to_online_members_only() {
 }
 
 #[tokio::test]
+async fn add_gil_creates_stack_then_increments() {
+    use common::db::ConnCallExt;
+    use rusqlite::named_params;
+
+    let db = crate::database::Database::open(tempdb()).await.unwrap();
+    // Seed a character row so foreign-key-like semantics hold.
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (7, 0, 0, 0, 'Reward')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    // First call inserts the stack.
+    assert_eq!(db.add_gil(7, 500).await.unwrap(), 500);
+    let after_create = db
+        .conn_for_test()
+        .call_db(|c| {
+            let q: i32 = c.query_row(
+                r"SELECT si.quantity
+                  FROM characters_inventory ci
+                  INNER JOIN server_items si ON ci.serverItemId = si.id
+                  WHERE ci.characterId = 7
+                    AND ci.itemPackage = 99
+                    AND si.itemId = 1000001",
+                [],
+                |r| r.get(0),
+            )?;
+            Ok(q)
+        })
+        .await
+        .unwrap();
+    assert_eq!(after_create, 500);
+
+    // Second call increments the same row (quantity becomes 1300, a
+    // single row remains).
+    assert_eq!(db.add_gil(7, 800).await.unwrap(), 1300);
+    let row_count = db
+        .conn_for_test()
+        .call_db(|c| {
+            let n: i64 = c.query_row(
+                r"SELECT COUNT(*) FROM characters_inventory
+                  WHERE characterId = 7 AND itemPackage = 99",
+                [],
+                |r| r.get(0),
+            )?;
+            Ok(n)
+        })
+        .await
+        .unwrap();
+    assert_eq!(row_count, 1);
+
+    // Negative delta clamps to zero rather than going below.
+    assert_eq!(db.add_gil(7, -99_999).await.unwrap(), 0);
+    let _ = named_params! { ":x": 0 }; // silence unused-import if the macro is unused above
+}
+
+#[tokio::test]
+async fn set_exp_persists_per_class_column() {
+    use common::db::ConnCallExt;
+
+    let db = crate::database::Database::open(tempdb()).await.unwrap();
+    // Seed character + class-exp row (per schema, the exp table uses the
+    // character id as its PK).
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (9, 0, 0, 0, 'Xp')",
+                [],
+            )?;
+            c.execute(
+                r"INSERT INTO characters_class_exp (characterId) VALUES (9)",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    // GLA class id is 3 in this server's slot convention.
+    db.set_exp(9, crate::actor::player::CLASSID_GLA, 4242)
+        .await
+        .unwrap();
+    let got = db
+        .conn_for_test()
+        .call_db(|c| {
+            let v: i32 = c.query_row(
+                "SELECT gla FROM characters_class_exp WHERE characterId = 9",
+                [],
+                |r| r.get(0),
+            )?;
+            Ok(v)
+        })
+        .await
+        .unwrap();
+    assert_eq!(got, 4242);
+}
+
+#[tokio::test]
+async fn die_flips_main_state_and_broadcasts_around_actor() {
+    use crate::battle::outbox::BattleEvent;
+    use crate::runtime::dispatcher::dispatch_battle_event;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+
+    let mut zone = Zone::new(
+        100,
+        "test",
+        1,
+        "/Area/Zone/Test",
+        0,
+        0,
+        0,
+        false,
+        false,
+        false,
+        false,
+        false,
+        Some(&StubNavmeshLoader),
+    );
+    let mut ob = AreaOutbox::new();
+    // Observer Player (id=11) at origin, dying NPC (id=2) next to them.
+    zone.core.add_actor(
+        StoredActor {
+            actor_id: 11,
+            kind: ActorKind::Player,
+            position: Vector3::ZERO,
+            grid: (0, 0),
+            is_alive: true,
+        },
+        &mut ob,
+    );
+    zone.core.add_actor(
+        StoredActor {
+            actor_id: 2,
+            kind: ActorKind::BattleNpc,
+            position: Vector3::new(3.0, 0.0, 0.0),
+            grid: (0, 0),
+            is_alive: true,
+        },
+        &mut ob,
+    );
+    world.register_zone(zone).await;
+
+    let mut dying = Character::new(2);
+    dying.chara.hp = 0; // already at 0 — Die just flips the state
+    dying.chara.max_hp = 1000;
+    registry
+        .insert(ActorHandle::new(
+            2,
+            ActorKindTag::BattleNpc,
+            100,
+            0,
+            dying,
+        ))
+        .await;
+    registry
+        .insert(ActorHandle::new(
+            11,
+            ActorKindTag::Player,
+            100,
+            77,
+            Character::new(11),
+        ))
+        .await;
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(4);
+    world.register_client(77, ClientHandle::new(77, tx)).await;
+
+    let zone_arc = world.zone(100).await.unwrap();
+    dispatch_battle_event(
+        &BattleEvent::Die { owner_actor_id: 2 },
+        &registry,
+        &world,
+        &zone_arc,
+    )
+    .await;
+
+    let c = registry.get(2).await.unwrap().character.read().await.clone();
+    assert_eq!(
+        c.base.current_main_state,
+        crate::actor::MAIN_STATE_DEAD,
+        "defender should be flipped to DEAD",
+    );
+    assert!(rx.try_recv().is_ok(), "observer should receive SetActorState broadcast");
+}
+
+#[tokio::test]
+async fn revive_restores_hp_and_flips_state_back_to_passive() {
+    use crate::battle::outbox::BattleEvent;
+    use crate::runtime::dispatcher::dispatch_battle_event;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+
+    let mut zone = Zone::new(
+        100,
+        "test",
+        1,
+        "/Area/Zone/Test",
+        0,
+        0,
+        0,
+        false,
+        false,
+        false,
+        false,
+        false,
+        Some(&StubNavmeshLoader),
+    );
+    let mut ob = AreaOutbox::new();
+    zone.core.add_actor(
+        StoredActor {
+            actor_id: 11,
+            kind: ActorKind::Player,
+            position: Vector3::ZERO,
+            grid: (0, 0),
+            is_alive: true,
+        },
+        &mut ob,
+    );
+    world.register_zone(zone).await;
+
+    // Pre-dead player with full max_hp.
+    let mut chara = Character::new(11);
+    chara.chara.hp = 0;
+    chara.chara.max_hp = 1000;
+    chara.chara.mp = 0;
+    chara.chara.max_mp = 400;
+    chara.base.current_main_state = crate::actor::MAIN_STATE_DEAD;
+    chara.chara.new_main_state = crate::actor::MAIN_STATE_DEAD;
+    registry
+        .insert(ActorHandle::new(
+            11,
+            ActorKindTag::Player,
+            100,
+            77,
+            chara,
+        ))
+        .await;
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(4);
+    world.register_client(77, ClientHandle::new(77, tx)).await;
+
+    let zone_arc = world.zone(100).await.unwrap();
+    dispatch_battle_event(
+        &BattleEvent::Revive { owner_actor_id: 11 },
+        &registry,
+        &world,
+        &zone_arc,
+    )
+    .await;
+
+    let c = registry.get(11).await.unwrap().character.read().await.clone();
+    assert_eq!(c.base.current_main_state, crate::actor::MAIN_STATE_PASSIVE);
+    assert_eq!(c.chara.hp, 1000);
+    assert_eq!(c.chara.mp, 400);
+    assert!(rx.try_recv().is_ok(), "owner should see state change broadcast");
+}
+
+#[tokio::test]
+async fn auto_attack_that_kills_flips_defender_to_dead() {
+    use crate::runtime::{GameTicker, TickerConfig};
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+
+    let mut zone = Zone::new(
+        100,
+        "test",
+        1,
+        "/Area/Zone/Test",
+        0,
+        0,
+        0,
+        false,
+        false,
+        false,
+        false,
+        false,
+        Some(&StubNavmeshLoader),
+    );
+    let mut ob = AreaOutbox::new();
+    zone.core.add_actor(
+        StoredActor {
+            actor_id: 1,
+            kind: ActorKind::Player,
+            position: Vector3::ZERO,
+            grid: (0, 0),
+            is_alive: true,
+        },
+        &mut ob,
+    );
+    zone.core.add_actor(
+        StoredActor {
+            actor_id: 2,
+            kind: ActorKind::BattleNpc,
+            position: Vector3::new(3.0, 0.0, 0.0),
+            grid: (0, 0),
+            is_alive: true,
+        },
+        &mut ob,
+    );
+    world.register_zone(zone).await;
+
+    // Attacker with just enough swing prep.
+    let mut attacker = Character::new(1);
+    attacker.chara.hp = 1000;
+    attacker.chara.max_hp = 1000;
+    attacker.chara.level = 50;
+    registry
+        .insert(ActorHandle::new(
+            1,
+            ActorKindTag::Player,
+            100,
+            42,
+            attacker,
+        ))
+        .await;
+
+    // Victim sitting at 1 HP — next auto-attack (0..=90 damage) is
+    // overwhelmingly likely to finish them.
+    let mut victim = Character::new(2);
+    victim.chara.hp = 1;
+    victim.chara.max_hp = 1000;
+    victim.chara.level = 1;
+    registry
+        .insert(ActorHandle::new(
+            2,
+            ActorKindTag::BattleNpc,
+            100,
+            0,
+            victim,
+        ))
+        .await;
+
+    {
+        let handle = registry.get(1).await.unwrap();
+        let mut c = handle.character.write().await;
+        c.ai_container.internal_engage(2, 0, 2500);
+    }
+
+    let ticker = GameTicker::new(TickerConfig::default(), world.clone(), registry.clone(), db);
+    // Tick forward past the swing timer enough times to guarantee a hit.
+    for i in 1..=10 {
+        ticker.tick_once((i as u64) * 2_600).await;
+        let c = registry.get(2).await.unwrap().character.read().await.clone();
+        if c.base.current_main_state == crate::actor::MAIN_STATE_DEAD {
+            assert!(c.is_dead(), "HP should be 0 at DEAD state");
+            return;
+        }
+    }
+    panic!("victim never flipped to DEAD after 10 swings");
+}
+
+#[tokio::test]
 async fn hate_add_event_updates_attacker_hate_container() {
     let world = Arc::new(WorldManager::new());
     let registry = Arc::new(ActorRegistry::new());

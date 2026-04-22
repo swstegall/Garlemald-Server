@@ -90,8 +90,13 @@ async fn main() -> Result<()> {
 
     let world = Arc::new(WorldManager::new());
     let registry = Arc::new(ActorRegistry::new());
-    let cmd = Arc::new(CommandProcessor::new(world.clone()));
     let lua = Arc::new(LuaEngine::new(config.script_root().to_path_buf()));
+    let cmd = Arc::new(CommandProcessor::new(
+        world.clone(),
+        registry.clone(),
+        db.clone(),
+        lua.clone(),
+    ));
     tracing::info!(path = ?config.script_root(), "lua engine initialised");
 
     // Phase-2 loaders — zones, private areas, entrances, seamless

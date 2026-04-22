@@ -84,6 +84,21 @@ pub enum LuaCommand {
         class_id: u8,
         exp: i32,
     },
+    AddGil {
+        actor_id: u32,
+        amount: i32,
+    },
+    /// `player:Die()` — force the actor into the DEAD state (flipping
+    /// `current_main_state`, zeroing HP, broadcasting `SetActorState`).
+    /// Used by GM commands and by scripted death cutscenes.
+    Die {
+        actor_id: u32,
+    },
+    /// `player:Revive()` — bring the actor back from DEAD, restoring
+    /// HP/MP to max and broadcasting the state change.
+    Revive {
+        actor_id: u32,
+    },
     AddItem {
         actor_id: u32,
         item_package: u16,

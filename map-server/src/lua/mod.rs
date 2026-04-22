@@ -88,6 +88,19 @@ impl LuaEngine {
         &self.resolver
     }
 
+    /// Drop every cached VM so the next `load_script` call re-reads the
+    /// file from disk and re-evaluates. Used by the `!reload` console
+    /// command to pick up script edits without restarting the server.
+    /// Returns the number of scripts evicted.
+    pub fn reload_scripts(&self) -> usize {
+        let Ok(mut cache) = self.vm_cache.lock() else {
+            return 0;
+        };
+        let n = cache.len();
+        cache.clear();
+        n
+    }
+
     pub fn catalogs(&self) -> &Arc<Catalogs> {
         &self.catalogs
     }

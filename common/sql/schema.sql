@@ -153,11 +153,11 @@ CREATE TABLE IF NOT EXISTS characters_npclinkshell (
     PRIMARY KEY (characterId, npcLinkshellId)
 );
 
+-- Ported from `ioncannon/quest_system`: one row per character, with the
+-- 2048-bit completion bitfield packed as a 256-byte BLOB.
 CREATE TABLE IF NOT EXISTS characters_quest_completed (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    characterId INTEGER NOT NULL,
-    questId     INTEGER NOT NULL,
-    UNIQUE (characterId, questId)
+    characterId     INTEGER PRIMARY KEY NOT NULL,
+    completedQuests BLOB
 );
 
 CREATE TABLE IF NOT EXISTS characters_quest_guildleve_local (
@@ -179,13 +179,18 @@ CREATE TABLE IF NOT EXISTS characters_quest_guildleve_regional (
     UNIQUE (characterId, guildleveId)
 );
 
+-- Ported from `ioncannon/quest_system`: JSON `questData` blob gone,
+-- `currentPhase` → `sequence`, `questFlags` → `flags`, plus three 16-bit
+-- counters driven by `QuestData::{Inc,Dec,Set}Counter`.
 CREATE TABLE IF NOT EXISTS characters_quest_scenario (
-    characterId  INTEGER NOT NULL,
-    slot         INTEGER NOT NULL,
-    questId      INTEGER NOT NULL,
-    currentPhase INTEGER NOT NULL DEFAULT 0,
-    questData    TEXT,
-    questFlags   INTEGER NOT NULL DEFAULT 0,
+    characterId INTEGER NOT NULL,
+    slot        INTEGER NOT NULL,
+    questId     INTEGER NOT NULL,
+    sequence    INTEGER NOT NULL DEFAULT 0,
+    flags       INTEGER NOT NULL DEFAULT 0,
+    counter1    INTEGER NOT NULL DEFAULT 0,
+    counter2    INTEGER NOT NULL DEFAULT 0,
+    counter3    INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (characterId, slot)
 );
 

@@ -775,6 +775,95 @@ impl PacketProcessor {
             } => {
                 tracing::debug!(player = player_id, quest = quest_id, "AddQuest (stub)");
             }
+            LC::AddExp {
+                actor_id,
+                class_id,
+                exp,
+            } => {
+                if exp == 0 {
+                    return;
+                }
+                let class_slot = class_id as usize;
+                let new_exp = {
+                    let mut c = handle.character.write().await;
+                    if class_slot >= c.battle_save.skill_point.len() {
+                        tracing::warn!(class = class_id, "AddExp: class_id out of range");
+                        return;
+                    }
+                    let updated = c.battle_save.skill_point[class_slot].saturating_add(exp).max(0);
+                    c.battle_save.skill_point[class_slot] = updated;
+                    updated
+                };
+                if let Err(e) = self.db.set_exp(actor_id, class_id, new_exp).await {
+                    tracing::warn!(
+                        actor = actor_id,
+                        class = class_id,
+                        err = %e,
+                        "AddExp: DB persist failed",
+                    );
+                }
+                tracing::info!(
+                    actor = actor_id,
+                    class = class_id,
+                    delta = exp,
+                    total = new_exp,
+                    "AddExp applied",
+                );
+                // Level-up detection + level-up packet emission + XP-gained
+                // client message deferred — needs the per-class level-curve
+                // table (Meteor's `Player.GetLevelThreshold(...)`) which
+                // hasn't been ported yet.
+            }
+            LC::AddGil { actor_id, amount } => {
+                if amount == 0 {
+                    return;
+                }
+                match self.db.add_gil(actor_id, amount).await {
+                    Ok(total) => {
+                        tracing::info!(
+                            actor = actor_id,
+                            delta = amount,
+                            total,
+                            "AddGil applied",
+                        );
+                        // Currency-package inventory refresh packet emission
+                        // deferred — the next zone-in / explicit inventory
+                        // resync reflects the new balance.
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            actor = actor_id,
+                            delta = amount,
+                            err = %e,
+                            "AddGil: DB persist failed",
+                        );
+                    }
+                }
+            }
+            LC::Die { actor_id } => {
+                let Some(zone) = self.world.zone(handle.zone_id).await else {
+                    return;
+                };
+                crate::runtime::dispatcher::apply_die(
+                    actor_id,
+                    &self.registry,
+                    &self.world,
+                    &zone,
+                )
+                .await;
+            }
+            LC::Revive { actor_id } => {
+                let Some(zone) = self.world.zone(handle.zone_id).await else {
+                    return;
+                };
+                crate::runtime::dispatcher::apply_revive(
+                    actor_id,
+                    &self.registry,
+                    &self.world,
+                    &zone,
+                )
+                .await;
+            }
             // `onLogin` → `initClassItems` / `initRaceItems` emit these for
             // brand-new characters. Full persistence + inventory packet
             // emission lands with the phase-8 item pipeline; logging here

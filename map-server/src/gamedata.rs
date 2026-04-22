@@ -359,13 +359,19 @@ pub struct ChocoboData {
     pub chocobo_name: String,
 }
 
+/// One row hydrated from `characters_quest_scenario` post-redesign.
+/// The free-form `questData` JSON blob is gone; runtime state lives in
+/// `flags` + three 16-bit counters and the phase counter has been
+/// renamed to `sequence`.
 #[derive(Debug, Clone, Default)]
 pub struct QuestScenarioEntry {
     pub slot: u16,
     pub quest_id: u32,
-    pub quest_data: String,
-    pub quest_flags: u32,
-    pub current_phase: u32,
+    pub sequence: u32,
+    pub flags: u32,
+    pub counter1: u16,
+    pub counter2: u16,
+    pub counter3: u16,
 }
 
 #[derive(Debug, Clone, Default)]

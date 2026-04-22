@@ -29,6 +29,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use common::bitstream::Bitstream2048;
 use common::db::ConnCallExt;
 use rusqlite::{OptionalExtension, named_params};
 use tokio_rusqlite::Connection;
@@ -884,7 +885,7 @@ impl Database {
         Ok(Some(player))
     }
 
-    async fn load_class_levels_and_exp(&self, chara_id: u32) -> Result<CharaBattleSave> {
+    pub async fn load_class_levels_and_exp(&self, chara_id: u32) -> Result<CharaBattleSave> {
         let result = self.conn
             .call_db(move |c| {
                 let columns: [u8; 18] = [
@@ -1097,7 +1098,7 @@ impl Database {
             .conn
             .call_db(move |c| {
                 let mut stmt = c.prepare(
-                    r"SELECT slot, questId, questData, questFlags, currentPhase
+                    r"SELECT slot, questId, sequence, flags, counter1, counter2, counter3
                       FROM characters_quest_scenario WHERE characterId = :cid",
                 )?;
                 let rows: Vec<QuestScenarioEntry> = stmt
@@ -1105,12 +1106,11 @@ impl Database {
                         Ok(QuestScenarioEntry {
                             slot: r.get::<_, u16>(0).unwrap_or_default(),
                             quest_id: r.get::<_, u32>(1).unwrap_or_default(),
-                            quest_data: r
-                                .get::<_, Option<String>>(2)
-                                .unwrap_or(None)
-                                .unwrap_or_else(|| "{}".to_string()),
-                            quest_flags: r.get::<_, u32>(3).unwrap_or_default(),
-                            current_phase: r.get::<_, u32>(4).unwrap_or_default(),
+                            sequence: r.get::<_, u32>(2).unwrap_or_default(),
+                            flags: r.get::<_, u32>(3).unwrap_or_default(),
+                            counter1: r.get::<_, u16>(4).unwrap_or_default(),
+                            counter2: r.get::<_, u16>(5).unwrap_or_default(),
+                            counter3: r.get::<_, u16>(6).unwrap_or_default(),
                         })
                     })?
                     .collect::<rusqlite::Result<_>>()?;
@@ -1118,6 +1118,48 @@ impl Database {
             })
             .await?;
         Ok(rows)
+    }
+
+    /// Load a character's 2048-bit completed-quest bitfield. Empty BLOBs
+    /// (never-completed-anything) and missing rows both return an all-zero
+    /// bitstream.
+    pub async fn load_completed_quests(&self, chara_id: u32) -> Result<Bitstream2048> {
+        let bytes = self
+            .conn
+            .call_db(move |c| {
+                c.query_row(
+                    "SELECT completedQuests FROM characters_quest_completed WHERE characterId = :cid",
+                    named_params! { ":cid": chara_id },
+                    |r| r.get::<_, Option<Vec<u8>>>(0),
+                )
+                .optional()
+            })
+            .await?;
+        Ok(match bytes.flatten() {
+            Some(bytes) => Bitstream2048::from_slice(&bytes),
+            None => Bitstream2048::new(),
+        })
+    }
+
+    /// Write a character's full 2048-bit completion bitfield.
+    pub async fn save_completed_quests(
+        &self,
+        chara_id: u32,
+        bitstream: &Bitstream2048,
+    ) -> Result<()> {
+        let bytes = bitstream.as_bytes().to_vec();
+        self.conn
+            .call_db(move |c| {
+                c.execute(
+                    r"INSERT INTO characters_quest_completed (characterId, completedQuests)
+                      VALUES (:cid, :blob)
+                      ON CONFLICT(characterId) DO UPDATE SET completedQuests = excluded.completedQuests",
+                    named_params! { ":cid": chara_id, ":blob": bytes },
+                )?;
+                Ok(())
+            })
+            .await?;
+        Ok(())
     }
 
     async fn load_guildleves_local(&self, chara_id: u32) -> Result<Vec<GuildleveLocalEntry>> {
@@ -1334,35 +1376,44 @@ impl Database {
     // Quests / guildleves
     // =======================================================================
 
+    /// Persist one slot of `characters_quest_scenario` under the
+    /// post-redesign layout (`sequence` + `flags` + three 16-bit counters).
     pub async fn save_quest(
         &self,
         chara_id: u32,
         slot: i32,
         quest_actor_id: u32,
-        phase: u32,
-        quest_data: &str,
-        quest_flags: u32,
+        sequence: u32,
+        flags: u32,
+        counter1: u16,
+        counter2: u16,
+        counter3: u16,
     ) -> Result<()> {
-        let quest_data = quest_data.to_owned();
         let qid = 0xF_FFFFu32 & quest_actor_id;
         self.conn
             .call_db(move |c| {
                 c.execute(
                     r"INSERT INTO characters_quest_scenario
-                        (characterId, slot, questId, currentPhase, questData, questFlags)
-                      VALUES (:cid, :slot, :qid, :phase, :data, :flags)
+                        (characterId, slot, questId, sequence, flags,
+                         counter1, counter2, counter3)
+                      VALUES (:cid, :slot, :qid, :seq, :flags,
+                              :c1, :c2, :c3)
                       ON CONFLICT(characterId, slot) DO UPDATE SET
-                        questId = excluded.questId,
-                        currentPhase = excluded.currentPhase,
-                        questData = excluded.questData,
-                        questFlags = excluded.questFlags",
+                        questId  = excluded.questId,
+                        sequence = excluded.sequence,
+                        flags    = excluded.flags,
+                        counter1 = excluded.counter1,
+                        counter2 = excluded.counter2,
+                        counter3 = excluded.counter3",
                     named_params! {
                         ":cid": chara_id,
                         ":slot": slot,
                         ":qid": qid,
-                        ":phase": phase,
-                        ":data": quest_data,
-                        ":flags": quest_flags,
+                        ":seq": sequence,
+                        ":flags": flags,
+                        ":c1": counter1,
+                        ":c2": counter2,
+                        ":c3": counter3,
                     },
                 )?;
                 Ok(())
@@ -1443,37 +1494,27 @@ impl Database {
         Ok(())
     }
 
+    /// Set one quest's completion bit inside the 2048-bit bitfield
+    /// column. No-ops when `quest_id` is outside the compact id space
+    /// (`110_001..=112_048`), matching Meteor's silent clamp.
     pub async fn complete_quest(&self, chara_id: u32, quest_id: u32) -> Result<()> {
-        let qid = 0xF_FFFFu32 & quest_id;
-        self.conn
-            .call_db(move |c| {
-                c.execute(
-                    r"INSERT OR IGNORE INTO characters_quest_completed (characterId, questId)
-                      VALUES (:cid, :qid)",
-                    named_params! { ":cid": chara_id, ":qid": qid },
-                )?;
-                Ok(())
-            })
-            .await?;
-        Ok(())
+        let Some(bit) = crate::actor::quest::quest_id_to_bit(quest_id) else {
+            return Ok(());
+        };
+        let mut current = self.load_completed_quests(chara_id).await?;
+        if current.get(bit) {
+            return Ok(());
+        }
+        current.set(bit);
+        self.save_completed_quests(chara_id, &current).await
     }
 
     pub async fn is_quest_completed(&self, chara_id: u32, quest_id: u32) -> Result<bool> {
-        let found = self
-            .conn
-            .call_db(move |c| {
-                let v: Option<u32> = c
-                    .query_row(
-                        "SELECT questId FROM characters_quest_completed
-                         WHERE characterId = :cid AND questId = :qid",
-                        named_params! { ":cid": chara_id, ":qid": quest_id },
-                        |r| r.get(0),
-                    )
-                    .optional()?;
-                Ok(v.is_some())
-            })
-            .await?;
-        Ok(found)
+        let Some(bit) = crate::actor::quest::quest_id_to_bit(quest_id) else {
+            return Ok(false);
+        };
+        let bitstream = self.load_completed_quests(chara_id).await?;
+        Ok(bitstream.get(bit))
     }
 
     // =======================================================================
@@ -1965,6 +2006,63 @@ impl Database {
             })
             .await?;
         Ok(ok)
+    }
+
+    /// Grant `delta` gil to `chara_id`. The 1.x gil stack lives as an
+    /// `itemId = 1_000_001` row in `server_items`, linked from
+    /// `characters_inventory` at `itemPackage = PKG_CURRENCY_CRYSTALS (99)`.
+    /// First-time callers get a fresh row; subsequent calls increment the
+    /// quantity in place. Returns the new total.
+    pub async fn add_gil(&self, chara_id: u32, delta: i32) -> Result<i32> {
+        const GIL_ITEM_ID: u32 = 1_000_001;
+        const PKG_CURRENCY: u16 = 99;
+        let total = self
+            .conn
+            .call_db(move |c| {
+                let tx = c.transaction()?;
+                let existing: Option<(i64, i32)> = tx
+                    .query_row(
+                        r"SELECT ci.serverItemId, si.quantity
+                          FROM characters_inventory ci
+                          INNER JOIN server_items si ON ci.serverItemId = si.id
+                          WHERE ci.characterId = :cid
+                            AND ci.itemPackage = :pkg
+                            AND si.itemId = :iid",
+                        named_params! { ":cid": chara_id, ":pkg": PKG_CURRENCY, ":iid": GIL_ITEM_ID },
+                        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i32>(1)?)),
+                    )
+                    .optional()?;
+                let new_total = match existing {
+                    Some((sid, qty)) => {
+                        let updated = qty.saturating_add(delta).max(0);
+                        tx.execute(
+                            "UPDATE server_items SET quantity = :q WHERE id = :id",
+                            named_params! { ":q": updated, ":id": sid },
+                        )?;
+                        updated
+                    }
+                    None => {
+                        let seed = delta.max(0);
+                        tx.execute(
+                            r"INSERT INTO server_items (itemId, quantity, quality)
+                              VALUES (:iid, :q, 1)",
+                            named_params! { ":iid": GIL_ITEM_ID, ":q": seed },
+                        )?;
+                        let sid = tx.last_insert_rowid();
+                        tx.execute(
+                            r"INSERT INTO characters_inventory
+                                (characterId, itemPackage, serverItemId, slot)
+                              VALUES (:cid, :pkg, :sid, 0)",
+                            named_params! { ":cid": chara_id, ":pkg": PKG_CURRENCY, ":sid": sid },
+                        )?;
+                        seed
+                    }
+                };
+                tx.commit()?;
+                Ok(new_total)
+            })
+            .await?;
+        Ok(total)
     }
 
     pub async fn get_linkshell_member_character_ids(&self, ls_id: u64) -> Result<Vec<u32>> {

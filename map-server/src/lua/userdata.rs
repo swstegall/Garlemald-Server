@@ -256,8 +256,7 @@ impl From<&crate::actor::Player> for PlayerSnapshot {
             .flatten()
             .map(|q| q.quest_id())
             .collect();
-        let completed_quests: Vec<u32> =
-            p.helpers.quest_journal.completed.iter().copied().collect();
+        let completed_quests: Vec<u32> = p.helpers.quest_journal.iter_completed().collect();
         let unlocked_aetherytes: Vec<u32> = p.helpers.unlocked_aetherytes.iter().copied().collect();
         let traits: Vec<u16> = p.helpers.traits.iter().map(|t| t.id).collect();
         let inventory: Vec<(u32, i32)> = p
@@ -585,6 +584,41 @@ impl UserData for LuaPlayer {
                     actor_id: this.snapshot.actor_id,
                     class_id,
                     exp,
+                },
+            );
+            Ok(())
+        });
+
+        // Convenience over Meteor's
+        // `player:GetItemPackage(INVENTORY_CURRENCY):AddItem(1000001, qty, 1)`.
+        // The Rust side special-cases gil so reward scripts don't need to
+        // know the item id / package code.
+        methods.add_method("AddGil", |_, this, amount: i32| {
+            push(
+                &this.queue,
+                LuaCommand::AddGil {
+                    actor_id: this.snapshot.actor_id,
+                    amount,
+                },
+            );
+            Ok(())
+        });
+
+        // --- Lifecycle ------------------------------------------------------
+        methods.add_method("Die", |_, this, _: ()| {
+            push(
+                &this.queue,
+                LuaCommand::Die {
+                    actor_id: this.snapshot.actor_id,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method("Revive", |_, this, _: ()| {
+            push(
+                &this.queue,
+                LuaCommand::Revive {
+                    actor_id: this.snapshot.actor_id,
                 },
             );
             Ok(())

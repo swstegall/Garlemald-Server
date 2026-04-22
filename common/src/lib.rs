@@ -24,6 +24,7 @@
 //! client without re-sniffing traffic.
 
 pub mod bitfield;
+pub mod bitstream;
 pub mod blowfish;
 pub mod db;
 pub mod error;

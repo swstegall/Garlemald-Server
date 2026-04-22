@@ -84,15 +84,20 @@ pub enum EventEvent {
         quest_id: u32,
         quest_name: String,
     },
-    /// DB write — `Database::SaveQuest(player, quest)`.
+    /// DB write — `Database::UpdateQuest(player, quest)` (redesigned
+    /// `characters_quest_scenario` layout: `sequence` + `flags` +
+    /// three 16-bit counters; the old `questData` JSON blob is gone).
     QuestSaveToDb {
         player_actor_id: u32,
+        slot: i32,
         quest_id: u32,
-        phase: u32,
+        sequence: u32,
         flags: u32,
-        data: String,
+        counter1: u16,
+        counter2: u16,
+        counter3: u16,
     },
-    /// `SendGameMessage(worldmaster, text_id, 0x20, quest_id)` — phase
+    /// `SendGameMessage(worldmaster, text_id, 0x20, quest_id)` — sequence
     /// advance (25116), completion (25225), abandonment (25236).
     QuestGameMessage {
         player_actor_id: u32,
