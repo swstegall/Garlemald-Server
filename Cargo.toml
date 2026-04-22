@@ -12,7 +12,7 @@ members = [
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
-license = ""
+license = "AGPL-3.0-or-later"
 repository = "https://github.com/swstegall/Garlemald-Server"
 
 [workspace.dependencies]

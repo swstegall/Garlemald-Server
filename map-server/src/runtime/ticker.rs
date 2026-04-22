@@ -1,3 +1,21 @@
+// garlemald-server — Rust port of a FINAL FANTASY XIV v1.23b server emulator (lobby/world/map)
+// Copyright (C) 2026  Samuel Stegall
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Game-loop ticker.
 //!
 //! Spawned from `main.rs` alongside `server::run`. Ticks at a configurable
@@ -197,6 +215,7 @@ fn build_owner_view(chara: &Character, actor_id: u32, zone_id: u32) -> Controlle
         target_has_stealth: false,
         is_close_to_spawn: true,
         target_is_locked: false,
+        attack_delay_ms: chara.get_attack_delay_ms(),
     }
 }
 
@@ -317,6 +336,153 @@ mod tests {
         assert!(
             hp_after > 500,
             "regen should have bumped hp, got {hp_after}"
+        );
+    }
+
+    /// Set up one zone with one Player (id=1) and one passive BattleNpc
+    /// (id=2). The NPC has no controller so it won't retaliate. Shared by
+    /// the auto-attack / cast-resolution tests below.
+    async fn setup_player_vs_npc() -> (GameTicker, Arc<RwLock<Zone>>) {
+        let world = Arc::new(WorldManager::new());
+        let registry = Arc::new(ActorRegistry::new());
+        let db = Arc::new(Database::open(tempdb()).await.expect("database stub"));
+
+        let mut zone = Zone::new(
+            100,
+            "test",
+            1,
+            "/Area/Zone/Test",
+            0,
+            0,
+            0,
+            false,
+            false,
+            false,
+            false,
+            false,
+            Some(&StubNavmeshLoader),
+        );
+        let mut ob = AreaOutbox::new();
+        zone.core.add_actor(
+            StoredActor {
+                actor_id: 1,
+                kind: ActorKind::Player,
+                position: Vector3::ZERO,
+                grid: (0, 0),
+                is_alive: true,
+            },
+            &mut ob,
+        );
+        zone.core.add_actor(
+            StoredActor {
+                actor_id: 2,
+                kind: ActorKind::BattleNpc,
+                position: Vector3::new(3.0, 0.0, 0.0),
+                grid: (0, 0),
+                is_alive: true,
+            },
+            &mut ob,
+        );
+        world.register_zone(zone).await;
+
+        let mut player = Character::new(1);
+        player.chara.hp = 1000;
+        player.chara.max_hp = 1000;
+        player.chara.level = 10;
+        registry
+            .insert(ActorHandle::new(
+                1,
+                ActorKindTag::Player,
+                100,
+                42,
+                player,
+            ))
+            .await;
+
+        let mut npc = Character::new(2);
+        npc.chara.hp = 1000;
+        npc.chara.max_hp = 1000;
+        npc.chara.level = 10;
+        npc.base.position_x = 3.0;
+        registry
+            .insert(ActorHandle::new(
+                2,
+                ActorKindTag::BattleNpc,
+                100,
+                0,
+                npc,
+            ))
+            .await;
+
+        let ticker = GameTicker::new(TickerConfig::default(), world.clone(), registry, db);
+        let zone_arc = world.zone(100).await.unwrap();
+        (ticker, zone_arc)
+    }
+
+    #[tokio::test]
+    async fn auto_attack_drops_defender_hp() {
+        let (ticker, _zone) = setup_player_vs_npc().await;
+
+        // Player engages the NPC. The default swing delay is 2500 ms.
+        {
+            let handle = ticker.registry.get(1).await.unwrap();
+            let mut chara = handle.character.write().await;
+            chara.ai_container.internal_engage(2, 0, 2500);
+        }
+
+        let npc_handle = ticker.registry.get(2).await.unwrap();
+        let initial_hp = npc_handle.character.read().await.get_hp();
+        assert_eq!(initial_hp, 1000);
+
+        // Tick through ~10 swings. Base auto-attack damage is 0..=90 with
+        // a ~10% chance of zero, so run enough swings that the combined
+        // probability of no damage is negligible.
+        for i in 1..=10 {
+            ticker.tick_once((i as u64) * 2_600).await;
+        }
+
+        let final_hp = npc_handle.character.read().await.get_hp();
+        assert!(
+            final_hp < initial_hp,
+            "npc hp should have dropped after 10 swings, got {final_hp}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cast_completion_resolves_spell_damage() {
+        let (ticker, _zone) = setup_player_vs_npc().await;
+
+        // Give the NPC a little defense so the damage math actually has
+        // something to bite into, and queue a spell against it.
+        {
+            let handle = ticker.registry.get(2).await.unwrap();
+            let mut chara = handle.character.write().await;
+            chara
+                .chara
+                .mods
+                .set(crate::actor::modifier::Modifier::Defense, 50.0);
+        }
+        {
+            let handle = ticker.registry.get(1).await.unwrap();
+            let mut chara = handle.character.write().await;
+            let mut cmd = crate::battle::BattleCommand::new(100, "stone");
+            cmd.cast_time_ms = 1_000;
+            cmd.action_type = crate::battle::ActionType::Magic;
+            cmd.command_type = crate::battle::CommandType::SPELL;
+            cmd.base_potency = 300;
+            assert!(chara.ai_container.internal_cast(2, cmd, 0));
+        }
+
+        let npc_handle = ticker.registry.get(2).await.unwrap();
+        let initial_hp = npc_handle.character.read().await.get_hp();
+
+        // One tick after cast finish resolves the spell.
+        ticker.tick_once(1_500).await;
+
+        let final_hp = npc_handle.character.read().await.get_hp();
+        assert!(
+            final_hp < initial_hp,
+            "cast should have dropped npc hp from {initial_hp}, got {final_hp}"
         );
     }
 }

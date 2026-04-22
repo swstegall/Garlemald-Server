@@ -1,3 +1,21 @@
+// garlemald-server — Rust port of a FINAL FANTASY XIV v1.23b server emulator (lobby/world/map)
+// Copyright (C) 2026  Samuel Stegall
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Outbox → side-effect dispatchers.
 //!
 //! Four entry points — one per typed outbox — turn events into real
@@ -16,7 +34,10 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
+use crate::battle::command::{BattleCommand, CommandResult, CommandResultContainer, CommandType};
+use crate::battle::effects::{ActionProperty, ActionType};
 use crate::battle::outbox::BattleEvent;
+use crate::battle::utils as battle_utils;
 use crate::database::Database;
 use crate::inventory::outbox::InventoryEvent;
 use crate::packets::send as tx;
@@ -27,6 +48,18 @@ use crate::zone::zone::Zone;
 
 use super::actor_registry::ActorRegistry;
 use super::broadcast::broadcast_around_actor;
+
+// Stateless RNG adapter for the battle-utils `Rng` trait. Each call pulls
+// a fresh `f64` from the thread-local generator. Implemented this way
+// (instead of wrapping `rand::rngs::ThreadRng`) because the dispatcher
+// future must be `Send`, and `ThreadRng` holds an `Rc` internally.
+struct ThreadRng;
+
+impl battle_utils::Rng for ThreadRng {
+    fn next_f64(&mut self) -> f64 {
+        rand::random::<f64>()
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Status events
@@ -231,6 +264,311 @@ pub async fn dispatch_battle_event(
                 "battle: WorldMasterText"
             );
         }
+        BattleEvent::ResolveAutoAttack {
+            attacker_actor_id,
+            defender_actor_id,
+        } => {
+            resolve_auto_attack(
+                *attacker_actor_id,
+                *defender_actor_id,
+                registry,
+                world,
+                zone,
+            )
+            .await;
+        }
+        BattleEvent::ResolveAction {
+            attacker_actor_id,
+            defender_actor_id,
+            command,
+        } => {
+            resolve_action(
+                *attacker_actor_id,
+                *defender_actor_id,
+                command,
+                registry,
+                world,
+                zone,
+            )
+            .await;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Auto-attack + cast-complete resolution.
+//
+// Called from the battle-event dispatcher when the AIContainer emits a
+// `ResolveAutoAttack` (Attack state ready) or `ResolveAction` (cast state
+// complete). Responsibilities:
+//
+//   1. Look up both actors. If either is missing or dead, bail.
+//   2. Snapshot attacker stats (immutable) while holding a short read lock.
+//   3. Take the defender's write lock. Snapshot its mods for the immutable
+//      `CombatView`, then hand the live map to `finish_action_*` so
+//      stoneskin can consume its pool in place.
+//   4. Apply HP delta + hate update on the defender.
+//   5. Broadcast each `CommandResult` row via the same packet builders the
+//      existing `DoBattleAction` event uses.
+// ---------------------------------------------------------------------------
+
+async fn resolve_auto_attack(
+    attacker_actor_id: u32,
+    defender_actor_id: u32,
+    registry: &ActorRegistry,
+    world: &WorldManager,
+    zone: &Arc<RwLock<Zone>>,
+) {
+    if attacker_actor_id == defender_actor_id {
+        return;
+    }
+    let Some(attacker_handle) = registry.get(attacker_actor_id).await else {
+        return;
+    };
+    let Some(defender_handle) = registry.get(defender_actor_id).await else {
+        return;
+    };
+
+    // Attacker snapshot — released before we lock the defender.
+    let (atk_level, atk_max_hp, atk_mods) = {
+        let a = attacker_handle.character.read().await;
+        if !a.is_alive() {
+            return;
+        }
+        (a.chara.level, a.chara.max_hp, a.chara.mods.clone())
+    };
+
+    let mut rng = ThreadRng;
+    let base = battle_utils::attack_calculate_base_damage(&mut rng);
+
+    let mut result = CommandResult::for_target(defender_actor_id, 0, 0);
+    result.amount = base.max(0) as u16;
+    result.command_type = CommandType::AUTO_ATTACK;
+    result.action_type = ActionType::Physical;
+    result.action_property = ActionProperty::Slashing;
+    result.enmity = result.amount;
+
+    let mut container = CommandResultContainer::new();
+    let dmg_request;
+    {
+        let mut d = defender_handle.character.write().await;
+        if !d.is_alive() {
+            return;
+        }
+        let def_level = d.chara.level;
+        let def_max_hp = d.chara.max_hp;
+        let def_mods_snapshot = d.chara.mods.clone();
+
+        let atk_view = battle_utils::CombatView {
+            actor_id: attacker_actor_id,
+            level: atk_level,
+            max_hp: atk_max_hp,
+            mods: &atk_mods,
+            has_aegis_boon: false,
+            has_protect: false,
+            has_shell: false,
+            has_stoneskin: false,
+        };
+        let def_view = battle_utils::CombatView {
+            actor_id: defender_actor_id,
+            level: def_level,
+            max_hp: def_max_hp,
+            mods: &def_mods_snapshot,
+            has_aegis_boon: false,
+            has_protect: false,
+            has_shell: false,
+            has_stoneskin: false,
+        };
+
+        battle_utils::calc_rates(&atk_view, &def_view, None, &mut result);
+        dmg_request = battle_utils::finish_action_physical(
+            &atk_view,
+            &def_view,
+            &mut d.chara.mods,
+            None,
+            &mut result,
+            &mut container,
+            &mut rng,
+        );
+
+        if let Some(dr) = dmg_request
+            && dr.amount > 0
+        {
+            d.add_hp(-(dr.amount as i32));
+            d.hate.update_hate(attacker_actor_id, dr.enmity as i32);
+        }
+    }
+
+    broadcast_results(
+        attacker_actor_id,
+        0, // battle_animation — auto-attacks have no distinct animation id
+        &container.main_results,
+        registry,
+        world,
+        zone,
+    )
+    .await;
+}
+
+async fn resolve_action(
+    attacker_actor_id: u32,
+    defender_actor_id: u32,
+    command: &BattleCommand,
+    registry: &ActorRegistry,
+    world: &WorldManager,
+    zone: &Arc<RwLock<Zone>>,
+) {
+    let Some(attacker_handle) = registry.get(attacker_actor_id).await else {
+        return;
+    };
+    let Some(defender_handle) = registry.get(defender_actor_id).await else {
+        return;
+    };
+
+    let (atk_level, atk_max_hp, atk_mods) = {
+        let a = attacker_handle.character.read().await;
+        if !a.is_alive() {
+            return;
+        }
+        (a.chara.level, a.chara.max_hp, a.chara.mods.clone())
+    };
+
+    let mut rng = ThreadRng;
+    let mut result = CommandResult::from_command(defender_actor_id, command, 1);
+    // Lua scripts normally drop the base potency into `action.amount`
+    // before calling `DoAction`. Until those bindings land, use the
+    // command's `base_potency` directly; zero falls back to a conservative
+    // placeholder so casts still produce a visible hit number.
+    result.amount = if command.base_potency > 0 {
+        command.base_potency
+    } else {
+        100
+    };
+    result.enmity = result.amount;
+
+    let mut container = CommandResultContainer::new();
+    let dmg_request;
+    let is_heal = command.action_type == ActionType::Heal;
+
+    {
+        let mut d_write = defender_handle.character.write().await;
+        if !d_write.is_alive() && !is_heal {
+            return;
+        }
+        let def_level = d_write.chara.level;
+        let def_max_hp = d_write.chara.max_hp;
+        let def_mods_snapshot = d_write.chara.mods.clone();
+
+        let atk_view = battle_utils::CombatView {
+            actor_id: attacker_actor_id,
+            level: atk_level,
+            max_hp: atk_max_hp,
+            mods: &atk_mods,
+            has_aegis_boon: false,
+            has_protect: false,
+            has_shell: false,
+            has_stoneskin: false,
+        };
+        let def_view = battle_utils::CombatView {
+            actor_id: defender_actor_id,
+            level: def_level,
+            max_hp: def_max_hp,
+            mods: &def_mods_snapshot,
+            has_aegis_boon: false,
+            has_protect: false,
+            has_shell: false,
+            has_stoneskin: false,
+        };
+
+        let mut skill = command.clone();
+        battle_utils::calc_rates(&atk_view, &def_view, Some(&skill), &mut result);
+        dmg_request = match command.action_type {
+            ActionType::Physical => battle_utils::finish_action_physical(
+                &atk_view,
+                &def_view,
+                &mut d_write.chara.mods,
+                Some(&mut skill),
+                &mut result,
+                &mut container,
+                &mut rng,
+            ),
+            ActionType::Magic => battle_utils::finish_action_spell(
+                &atk_view,
+                &def_view,
+                &mut d_write.chara.mods,
+                Some(&mut skill),
+                &mut result,
+                &mut container,
+                &mut rng,
+            ),
+            ActionType::Heal => {
+                let heal = battle_utils::finish_action_heal(
+                    &atk_view,
+                    &def_view,
+                    &mut result,
+                    &mut container,
+                );
+                d_write.add_hp(heal.amount as i32);
+                None
+            }
+            ActionType::Status | ActionType::None => {
+                battle_utils::finish_action_status(&skill, &mut result, &mut container);
+                None
+            }
+        };
+
+        if let Some(dr) = dmg_request
+            && dr.amount > 0
+        {
+            d_write.add_hp(-(dr.amount as i32));
+            d_write.hate.update_hate(attacker_actor_id, dr.enmity as i32);
+        }
+    }
+
+    broadcast_results(
+        attacker_actor_id,
+        command.battle_animation,
+        &container.main_results,
+        registry,
+        world,
+        zone,
+    )
+    .await;
+}
+
+async fn broadcast_results(
+    source_actor_id: u32,
+    battle_animation: u32,
+    results: &[CommandResult],
+    registry: &ActorRegistry,
+    world: &WorldManager,
+    zone: &Arc<RwLock<Zone>>,
+) {
+    if results.is_empty() {
+        return;
+    }
+    let wire: Vec<tx::actor_battle::CommandResult> =
+        results.iter().map(battle_result_to_wire).collect();
+    let mut offset = 0;
+    while offset < wire.len() {
+        let sub = if wire.len() - offset <= 16 {
+            tx::actor_battle::build_command_result_x10(
+                source_actor_id,
+                battle_animation,
+                0,
+                &wire,
+                &mut offset,
+            )
+        } else {
+            tx::actor_battle::build_command_result_x18(
+                source_actor_id,
+                battle_animation,
+                0,
+                &wire,
+                &mut offset,
+            )
+        };
+        broadcast_around_actor(world, registry, zone, source_actor_id, sub.to_bytes()).await;
     }
 }
 

@@ -1,3 +1,21 @@
+// garlemald-server — Rust port of a FINAL FANTASY XIV v1.23b server emulator (lobby/world/map)
+// Copyright (C) 2026  Samuel Stegall
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! AI / input controllers. Ported from
 //! `Actors/Chara/Ai/Controllers/Controller.cs` + `PlayerController.cs`
 //! + `BattleNpcController.cs` + `PetController.cs` + `AllyController.cs`.
@@ -160,6 +178,10 @@ pub struct ControllerOwnerView {
     pub is_close_to_spawn: bool,
     /// Does the current target belong to a hate entry whose owner hates it back?
     pub target_is_locked: bool,
+    /// Milliseconds between auto-attack swings for the owner. Read from
+    /// `Character::get_attack_delay_ms`; defaults to 2500 ms when no weapon
+    /// delay is set.
+    pub attack_delay_ms: u32,
 }
 
 /// What the controller wants the AIContainer to do this tick. Emitted by
@@ -503,6 +525,7 @@ mod tests {
             target_has_stealth: false,
             is_close_to_spawn: true,
             target_is_locked: false,
+            attack_delay_ms: 2500,
         }
     }
 

@@ -1,3 +1,21 @@
+// garlemald-server — Rust port of a FINAL FANTASY XIV v1.23b server emulator (lobby/world/map)
+// Copyright (C) 2026  Samuel Stegall
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Events emitted by battle-runtime mutations. Same pattern as the
 //! inventory/status outboxes: the AI container, states, controllers, and
 //! BattleUtils push events here; the game loop drains them per tick and
@@ -5,7 +23,7 @@
 
 #![allow(dead_code)]
 
-use super::command::CommandResult;
+use super::command::{BattleCommand, CommandResult};
 use super::effects::HitEffect;
 use super::target_find::ValidTarget;
 
@@ -42,6 +60,26 @@ pub enum BattleEvent {
     PlayAnimation {
         owner_actor_id: u32,
         animation: u32,
+    },
+    /// Emitted by `AIContainer::update` when the owner's `Attack` state
+    /// reports `is_attack_ready`. The dispatcher looks up both sides,
+    /// snapshots them through `CombatView`, runs `utils::finish_action_physical`
+    /// with `utils::attack_calculate_damage` as the base, applies the HP
+    /// delta, and fans out `DoBattleAction`. The AIContainer re-arms the
+    /// next swing via `schedule_next_swing` before emitting this.
+    ResolveAutoAttack {
+        attacker_actor_id: u32,
+        defender_actor_id: u32,
+    },
+    /// Emitted by `AIContainer::update` when a Magic/Ability/WeaponSkill
+    /// state returns `Complete` — i.e. the cast timer elapsed. Carries the
+    /// full skill so the dispatcher can route to
+    /// `finish_action_{physical,spell,heal,status}` based on
+    /// `command.action_type`.
+    ResolveAction {
+        attacker_actor_id: u32,
+        defender_actor_id: u32,
+        command: BattleCommand,
     },
     /// Cast-bar notification.
     CastStart {

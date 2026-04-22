@@ -1,3 +1,21 @@
+// garlemald-server — Rust port of a FINAL FANTASY XIV v1.23b server emulator (lobby/world/map)
+// Copyright (C) 2026  Samuel Stegall
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Top-level AI orchestration. Port of
 //! `Actors/Chara/Ai/AIContainer.cs` + `Helpers/ActionQueue.cs`.
 //!
@@ -331,11 +349,46 @@ impl AIContainer {
             Self::apply_decision(owner_id, decision, outbox);
         }
 
-        // Process the state stack.
+        // Process the state stack. Auto-attack swings (Attack state, ready)
+        // and cast completions (Magic/Ability/WeaponSkill → Complete) emit
+        // resolve events for the dispatcher to fan into CommandResult packets.
+        let owner_id = self.owner_actor_id;
+        let swing_delay_ms = owner_view.attack_delay_ms.max(500);
         while let Some(top) = self.states.last_mut() {
-            match top.update(now_ms) {
-                StateTickResult::Continue => break,
-                StateTickResult::Complete | StateTickResult::Interrupted => {
+            let kind = top.kind;
+            let target_actor_id = top.target_actor_id;
+            let tick_result = top.update(now_ms);
+            match tick_result {
+                StateTickResult::Continue => {
+                    if kind == BattleStateKind::Attack && top.is_attack_ready(now_ms) {
+                        top.schedule_next_swing(now_ms, swing_delay_ms);
+                        if target_actor_id != 0 {
+                            outbox.push(BattleEvent::ResolveAutoAttack {
+                                attacker_actor_id: owner_id,
+                                defender_actor_id: target_actor_id,
+                            });
+                        }
+                    }
+                    break;
+                }
+                StateTickResult::Complete => {
+                    if matches!(
+                        kind,
+                        BattleStateKind::Magic
+                            | BattleStateKind::Ability
+                            | BattleStateKind::WeaponSkill
+                    ) && target_actor_id != 0
+                        && let Some(cmd) = top.command().cloned()
+                    {
+                        outbox.push(BattleEvent::ResolveAction {
+                            attacker_actor_id: owner_id,
+                            defender_actor_id: target_actor_id,
+                            command: cmd,
+                        });
+                    }
+                    self.states.pop();
+                }
+                StateTickResult::Interrupted => {
                     self.states.pop();
                 }
             }
@@ -437,6 +490,7 @@ mod tests {
             target_has_stealth: false,
             is_close_to_spawn: true,
             target_is_locked: false,
+            attack_delay_ms: 2500,
         }
     }
 
