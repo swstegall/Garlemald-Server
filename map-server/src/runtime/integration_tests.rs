@@ -2989,3 +2989,242 @@ async fn ported_dummy_command_lua_parses() {
         .load_script(&script)
         .expect("DummyCommand.lua should parse after the resolver-driven rewrite");
 }
+
+// ---------------------------------------------------------------------------
+// Retainer — Tier 4 #14
+// ---------------------------------------------------------------------------
+
+/// `server_retainers` seed round-trip — the three tutorial retainer
+/// rows (Wienta/Edmont/Lyngsath) each load through
+/// `get_retainer_template`.
+#[tokio::test]
+async fn retainer_catalog_seeds_load() {
+    let db = crate::database::Database::open(tempdb())
+        .await
+        .expect("db stub");
+    let wienta = db
+        .get_retainer_template(1001)
+        .await
+        .expect("load Wienta")
+        .expect("seeded row 1001");
+    assert_eq!(wienta.name, "Wienta");
+    assert_eq!(wienta.actor_class_id, 3_001_101);
+    let edmont = db
+        .get_retainer_template(1002)
+        .await
+        .expect("load Edmont")
+        .expect("seeded row 1002");
+    assert_eq!(edmont.name, "Edmont");
+    let lyngsath = db
+        .get_retainer_template(1003)
+        .await
+        .expect("load Lyngsath")
+        .expect("seeded row 1003");
+    assert_eq!(lyngsath.name, "Lyngsath");
+    // Non-seeded id resolves to None, not an error.
+    assert!(
+        db.get_retainer_template(999_999)
+            .await
+            .expect("lookup shouldn't error")
+            .is_none()
+    );
+}
+
+/// Hire / list / dismiss round-trip. Mirrors Meteor's
+/// `PopulaceRetainerManager.lua` flow at the DB layer.
+#[tokio::test]
+async fn retainer_hire_list_dismiss_round_trip() {
+    use common::db::ConnCallExt;
+
+    let db = crate::database::Database::open(tempdb())
+        .await
+        .expect("db stub");
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (77, 0, 0, 0, 'RetainerOwner')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    // Fresh character owns nothing.
+    assert!(
+        db.list_character_retainers(77)
+            .await
+            .unwrap()
+            .is_empty(),
+        "new character should have no retainers"
+    );
+    assert!(
+        db.load_retainer(77, 1).await.unwrap().is_none(),
+        "load_retainer(1) on empty set should be None"
+    );
+
+    // Hire the Limsa retainer — fresh insert.
+    assert!(
+        db.hire_retainer(77, 1001).await.unwrap(),
+        "first hire should report fresh=true"
+    );
+    // Idempotent — second call returns false but leaves the row.
+    assert!(
+        !db.hire_retainer(77, 1001).await.unwrap(),
+        "re-hiring same retainer should be idempotent"
+    );
+    let list = db.list_character_retainers(77).await.unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].id, 1001);
+    assert_eq!(list[0].name, "Wienta");
+
+    // Load-by-index resolves to the Limsa template.
+    let loaded = db.load_retainer(77, 1).await.unwrap().expect("idx 1 loads");
+    assert_eq!(loaded.id, 1001);
+    assert_eq!(loaded.actor_class_id, 3_001_101);
+    // Out-of-range index returns None.
+    assert!(db.load_retainer(77, 2).await.unwrap().is_none());
+
+    // Hire a second retainer, confirm ordering.
+    assert!(db.hire_retainer(77, 1003).await.unwrap());
+    let list2 = db.list_character_retainers(77).await.unwrap();
+    assert_eq!(list2.len(), 2);
+    assert_eq!(list2[0].id, 1001);
+    assert_eq!(list2[1].id, 1003);
+
+    // Dismiss the first — the second should become index 1.
+    assert!(db.dismiss_retainer(77, 1001).await.unwrap());
+    assert!(
+        !db.dismiss_retainer(77, 1001).await.unwrap(),
+        "second dismiss of same id should be a no-op"
+    );
+    let after = db.load_retainer(77, 1).await.unwrap().expect("one remains");
+    assert_eq!(after.id, 1003);
+}
+
+/// `apply_spawn_my_retainer` → session snapshot round-trip. Confirms
+/// the LuaCommand drain writes a `Session.spawned_retainer` snapshot
+/// the next Lua call would see via `player:GetSpawnedRetainer()`.
+#[tokio::test]
+async fn spawn_my_retainer_populates_session_snapshot() {
+    use crate::actor::{Character, Player};
+    use crate::data::Session as MapSession;
+    use crate::lua::LuaCommandKind as LuaCommand;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use common::db::ConnCallExt;
+    use std::sync::Arc;
+
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (7, 0, 0, 0, 'RetainerSpawner')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    db.hire_retainer(7, 1001).await.unwrap();
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let lua = Arc::new(crate::lua::LuaEngine::new(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("scripts/lua"),
+    ));
+
+    // Register a live player handle. Session id == actor id == 7.
+    let mut chara = Character::new(7);
+    chara.base.position_x = 10.0;
+    chara.base.position_y = 0.0;
+    chara.base.position_z = 10.0;
+    let _player = Player::with_helpers(7);
+    registry
+        .insert(ActorHandle::new(7, ActorKindTag::Player, 200, 7, chara))
+        .await;
+    world
+        .upsert_session(MapSession {
+            id: 7,
+            current_zone_id: 200,
+            ..MapSession::default()
+        })
+        .await;
+
+    // Processor + dispatch — drive through the public `apply_login_lua_command`
+    // hook that the real session flow uses.
+    let processor = crate::processor::PacketProcessor {
+        db: db.clone(),
+        world: world.clone(),
+        registry: registry.clone(),
+        lua: Some(lua.clone()),
+    };
+    let handle = registry.get(7).await.expect("player handle");
+
+    // Before: no retainer on session.
+    assert!(world.session(7).await.unwrap().spawned_retainer.is_none());
+
+    // Drain: spawn the Nth=1 retainer, bell at (5, 0, 5).
+    processor
+        .apply_login_lua_command(
+            &handle,
+            LuaCommand::SpawnMyRetainer {
+                player_id: 7,
+                bell_actor_id: 0,
+                bell_position: (5.0, 0.0, 5.0),
+                retainer_index: 1,
+            },
+        )
+        .await;
+
+    let session = world.session(7).await.unwrap();
+    let sr = session.spawned_retainer.expect("retainer snapshot written");
+    assert_eq!(sr.retainer_id, 1001);
+    assert_eq!(sr.actor_class_id, 3_001_101);
+    assert_eq!(sr.name, "Wienta");
+
+    // Despawn clears it.
+    processor
+        .apply_login_lua_command(&handle, LuaCommand::DespawnMyRetainer { player_id: 7 })
+        .await;
+    assert!(world.session(7).await.unwrap().spawned_retainer.is_none());
+}
+
+/// Parse-all smoke: the three ported retainer scripts still load —
+/// guards against future Lua-binding changes that would break the
+/// `player:DespawnMyRetainer()` / `player:SpawnMyRetainer(...)`
+/// call sites in `OrdinaryRetainer.lua` and
+/// `PopulaceRetainerManager.lua`.
+#[tokio::test]
+async fn ported_retainer_scripts_parse() {
+    use crate::lua::LuaEngine;
+
+    let script_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .join("scripts/lua");
+    let engine = LuaEngine::new(&script_root);
+
+    for rel in [
+        "retainer.lua",
+        "base/chara/npc/retainer/OrdinaryRetainer.lua",
+        "base/chara/npc/populace/PopulaceRetainerManager.lua",
+    ] {
+        let script = script_root.join(rel);
+        if !script.exists() {
+            continue;
+        }
+        engine.load_script(&script).unwrap_or_else(|e| {
+            panic!("{rel} should parse: {e}");
+        });
+    }
+}
+

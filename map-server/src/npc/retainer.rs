@@ -33,6 +33,25 @@ pub const MAX_INVENTORY_NORMAL: u16 = 150;
 pub const MAX_INVENTORY_CURRENCY: u16 = 320;
 pub const MAX_INVENTORY_BAZAAR: u16 = 10;
 
+/// `server_retainers` row — the catalog template for a hireable
+/// retainer. Every player who hires the same `id` gets a separate
+/// live [`Retainer`] built from the same template, so keeping this
+/// as a value type (not `Arc`-shared) is fine.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RetainerTemplate {
+    pub id: u32,
+    pub name: String,
+    pub actor_class_id: u32,
+    /// Short-code offset used by the client to pick the right
+    /// "conversation data" row — see C# `Retainer.cdIDOffset`.
+    pub cd_id_offset: u8,
+    /// placeName id (zone / city the retainer bell is in).
+    pub place_name: u32,
+    /// Bitfield — summon-time eligibility (Meteor leaves at 0).
+    pub conditions: u8,
+    pub level: u8,
+}
+
 #[derive(Debug, Clone)]
 pub struct Retainer {
     pub npc: Npc,

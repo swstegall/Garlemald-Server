@@ -1070,10 +1070,209 @@ impl PacketProcessor {
                     "SetHomePoint (stub)"
                 );
             }
+            LC::SpawnMyRetainer {
+                player_id,
+                bell_actor_id,
+                bell_position,
+                retainer_index,
+            } => {
+                self.apply_spawn_my_retainer(
+                    player_id,
+                    bell_actor_id,
+                    bell_position,
+                    retainer_index,
+                )
+                .await;
+            }
+            LC::DespawnMyRetainer { player_id } => {
+                self.apply_despawn_my_retainer(player_id).await;
+            }
+            LC::HireRetainer {
+                player_id,
+                retainer_id,
+            } => {
+                self.apply_hire_retainer(player_id, retainer_id).await;
+            }
+            LC::DismissMyRetainer {
+                player_id,
+                retainer_id,
+            } => {
+                self.apply_dismiss_my_retainer(player_id, retainer_id).await;
+            }
             other => {
                 tracing::debug!(?other, "login lua cmd (unhandled)");
             }
         }
+    }
+
+    // =======================================================================
+    // Retainer lifecycle helpers (Tier 4 #14)
+    //
+    // These live on the processor rather than in `runtime/quest_apply.rs`
+    // because they mutate `Session` state — the session store lives on
+    // `WorldManager` which the quest_apply drain doesn't hold. Once the
+    // Session becomes registry-adjacent we can consolidate.
+    // =======================================================================
+
+    async fn apply_spawn_my_retainer(
+        &self,
+        player_id: u32,
+        bell_actor_id: u32,
+        bell_position: (f32, f32, f32),
+        retainer_index: i32,
+    ) {
+        let Some(handle) = self.registry.get(player_id).await else {
+            tracing::debug!(player = player_id, "SpawnMyRetainer: no actor in registry");
+            return;
+        };
+        let session_id = handle.session_id;
+        if session_id == 0 {
+            tracing::debug!(player = player_id, "SpawnMyRetainer: no session (NPC?)");
+            return;
+        }
+        let template = match self.db.load_retainer(player_id, retainer_index).await {
+            Ok(Some(t)) => t,
+            Ok(None) => {
+                tracing::info!(
+                    player = player_id,
+                    idx = retainer_index,
+                    "SpawnMyRetainer: character owns no retainer at this index",
+                );
+                return;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    player = player_id,
+                    idx = retainer_index,
+                    err = %e,
+                    "SpawnMyRetainer: DB lookup failed",
+                );
+                return;
+            }
+        };
+        // Reproduce Meteor's 1-unit-toward-player offset math. The
+        // player's snapshot position lives on the Character; if we
+        // can't read it, just drop the retainer on top of the bell —
+        // the client tolerates a zero-distance offset.
+        let player_pos = {
+            let c = handle.character.read().await;
+            (
+                c.base.position_x,
+                c.base.position_y,
+                c.base.position_z,
+            )
+        };
+        let (px, _py, pz) = player_pos;
+        let (bx, by, bz) = bell_position;
+        let dx = px - bx;
+        let dz = pz - bz;
+        let dist = (dx * dx + dz * dz).sqrt();
+        let (pos_x, pos_z, rotation) = if dist > 0.0 {
+            let ox = bx - (-dx / dist);
+            let oz = bz - (-dz / dist);
+            let rot = (px - ox).atan2(pz - oz);
+            (ox, oz, rot)
+        } else {
+            (bx, bz, 0.0)
+        };
+        let Some(mut session) = self.world.session(session_id).await else {
+            return;
+        };
+        session.spawned_retainer = Some(crate::data::SpawnedRetainer {
+            retainer_id: template.id,
+            actor_class_id: template.actor_class_id,
+            name: template.name.clone(),
+            position: (pos_x, by, pos_z),
+            rotation,
+            sent_spawn_packets: false,
+        });
+        self.world.upsert_session(session).await;
+        let _ = bell_actor_id; // reserved for the live-spawn pass (bell → Group member)
+        tracing::info!(
+            player = player_id,
+            idx = retainer_index,
+            retainer_id = template.id,
+            name = %template.name,
+            "SpawnMyRetainer applied (session snapshot set; live actor spawn deferred)",
+        );
+    }
+
+    async fn apply_despawn_my_retainer(&self, player_id: u32) {
+        let Some(handle) = self.registry.get(player_id).await else {
+            return;
+        };
+        let session_id = handle.session_id;
+        if session_id == 0 {
+            return;
+        }
+        let Some(mut session) = self.world.session(session_id).await else {
+            return;
+        };
+        let had = session.spawned_retainer.take().is_some();
+        self.world.upsert_session(session).await;
+        tracing::info!(
+            player = player_id,
+            had,
+            "DespawnMyRetainer applied",
+        );
+    }
+
+    async fn apply_hire_retainer(&self, player_id: u32, retainer_id: u32) {
+        match self.db.hire_retainer(player_id, retainer_id).await {
+            Ok(true) => tracing::info!(
+                player = player_id,
+                retainer_id,
+                "HireRetainer: fresh hire recorded",
+            ),
+            Ok(false) => tracing::info!(
+                player = player_id,
+                retainer_id,
+                "HireRetainer: already hired (idempotent no-op)",
+            ),
+            Err(e) => tracing::warn!(
+                player = player_id,
+                retainer_id,
+                err = %e,
+                "HireRetainer: DB insert failed",
+            ),
+        }
+    }
+
+    async fn apply_dismiss_my_retainer(&self, player_id: u32, retainer_id: u32) {
+        // Delete the ownership row first; if the dismissed retainer
+        // is currently spawned, also clear the session snapshot so a
+        // subsequent `SpawnMyRetainer` can't re-reference the stale id.
+        let deleted = match self.db.dismiss_retainer(player_id, retainer_id).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(
+                    player = player_id,
+                    retainer_id,
+                    err = %e,
+                    "DismissMyRetainer: DB delete failed",
+                );
+                return;
+            }
+        };
+        if let Some(handle) = self.registry.get(player_id).await {
+            let session_id = handle.session_id;
+            if session_id != 0
+                && let Some(mut session) = self.world.session(session_id).await
+            {
+                if let Some(r) = &session.spawned_retainer
+                    && r.retainer_id == retainer_id
+                {
+                    session.spawned_retainer = None;
+                    self.world.upsert_session(session).await;
+                }
+            }
+        }
+        tracing::info!(
+            player = player_id,
+            retainer_id,
+            deleted,
+            "DismissMyRetainer applied",
+        );
     }
 
     // =======================================================================
@@ -2344,6 +2543,9 @@ fn build_player_snapshot_for_login(c: &Character) -> crate::lua::userdata::Playe
         traits: Vec::new(),
         inventory: Vec::new(),
         login_director_actor_id: c.chara.login_director_actor_id,
+        // Login snapshot never has a retainer spawned — the tutorial
+        // hook runs before the player has even hit the world map.
+        spawned_retainer: None,
     }
 }
 

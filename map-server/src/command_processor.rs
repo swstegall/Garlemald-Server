@@ -83,6 +83,9 @@ impl CommandProcessor {
             "die" => self.handle_die(&args).await,
             "givegil" => self.handle_givegil(&args).await,
             "giveexp" => self.handle_giveexp(&args).await,
+            "hireretainer" => self.handle_hire_retainer(&args).await,
+            "dismissretainer" => self.handle_dismiss_retainer(&args).await,
+            "listretainers" => self.handle_list_retainers(&args).await,
             other => format!("unknown command: {other} (args={:?})", args.rest()),
         };
         Ok(response)
@@ -91,7 +94,10 @@ impl CommandProcessor {
     fn help() -> String {
         "commands: help, who, version, reload, \
          revive <name>, die <name>, givegil <qty> <name>, \
-         giveexp <qty> <class_id> <name>"
+         giveexp <qty> <class_id> <name>, \
+         hireretainer <retainer_id> <name>, \
+         dismissretainer <retainer_id> <name>, \
+         listretainers <name>"
             .into()
     }
 
@@ -181,6 +187,73 @@ impl CommandProcessor {
                 "gave {qty} exp to {name} (class {class_id}; total now {new_exp})"
             ),
             Err(e) => format!("giveexp failed: {e}"),
+        }
+    }
+
+    async fn handle_hire_retainer(&self, args: &Args<'_>) -> String {
+        let retainer_id = match args.parse_i32(0) {
+            Ok(id) => id,
+            Err(e) => return format!("usage: hireretainer <retainer_id> <name> — {e}"),
+        };
+        let Some(name) = args.rest_joined(1) else {
+            return "usage: hireretainer <retainer_id> <name>".into();
+        };
+        let Some(chara_id) = self.lookup_character_id(&name).await else {
+            return format!("unknown character: {name}");
+        };
+        match self.db.hire_retainer(chara_id, retainer_id as u32).await {
+            Ok(true) => format!("hired retainer {retainer_id} for {name}"),
+            Ok(false) => {
+                format!("{name} already owns retainer {retainer_id} (no-op)")
+            }
+            Err(e) => format!("hireretainer failed: {e}"),
+        }
+    }
+
+    async fn handle_dismiss_retainer(&self, args: &Args<'_>) -> String {
+        let retainer_id = match args.parse_i32(0) {
+            Ok(id) => id,
+            Err(e) => return format!("usage: dismissretainer <retainer_id> <name> — {e}"),
+        };
+        let Some(name) = args.rest_joined(1) else {
+            return "usage: dismissretainer <retainer_id> <name>".into();
+        };
+        let Some(chara_id) = self.lookup_character_id(&name).await else {
+            return format!("unknown character: {name}");
+        };
+        match self.db.dismiss_retainer(chara_id, retainer_id as u32).await {
+            Ok(true) => format!("dismissed retainer {retainer_id} from {name}"),
+            Ok(false) => {
+                format!("{name} does not own retainer {retainer_id} (no-op)")
+            }
+            Err(e) => format!("dismissretainer failed: {e}"),
+        }
+    }
+
+    async fn handle_list_retainers(&self, args: &Args<'_>) -> String {
+        let Some(name) = args.rest_joined(0) else {
+            return "usage: listretainers <name>".into();
+        };
+        let Some(chara_id) = self.lookup_character_id(&name).await else {
+            return format!("unknown character: {name}");
+        };
+        match self.db.list_character_retainers(chara_id).await {
+            Ok(list) if list.is_empty() => format!("{name} owns no retainers"),
+            Ok(list) => {
+                let mut out = format!("{name} owns {} retainer(s):\n", list.len());
+                for (i, r) in list.iter().enumerate() {
+                    out.push_str(&format!(
+                        "  #{idx}: id={id} name={name} actorClass={ac} level={lv}\n",
+                        idx = i + 1,
+                        id = r.id,
+                        name = r.name,
+                        ac = r.actor_class_id,
+                        lv = r.level,
+                    ));
+                }
+                out
+            }
+            Err(e) => format!("listretainers failed: {e}"),
         }
     }
 
@@ -362,5 +435,44 @@ mod tests {
         let (cmd, _db) = fixture().await;
         let out = cmd.run("revive Nobody").await.unwrap();
         assert_eq!(out, "unknown character: Nobody");
+    }
+
+    #[tokio::test]
+    async fn hire_and_dismiss_retainer_round_trip() {
+        let (cmd, db) = fixture().await;
+        db.conn_for_test()
+            .call_db(|c| {
+                c.execute(
+                    r"INSERT INTO characters (id, userId, slot, serverId, name)
+                      VALUES (88, 0, 0, 0, 'Retainer Hirer')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        // Before hiring: listretainers shows empty.
+        let out = cmd.run("listretainers Retainer Hirer").await.unwrap();
+        assert!(out.contains("owns no retainers"), "got {out}");
+
+        // Hire Wienta (seed id 1001).
+        let hired = cmd.run("hireretainer 1001 Retainer Hirer").await.unwrap();
+        assert!(hired.contains("hired retainer 1001"), "got {hired}");
+
+        // Idempotent: second hire is a no-op.
+        let again = cmd.run("hireretainer 1001 Retainer Hirer").await.unwrap();
+        assert!(again.contains("already owns"), "got {again}");
+
+        // List now shows one row.
+        let listed = cmd.run("listretainers Retainer Hirer").await.unwrap();
+        assert!(listed.contains("id=1001"), "got {listed}");
+        assert!(listed.contains("name=Wienta"), "got {listed}");
+
+        // Dismiss succeeds, second dismiss is a no-op.
+        let dismissed = cmd.run("dismissretainer 1001 Retainer Hirer").await.unwrap();
+        assert!(dismissed.contains("dismissed"), "got {dismissed}");
+        let again = cmd.run("dismissretainer 1001 Retainer Hirer").await.unwrap();
+        assert!(again.contains("does not own"), "got {again}");
     }
 }

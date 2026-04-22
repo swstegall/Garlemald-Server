@@ -69,6 +69,37 @@ pub struct Session {
     /// corresponding `KickEventPacket` as the final step so the client
     /// dispatches the event on the freshly-spawned director actor.
     pub pending_kick_event: Option<PendingKickEvent>,
+    /// Retainer currently summoned by this session. Mirrors
+    /// `Player.currentSpawnedRetainer` in C#. `None` means no
+    /// retainer is in the world for this player right now; on
+    /// `SpawnMyRetainer` the processor writes a snapshot here that
+    /// Lua can inspect via `player:GetSpawnedRetainer()` / the
+    /// bell-NPC scripts can address directly.
+    pub spawned_retainer: Option<SpawnedRetainer>,
+}
+
+/// Runtime-only snapshot of an in-world retainer. Holds the minimal
+/// fields the bell NPC scripts + item-trade path need; the full
+/// [`crate::npc::Retainer`] object (with `ItemPackage` map) is built
+/// on demand when the client wants to exchange items.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpawnedRetainer {
+    /// `server_retainers.id` — primary key into the retainer catalog.
+    pub retainer_id: u32,
+    /// `server_retainers.actorClassId` — drives the 3D model / race.
+    pub actor_class_id: u32,
+    /// `server_retainers.name` — display name over the retainer's head.
+    pub name: String,
+    /// Position in the zone, relative to the retainer bell the player
+    /// clicked. Matches the `SpawnMyRetainer(bell, idx)` math in C#.
+    pub position: (f32, f32, f32),
+    pub rotation: f32,
+    /// Mirror of `Player.sentRetainerSpawn` — flip true once the
+    /// zone's tick loop sends the spawn/init/event-status packet
+    /// trio to the owning player. Allocated here so the processor
+    /// can keep the flag alongside the other summon state without a
+    /// second HashMap.
+    pub sent_spawn_packets: bool,
 }
 
 #[derive(Debug, Clone)]

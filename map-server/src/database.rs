@@ -2863,19 +2863,24 @@ impl Database {
         Ok(())
     }
 
-    /// Returns `(retainerId, name, actorClassId)`.
+    /// Port of `Database.LoadRetainer` — find the Nth retainer a
+    /// character owns (1-indexed, matching Meteor's caller at
+    /// `Player.SpawnMyRetainer`), returning the full catalog template.
+    /// `None` means the character has fewer than `retainer_index`
+    /// retainers on file.
     pub async fn load_retainer(
         &self,
         chara_id: u32,
         retainer_index: i32,
-    ) -> Result<Option<(u32, String, u32)>> {
+    ) -> Result<Option<crate::npc::RetainerTemplate>> {
         let offset = (retainer_index - 1).max(0);
         let v = self
             .conn
             .call_db(move |c| {
                 let v = c
                     .query_row(
-                        r"SELECT sr.id, sr.name, sr.actorClassId
+                        r"SELECT sr.id, sr.name, sr.actorClassId, sr.cdIDOffset,
+                                 sr.placeName, sr.conditions, sr.level
                           FROM characters_retainers cr
                           INNER JOIN server_retainers sr ON cr.retainerId = sr.id
                           WHERE cr.characterId = :cid
@@ -2883,11 +2888,159 @@ impl Database {
                           LIMIT 1 OFFSET :off",
                         named_params! { ":cid": chara_id, ":off": offset },
                         |r| {
-                            Ok((
-                                r.get::<_, u32>(0)?,
-                                r.get::<_, String>(1)?,
-                                r.get::<_, u32>(2)?,
-                            ))
+                            Ok(crate::npc::RetainerTemplate {
+                                id: r.get::<_, u32>(0)?,
+                                name: r.get::<_, String>(1)?,
+                                actor_class_id: r.get::<_, u32>(2)?,
+                                cd_id_offset: r
+                                    .get::<_, i64>(3)
+                                    .unwrap_or(0)
+                                    .clamp(0, 255)
+                                    as u8,
+                                place_name: r.get::<_, u32>(4).unwrap_or(0),
+                                conditions: r
+                                    .get::<_, i64>(5)
+                                    .unwrap_or(0)
+                                    .clamp(0, 255)
+                                    as u8,
+                                level: r.get::<_, i64>(6).unwrap_or(0).clamp(0, 255) as u8,
+                            })
+                        },
+                    )
+                    .optional()?;
+                Ok(v)
+            })
+            .await?;
+        Ok(v)
+    }
+
+    /// List every retainer a character owns, in `server_retainers.id`
+    /// order. Backs `PopulaceRetainerManager.lua` menus and the
+    /// `player:ListMyRetainers()` Lua helper.
+    pub async fn list_character_retainers(
+        &self,
+        chara_id: u32,
+    ) -> Result<Vec<crate::npc::RetainerTemplate>> {
+        let rows = self
+            .conn
+            .call_db(move |c| {
+                let mut stmt = c.prepare(
+                    r"SELECT sr.id, sr.name, sr.actorClassId, sr.cdIDOffset,
+                             sr.placeName, sr.conditions, sr.level
+                      FROM characters_retainers cr
+                      INNER JOIN server_retainers sr ON cr.retainerId = sr.id
+                      WHERE cr.characterId = :cid
+                      ORDER BY sr.id",
+                )?;
+                let rows: Vec<crate::npc::RetainerTemplate> = stmt
+                    .query_map(named_params! { ":cid": chara_id }, |r| {
+                        Ok(crate::npc::RetainerTemplate {
+                            id: r.get::<_, u32>(0)?,
+                            name: r.get::<_, String>(1)?,
+                            actor_class_id: r.get::<_, u32>(2)?,
+                            cd_id_offset: r
+                                .get::<_, i64>(3)
+                                .unwrap_or(0)
+                                .clamp(0, 255)
+                                as u8,
+                            place_name: r.get::<_, u32>(4).unwrap_or(0),
+                            conditions: r
+                                .get::<_, i64>(5)
+                                .unwrap_or(0)
+                                .clamp(0, 255)
+                                as u8,
+                            level: r.get::<_, i64>(6).unwrap_or(0).clamp(0, 255) as u8,
+                        })
+                    })?
+                    .collect::<rusqlite::Result<_>>()?;
+                Ok(rows)
+            })
+            .await?;
+        Ok(rows)
+    }
+
+    /// Insert a retainer ownership row. Returns `Ok(true)` on a fresh
+    /// hire, `Ok(false)` if the character already owns that retainer
+    /// (matches the C# idempotent-hire behaviour). Drives
+    /// `PopulaceRetainerManager.lua`'s `eventTalkStepFinalAnswer`
+    /// confirmation.
+    pub async fn hire_retainer(
+        &self,
+        chara_id: u32,
+        retainer_id: u32,
+    ) -> Result<bool> {
+        let affected = self
+            .conn
+            .call_db(move |c| {
+                let n = c.execute(
+                    r"INSERT OR IGNORE INTO characters_retainers
+                        (characterId, retainerId, doRename)
+                      VALUES (:cid, :rid, 0)",
+                    named_params! { ":cid": chara_id, ":rid": retainer_id },
+                )?;
+                Ok(n)
+            })
+            .await?;
+        Ok(affected > 0)
+    }
+
+    /// Remove a retainer ownership row. Returns `Ok(true)` if a row
+    /// was actually deleted. Used by `player:DismissMyRetainer(id)`
+    /// once the rename / bazaar flow is wound down.
+    pub async fn dismiss_retainer(
+        &self,
+        chara_id: u32,
+        retainer_id: u32,
+    ) -> Result<bool> {
+        let affected = self
+            .conn
+            .call_db(move |c| {
+                let n = c.execute(
+                    r"DELETE FROM characters_retainers
+                      WHERE characterId = :cid AND retainerId = :rid",
+                    named_params! { ":cid": chara_id, ":rid": retainer_id },
+                )?;
+                Ok(n)
+            })
+            .await?;
+        Ok(affected > 0)
+    }
+
+    /// Look up a retainer catalog template by primary key. Returns
+    /// `None` when the id isn't seeded — scripts can treat the
+    /// result as "retainer doesn't exist" without raising.
+    pub async fn get_retainer_template(
+        &self,
+        retainer_id: u32,
+    ) -> Result<Option<crate::npc::RetainerTemplate>> {
+        let v = self
+            .conn
+            .call_db(move |c| {
+                let v = c
+                    .query_row(
+                        r"SELECT id, name, actorClassId, cdIDOffset,
+                                 placeName, conditions, level
+                          FROM server_retainers
+                          WHERE id = :rid",
+                        named_params! { ":rid": retainer_id },
+                        |r| {
+                            Ok(crate::npc::RetainerTemplate {
+                                id: r.get::<_, u32>(0)?,
+                                name: r.get::<_, String>(1)?,
+                                actor_class_id: r.get::<_, u32>(2)?,
+                                cd_id_offset: r
+                                    .get::<_, i64>(3)
+                                    .unwrap_or(0)
+                                    .clamp(0, 255)
+                                    as u8,
+                                place_name: r.get::<_, u32>(4).unwrap_or(0),
+                                conditions: r
+                                    .get::<_, i64>(5)
+                                    .unwrap_or(0)
+                                    .clamp(0, 255)
+                                    as u8,
+                                level: r.get::<_, i64>(6).unwrap_or(0).clamp(0, 255) as u8,
+                            })
                         },
                     )
                     .optional()?;

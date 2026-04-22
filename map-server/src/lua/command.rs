@@ -268,6 +268,42 @@ pub enum LuaCommand {
         z: f32,
         rotation: f32,
     },
+    /// `player:SpawnMyRetainer(bell, retainerIndex)` — retail
+    /// "summon retainer at a bell" path. Resolves `retainer_index`
+    /// (1-based) to a `characters_retainers` row, loads the catalog
+    /// template, and stashes the runtime snapshot on the Session.
+    /// `bell_actor_id` + `bell_position` let the processor compute
+    /// the landing position the same way Meteor does (1-unit offset
+    /// back toward the player).
+    SpawnMyRetainer {
+        player_id: u32,
+        bell_actor_id: u32,
+        bell_position: (f32, f32, f32),
+        retainer_index: i32,
+    },
+    /// `player:DespawnMyRetainer()` — clear the session's spawned
+    /// retainer slot. Emits the retainer-despawn packet trio once
+    /// the live-spawn path lands; for now the script-visible side
+    /// effect is `GetSpawnedRetainer()` returning nil afterward.
+    DespawnMyRetainer {
+        player_id: u32,
+    },
+    /// `player:HireRetainer(retainerId)` — confirm flow out of
+    /// `PopulaceRetainerManager.lua` after the player names and
+    /// confirms a retainer choice. Inserts the `characters_retainers`
+    /// row so future `SpawnMyRetainer(bell, idx)` calls find it.
+    HireRetainer {
+        player_id: u32,
+        retainer_id: u32,
+    },
+    /// `player:DismissMyRetainer(retainerId)` — explicit termination
+    /// of a retainer (menu option 10 in `retainer.lua`'s Say Codes).
+    /// Deletes the `characters_retainers` row and, if the same
+    /// retainer is currently spawned, clears the session snapshot.
+    DismissMyRetainer {
+        player_id: u32,
+        retainer_id: u32,
+    },
     LogError(String),
 }
 

@@ -264,6 +264,26 @@ pub struct PlayerSnapshot {
     /// so its `player:KickEvent(player:GetDirector(), "noticeEvent")`
     /// call lands on the right actor id.
     pub login_director_actor_id: u32,
+    /// Mirror of `Session.spawned_retainer` at the time the snapshot
+    /// was built. Lets scripts read `player:HasSpawnedRetainer()` +
+    /// `player:GetSpawnedRetainer()` without a round-trip.
+    /// Populated by `PlayerSnapshot::populate_retainer` after the
+    /// From impl runs — the session isn't reachable from a plain
+    /// `&Player`, so the processor fills it in before handing the
+    /// snapshot to Lua.
+    pub spawned_retainer: Option<SpawnedRetainerSnapshot>,
+}
+
+/// Script-visible view of [`crate::data::SpawnedRetainer`]. Keeps
+/// only the fields `retainer.lua` actually reads — if a Lua call
+/// site needs richer data we can extend without touching the wire.
+#[derive(Debug, Clone, Default)]
+pub struct SpawnedRetainerSnapshot {
+    pub retainer_id: u32,
+    pub actor_class_id: u32,
+    pub name: String,
+    pub position: (f32, f32, f32),
+    pub rotation: f32,
 }
 
 impl From<&crate::actor::Player> for PlayerSnapshot {
@@ -348,7 +368,28 @@ impl From<&crate::actor::Player> for PlayerSnapshot {
             traits,
             inventory,
             login_director_actor_id: p.character.chara.login_director_actor_id,
+            // The From<&Player> impl can't reach the session store
+            // (Player is in the registry, Session lives on
+            // WorldManager). Default to None here and let the
+            // processor overlay the real snapshot after the fact
+            // via `PlayerSnapshot::set_spawned_retainer`.
+            spawned_retainer: None,
         }
+    }
+}
+
+impl PlayerSnapshot {
+    /// Overlay the retainer snapshot sourced from
+    /// [`crate::data::Session::spawned_retainer`]. Called right
+    /// after `From<&Player>` when the session is available.
+    pub fn set_spawned_retainer(&mut self, r: Option<&crate::data::SpawnedRetainer>) {
+        self.spawned_retainer = r.map(|r| SpawnedRetainerSnapshot {
+            retainer_id: r.retainer_id,
+            actor_class_id: r.actor_class_id,
+            name: r.name.clone(),
+            position: r.position,
+            rotation: r.rotation,
+        });
     }
 }
 
@@ -458,6 +499,87 @@ impl UserData for LuaPlayer {
         });
         methods.add_method("GetMountState", |_, this, _: ()| {
             Ok(this.snapshot.mount_state)
+        });
+
+        // --- Retainer --------------------------------------------------------
+        // `player:SpawnMyRetainer(bell, retainerIndex)` — the bell
+        // argument can be any Npc/Actor userdata (we only read its
+        // position); `retainerIndex` is 1-based per Meteor's caller
+        // at `Player.SpawnMyRetainer(bell, retainerIndex)`.
+        methods.add_method(
+            "SpawnMyRetainer",
+            |_, this, (bell, retainer_index): (AnyUserData, Option<i32>)| {
+                let idx = retainer_index.unwrap_or(1);
+                let (bell_actor_id, bell_pos) = if let Ok(npc) = bell.borrow::<LuaNpc>() {
+                    (npc.base.actor_id, npc.base.pos)
+                } else if let Ok(actor) = bell.borrow::<LuaActor>() {
+                    (actor.actor_id, actor.pos)
+                } else {
+                    (0, (0.0, 0.0, 0.0))
+                };
+                push(
+                    &this.queue,
+                    LuaCommand::SpawnMyRetainer {
+                        player_id: this.snapshot.actor_id,
+                        bell_actor_id,
+                        bell_position: bell_pos,
+                        retainer_index: idx,
+                    },
+                );
+                Ok(())
+            },
+        );
+        methods.add_method("DespawnMyRetainer", |_, this, _: ()| {
+            push(
+                &this.queue,
+                LuaCommand::DespawnMyRetainer {
+                    player_id: this.snapshot.actor_id,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method("HireRetainer", |_, this, retainer_id: u32| {
+            push(
+                &this.queue,
+                LuaCommand::HireRetainer {
+                    player_id: this.snapshot.actor_id,
+                    retainer_id,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method("DismissMyRetainer", |_, this, retainer_id: u32| {
+            push(
+                &this.queue,
+                LuaCommand::DismissMyRetainer {
+                    player_id: this.snapshot.actor_id,
+                    retainer_id,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method("HasSpawnedRetainer", |_, this, _: ()| {
+            Ok(this.snapshot.spawned_retainer.is_some())
+        });
+        // Returns `LuaRetainer | nil`. The snapshot already has the
+        // retainer fields; we copy them into a userdata with a no-op
+        // `GetItemPackage` binding (matches the existing
+        // `LuaItemPackage` surface — the retainer inventory live path
+        // isn't wired yet, so the chain resolves but emits AddItem
+        // commands that currently log-only for retainer-owned bags).
+        methods.add_method("GetSpawnedRetainer", |_, this, _: ()| {
+            Ok(this
+                .snapshot
+                .spawned_retainer
+                .clone()
+                .map(|r| LuaRetainer {
+                    retainer_id: r.retainer_id,
+                    actor_class_id: r.actor_class_id,
+                    name: r.name,
+                    position: r.position,
+                    rotation: r.rotation,
+                    queue: this.queue.clone(),
+                }))
         });
 
         // --- Play time -------------------------------------------------------
@@ -1372,6 +1494,62 @@ impl UserData for LuaDirectorHandle {
         methods.add_method("GetContentMembers", |_, _this, _: ()| Ok(Vec::<u32>::new()));
         methods.add_method("SetLeader", |_, _this, _actor: Value| Ok(()));
         methods.add_method("IsInstanceRaid", |_, _this, _: ()| Ok(false));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LuaRetainer — the return of `player:GetSpawnedRetainer()`. Carries a
+// snapshot of the [`SpawnedRetainerSnapshot`] so script-level reads
+// (`retainer:GetName()`, `retainer:GetItemPackage(...)`) don't need a
+// DB hit. `GetItemPackage(code)` returns a [`LuaItemPackage`] bound to
+// the retainer's actor id — item events still flow through the same
+// `LuaCommand::AddItem` / `RemoveItem` variants, the processor
+// decides how to persist based on the owner id.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct LuaRetainer {
+    pub retainer_id: u32,
+    pub actor_class_id: u32,
+    pub name: String,
+    pub position: (f32, f32, f32),
+    pub rotation: f32,
+    pub queue: Arc<Mutex<CommandQueue>>,
+}
+
+impl UserData for LuaRetainer {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("GetName", |_, this, _: ()| Ok(this.name.clone()));
+        methods.add_method("GetRetainerId", |_, this, _: ()| Ok(this.retainer_id));
+        methods.add_method("GetActorClassId", |_, this, _: ()| {
+            Ok(this.actor_class_id)
+        });
+        methods.add_method("GetPos", |_, this, _: ()| {
+            Ok((
+                this.position.0,
+                this.position.1,
+                this.position.2,
+                this.rotation,
+            ))
+        });
+        // Matches the C# `Retainer.GetItemPackage(code)` method —
+        // returns a `LuaItemPackage` bound to the retainer's id.
+        // Scripts then call `:AddItem(id, qty, quality)` /
+        // `:RemoveItemAtSlot(slot, qty)` as with a player package.
+        methods.add_method("GetItemPackage", |_, this, pkg_code: u16| {
+            Ok(LuaItemPackage {
+                // Retainer actor id isn't allocated on our side yet
+                // (the live-spawn path is deferred); use the
+                // retainer_id as a stable stand-in so emitted
+                // `AddItem` commands carry a non-zero owner that
+                // the processor can recognise as "retainer" and
+                // route separately once the retainer-inventory
+                // pipeline lands.
+                owner_actor_id: this.retainer_id,
+                package_code: pkg_code,
+                queue: this.queue.clone(),
+            })
+        });
     }
 }
 
