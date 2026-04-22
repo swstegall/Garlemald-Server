@@ -43,6 +43,11 @@ impl Database {
         Ok(Self { conn })
     }
 
+    #[cfg(test)]
+    pub fn conn_for_test(&self) -> &Connection {
+        &self.conn
+    }
+
     pub async fn ping(&self) -> Result<()> {
         self.conn
             .call_db(|c| {
@@ -325,7 +330,8 @@ impl Database {
             .call_db(move |c| {
                 c.execute(
                     r"INSERT INTO characters_linkshells(characterId, linkshellId, rank)
-                      VALUES(:c, :l, :r)",
+                      VALUES(:c, :l, :r)
+                      ON CONFLICT(characterId, linkshellId) DO UPDATE SET rank = excluded.rank",
                     named_params! { ":c": chara_id, ":l": ls_id as i64, ":r": rank },
                 )?;
                 Ok(())
@@ -361,17 +367,41 @@ impl Database {
         Ok(())
     }
 
-    pub async fn linkshell_change_rank(&self, chara_id: u32, rank: u8) -> Result<()> {
+    pub async fn linkshell_change_rank(
+        &self,
+        ls_id: u64,
+        chara_id: u32,
+        rank: u8,
+    ) -> Result<()> {
         self.conn
             .call_db(move |c| {
                 c.execute(
-                    "UPDATE characters_linkshells SET rank = :r WHERE characterId = :c",
-                    named_params! { ":r": rank, ":c": chara_id },
+                    r"UPDATE characters_linkshells SET rank = :r
+                      WHERE characterId = :c AND linkshellId = :l",
+                    named_params! { ":r": rank, ":c": chara_id, ":l": ls_id as i64 },
                 )?;
                 Ok(())
             })
             .await?;
         Ok(())
+    }
+
+    pub async fn character_id_by_name(&self, name: &str) -> Result<Option<u32>> {
+        let name = name.to_owned();
+        let id = self
+            .conn
+            .call_db(move |c| {
+                let v: Option<u32> = c
+                    .query_row(
+                        "SELECT id FROM characters WHERE name = :n",
+                        named_params! { ":n": name },
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                Ok(v)
+            })
+            .await?;
+        Ok(id)
     }
 
     pub async fn set_active_ls(&self, chara_id: u32, name: &str) -> Result<()> {

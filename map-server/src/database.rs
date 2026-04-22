@@ -201,6 +201,11 @@ impl Database {
             .context("ping")
     }
 
+    #[cfg(test)]
+    pub fn conn_for_test(&self) -> &Connection {
+        &self.conn
+    }
+
     // =======================================================================
     // Zone / area loaders (called at boot by WorldManager)
     // =======================================================================
@@ -1960,6 +1965,41 @@ impl Database {
             })
             .await?;
         Ok(ok)
+    }
+
+    pub async fn get_linkshell_member_character_ids(&self, ls_id: u64) -> Result<Vec<u32>> {
+        let ls_id_i = ls_id as i64;
+        let rows = self
+            .conn
+            .call_db(move |c| {
+                let mut stmt = c.prepare(
+                    r"SELECT characterId FROM characters_linkshells WHERE linkshellId = :id",
+                )?;
+                let rows: Vec<u32> = stmt
+                    .query_map(named_params! { ":id": ls_id_i }, |r| r.get::<_, u32>(0))?
+                    .collect::<rusqlite::Result<_>>()?;
+                Ok(rows)
+            })
+            .await?;
+        Ok(rows)
+    }
+
+    pub async fn character_id_by_name(&self, name: &str) -> Result<Option<u32>> {
+        let name = name.to_owned();
+        let id = self
+            .conn
+            .call_db(move |c| {
+                let v: Option<u32> = c
+                    .query_row(
+                        "SELECT id FROM characters WHERE name = :n",
+                        named_params! { ":n": name },
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                Ok(v)
+            })
+            .await?;
+        Ok(id)
     }
 
     pub async fn save_npc_ls(

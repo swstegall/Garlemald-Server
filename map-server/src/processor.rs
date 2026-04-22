@@ -1052,7 +1052,7 @@ impl PacketProcessor {
             _ => {}
         }
         for e in ob.drain() {
-            dispatch_social_event(&e, &self.registry, &self.world).await;
+            dispatch_social_event(&e, &self.registry, &self.world, &self.db).await;
         }
         Ok(())
     }
@@ -1071,7 +1071,7 @@ impl PacketProcessor {
             success: true,
         });
         for e in ob.drain() {
-            dispatch_social_event(&e, &self.registry, &self.world).await;
+            dispatch_social_event(&e, &self.registry, &self.world, &self.db).await;
         }
         Ok(())
     }
@@ -1090,7 +1090,7 @@ impl PacketProcessor {
             success: true,
         });
         for e in ob.drain() {
-            dispatch_social_event(&e, &self.registry, &self.world).await;
+            dispatch_social_event(&e, &self.registry, &self.world, &self.db).await;
         }
         Ok(())
     }
@@ -1117,7 +1117,7 @@ impl PacketProcessor {
             names,
         });
         for e in ob.drain() {
-            dispatch_social_event(&e, &self.registry, &self.world).await;
+            dispatch_social_event(&e, &self.registry, &self.world, &self.db).await;
         }
         Ok(())
     }
@@ -1141,7 +1141,7 @@ impl PacketProcessor {
             is_online: true,
         });
         for e in ob.drain() {
-            dispatch_social_event(&e, &self.registry, &self.world).await;
+            dispatch_social_event(&e, &self.registry, &self.world, &self.db).await;
         }
         Ok(())
     }
@@ -1160,7 +1160,7 @@ impl PacketProcessor {
             success: true,
         });
         for e in ob.drain() {
-            dispatch_social_event(&e, &self.registry, &self.world).await;
+            dispatch_social_event(&e, &self.registry, &self.world, &self.db).await;
         }
         Ok(())
     }
@@ -1176,7 +1176,7 @@ impl PacketProcessor {
             entries,
         });
         for e in ob.drain() {
-            dispatch_social_event(&e, &self.registry, &self.world).await;
+            dispatch_social_event(&e, &self.registry, &self.world, &self.db).await;
         }
         Ok(())
     }
@@ -1191,7 +1191,7 @@ impl PacketProcessor {
             entries: vec![],
         });
         for e in ob.drain() {
-            dispatch_social_event(&e, &self.registry, &self.world).await;
+            dispatch_social_event(&e, &self.registry, &self.world, &self.db).await;
         }
         Ok(())
     }
@@ -1206,7 +1206,7 @@ impl PacketProcessor {
             success: true,
         });
         for e in ob.drain() {
-            dispatch_social_event(&e, &self.registry, &self.world).await;
+            dispatch_social_event(&e, &self.registry, &self.world, &self.db).await;
         }
         Ok(())
     }
@@ -1220,7 +1220,7 @@ impl PacketProcessor {
             actor_id: handle.actor_id,
         });
         for e in ob.drain() {
-            dispatch_social_event(&e, &self.registry, &self.world).await;
+            dispatch_social_event(&e, &self.registry, &self.world, &self.db).await;
         }
         Ok(())
     }
@@ -1237,7 +1237,7 @@ impl PacketProcessor {
             total_recruiters: 0,
         });
         for e in ob.drain() {
-            dispatch_social_event(&e, &self.registry, &self.world).await;
+            dispatch_social_event(&e, &self.registry, &self.world, &self.db).await;
         }
         Ok(())
     }
@@ -1249,7 +1249,7 @@ impl PacketProcessor {
         let mut ob = SocialOutbox::new();
         recruitment::emit_canned_details(handle.actor_id, &mut ob);
         for e in ob.drain() {
-            dispatch_social_event(&e, &self.registry, &self.world).await;
+            dispatch_social_event(&e, &self.registry, &self.world, &self.db).await;
         }
         Ok(())
     }
@@ -1261,7 +1261,7 @@ impl PacketProcessor {
         let mut ob = SocialOutbox::new();
         support::emit_faq_list(handle.actor_id, &mut ob);
         for e in ob.drain() {
-            dispatch_social_event(&e, &self.registry, &self.world).await;
+            dispatch_social_event(&e, &self.registry, &self.world, &self.db).await;
         }
         Ok(())
     }
@@ -1273,7 +1273,7 @@ impl PacketProcessor {
         let mut ob = SocialOutbox::new();
         support::emit_faq_body(handle.actor_id, &mut ob);
         for e in ob.drain() {
-            dispatch_social_event(&e, &self.registry, &self.world).await;
+            dispatch_social_event(&e, &self.registry, &self.world, &self.db).await;
         }
         Ok(())
     }
@@ -1285,7 +1285,7 @@ impl PacketProcessor {
         let mut ob = SocialOutbox::new();
         support::emit_issue_list(handle.actor_id, &mut ob);
         for e in ob.drain() {
-            dispatch_social_event(&e, &self.registry, &self.world).await;
+            dispatch_social_event(&e, &self.registry, &self.world, &self.db).await;
         }
         Ok(())
     }
@@ -1297,7 +1297,7 @@ impl PacketProcessor {
         let mut ob = SocialOutbox::new();
         support::emit_gm_ticket_state(handle.actor_id, /* is_active */ false, &mut ob);
         for e in ob.drain() {
-            dispatch_social_event(&e, &self.registry, &self.world).await;
+            dispatch_social_event(&e, &self.registry, &self.world, &self.db).await;
         }
         Ok(())
     }
@@ -1309,7 +1309,7 @@ impl PacketProcessor {
         let mut ob = SocialOutbox::new();
         support::emit_gm_ticket_response(handle.actor_id, &mut ob);
         for e in ob.drain() {
-            dispatch_social_event(&e, &self.registry, &self.world).await;
+            dispatch_social_event(&e, &self.registry, &self.world, &self.db).await;
         }
         Ok(())
     }
@@ -1321,7 +1321,7 @@ impl PacketProcessor {
         let mut ob = SocialOutbox::new();
         support::emit_gm_ticket_sent(handle.actor_id, /* accepted */ true, &mut ob);
         for e in ob.drain() {
-            dispatch_social_event(&e, &self.registry, &self.world).await;
+            dispatch_social_event(&e, &self.registry, &self.world, &self.db).await;
         }
         Ok(())
     }
@@ -1333,7 +1333,7 @@ impl PacketProcessor {
         let mut ob = SocialOutbox::new();
         support::emit_gm_ticket_ended(handle.actor_id, &mut ob);
         for e in ob.drain() {
-            dispatch_social_event(&e, &self.registry, &self.world).await;
+            dispatch_social_event(&e, &self.registry, &self.world, &self.db).await;
         }
         Ok(())
     }

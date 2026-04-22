@@ -27,6 +27,7 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
+use crate::database::Database;
 use crate::packets::send as tx;
 use crate::runtime::actor_registry::ActorRegistry;
 use crate::world_manager::WorldManager;
@@ -38,6 +39,7 @@ pub async fn dispatch_social_event(
     event: &SocialEvent,
     registry: &ActorRegistry,
     world: &WorldManager,
+    db: &Database,
 ) {
     match event {
         SocialEvent::ChatBroadcast {
@@ -101,53 +103,55 @@ pub async fn dispatch_social_event(
             party_id: _,
             sender_name,
             message,
+        } => {
+            // Party rosters live on PlayerHelperState on the source's
+            // Player struct. Fan-out arrives when the world-server sync
+            // for party groups lands; today the dispatcher has nowhere
+            // to pull the roster from without a cross-server lookup, so
+            // this branch drops the packet. Tests drive the broadcast
+            // helpers directly.
+            let _ = (source_actor_id, sender_name, message);
         }
-        | SocialEvent::ChatLinkshell {
+        SocialEvent::ChatLinkshell {
             source_actor_id,
-            linkshell_id: _,
+            linkshell_id,
             sender_name,
             message,
         } => {
-            // Fan to party/linkshell members cached on the source's
-            // Character. Falls back to a log if we can't resolve the
-            // roster (group state will be authoritative once the
-            // world-server sync lands — Phase 7 currently reads from
-            // PlayerHelperState which is seeded by tests).
             let Some(handle) = registry.get(*source_actor_id).await else {
                 return;
             };
-            let kind = match event {
-                SocialEvent::ChatParty { .. } => crate::social::chat::CHAT_PARTY,
-                SocialEvent::ChatLinkshell { .. } => crate::social::chat::CHAT_LS,
-                _ => unreachable!(),
-            };
-            // We read the cached roster off the source's PlayerHelperState.
-            let recipient_actor_ids: Vec<u32> = {
-                let _chara = handle.character.read().await;
-                // Party/linkshell rosters live on PlayerHelperState,
-                // which we only have for Players. For NPCs the iterator
-                // returns empty.
-                match event {
-                    SocialEvent::ChatParty { .. } => Vec::new(),
-                    SocialEvent::ChatLinkshell { .. } => Vec::new(),
-                    _ => unreachable!(),
+            // Members are resolved from `characters_linkshells` on the
+            // shared SQLite DB (the same file backs map / world). That
+            // avoids a cross-server RPC for a read-only chat path.
+            let members = match db.get_linkshell_member_character_ids(*linkshell_id).await {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::warn!(
+                        ls = linkshell_id,
+                        err = %e,
+                        "linkshell chat: member lookup failed",
+                    );
+                    return;
                 }
-                .into_iter()
-                .chain(std::iter::empty::<u32>())
-                .collect()
             };
-            // The recipient list being empty is fine: party/linkshell
-            // group state is wired through PlayerHelperState on the
-            // Player struct, not Character. Callers that exercise this
-            // path supply the roster directly via the integration tests.
-            for recipient_id in recipient_actor_ids {
-                let Some(recipient) = registry.get(recipient_id).await else {
+            for character_id in members {
+                // For Players, character_id == session_id == actor_id in
+                // this server's lobby flow (processor.rs:133). Skip the
+                // sender so the echo-to-self path matches Meteor.
+                if character_id == *source_actor_id {
+                    continue;
+                }
+                let Some(recipient) = registry.by_session(character_id).await else {
                     continue;
                 };
+                if !recipient.is_player() {
+                    continue;
+                }
                 let sub = tx::build_send_message(
                     handle.session_id,
                     recipient.session_id,
-                    kind,
+                    crate::social::chat::CHAT_LS,
                     sender_name,
                     message,
                 );

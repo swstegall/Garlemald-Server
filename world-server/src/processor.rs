@@ -424,7 +424,24 @@ impl PacketProcessor {
 
     async fn handle_linkshell_invite(&self, sub: &SubPacket) -> Result<()> {
         let p = rx::LinkshellInvitePacket::parse(&sub.data)?;
-        tracing::debug!(actor = p.actor_id, ls = %p.ls_name, "linkshell invite");
+        let Some(ls) = self
+            .world
+            .linkshell_manager
+            .get_or_load_linkshell(&self.db, &p.ls_name)
+            .await?
+        else {
+            tracing::warn!(ls = %p.ls_name, "linkshell invite: unknown ls");
+            return Ok(());
+        };
+        self.world
+            .linkshell_manager
+            .add_member(
+                &self.db,
+                ls.db_id,
+                p.actor_id,
+                crate::managers::LinkshellManager::RANK_MEMBER,
+            )
+            .await?;
         Ok(())
     }
 
@@ -435,22 +452,51 @@ impl PacketProcessor {
 
     async fn handle_linkshell_leave(&self, sub: &SubPacket) -> Result<()> {
         let p = rx::LinkshellLeavePacket::parse(&sub.data)?;
-        if let Some(ls) = self.world.linkshell_manager.get_linkshell(&p.ls_name).await {
-            let target = if p.is_kicked { 0 } else { sub.header.source_id };
-            if target != 0 {
-                self.db.linkshell_remove_player(ls.db_id, target).await?;
+        let Some(ls) = self
+            .world
+            .linkshell_manager
+            .get_or_load_linkshell(&self.db, &p.ls_name)
+            .await?
+        else {
+            return Ok(());
+        };
+        let target = if p.is_kicked {
+            match self.db.character_id_by_name(&p.kicked_name).await? {
+                Some(id) => id,
+                None => {
+                    tracing::warn!(name = %p.kicked_name, "linkshell kick: unknown name");
+                    return Ok(());
+                }
             }
-        }
+        } else {
+            sub.header.source_id
+        };
+        self.world
+            .linkshell_manager
+            .remove_member(&self.db, ls.db_id, target)
+            .await?;
         Ok(())
     }
 
     async fn handle_linkshell_rank_change(&self, sub: &SubPacket) -> Result<()> {
         let p = rx::LinkshellRankChangePacket::parse(&sub.data)?;
-        // Map character-name → id would need the server's name map. Stub to
-        // the DB rank update when we have the target id embedded.
-        if sub.header.source_id != 0 {
-            self.db.linkshell_change_rank(sub.header.source_id, p.rank).await?;
-        }
+        let Some(ls) = self
+            .world
+            .linkshell_manager
+            .get_or_load_linkshell(&self.db, &p.ls_name)
+            .await?
+        else {
+            return Ok(());
+        };
+        let Some(target_id) = self.db.character_id_by_name(&p.name).await? else {
+            tracing::warn!(name = %p.name, "linkshell rank change: unknown name");
+            return Ok(());
+        };
+        self.world
+            .linkshell_manager
+            .change_rank(&self.db, ls.db_id, target_id, p.rank)
+            .await?;
+        let _ = sub;
         Ok(())
     }
 }

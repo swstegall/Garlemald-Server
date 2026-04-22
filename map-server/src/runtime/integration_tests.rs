@@ -825,6 +825,90 @@ async fn equip_event_triggers_stat_recalc() {
 }
 
 #[tokio::test]
+async fn linkshell_chat_fans_to_online_members_only() {
+    use crate::social::dispatcher::dispatch_social_event;
+    use crate::social::outbox::SocialEvent;
+    use rusqlite::named_params;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+
+    // Seed three characters in a shared linkshell. Only 1 (sender) and 2
+    // are online; 3 is a member but not connected.
+    {
+        use common::db::ConnCallExt;
+        db.conn_for_test()
+            .call_db(|c| {
+                for (cid, name) in [(1, "Sender"), (2, "Alice"), (3, "Offline")] {
+                    c.execute(
+                        r"INSERT INTO characters (id, userId, slot, serverId, name)
+                          VALUES (:i, 0, 0, 0, :n)",
+                        named_params! { ":i": cid, ":n": name },
+                    )?;
+                    c.execute(
+                        r"INSERT INTO characters_linkshells (characterId, linkshellId, rank)
+                          VALUES (:c, :l, 1)",
+                        named_params! { ":c": cid, ":l": 42i64 },
+                    )?;
+                }
+                Ok(())
+            })
+            .await
+            .unwrap();
+    }
+
+    // Register only actors 1 and 2 (character_id == session_id == actor_id).
+    registry
+        .insert(ActorHandle::new(
+            1,
+            ActorKindTag::Player,
+            100,
+            1,
+            Character::new(1),
+        ))
+        .await;
+    registry
+        .insert(ActorHandle::new(
+            2,
+            ActorKindTag::Player,
+            100,
+            2,
+            Character::new(2),
+        ))
+        .await;
+    let (tx1, mut rx1) = mpsc::channel::<Vec<u8>>(8);
+    let (tx2, mut rx2) = mpsc::channel::<Vec<u8>>(8);
+    world.register_client(1, ClientHandle::new(1, tx1)).await;
+    world.register_client(2, ClientHandle::new(2, tx2)).await;
+
+    dispatch_social_event(
+        &SocialEvent::ChatLinkshell {
+            source_actor_id: 1,
+            linkshell_id: 42,
+            sender_name: "Sender".to_string(),
+            message: "hi".to_string(),
+        },
+        &registry,
+        &world,
+        &db,
+    )
+    .await;
+
+    // Sender does not echo to themselves.
+    assert!(rx1.try_recv().is_err(), "sender should not receive own LS chat");
+    // Alice (online) receives the packet.
+    let got = rx2.recv().await.expect("alice should receive LS chat");
+    assert!(!got.is_empty());
+    // No more packets queued for Alice.
+    assert!(rx2.try_recv().is_err());
+}
+
+#[tokio::test]
 async fn hate_add_event_updates_attacker_hate_container() {
     let world = Arc::new(WorldManager::new());
     let registry = Arc::new(ActorRegistry::new());

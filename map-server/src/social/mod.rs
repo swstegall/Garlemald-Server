@@ -69,6 +69,25 @@ mod integration_tests {
         c
     }
 
+    fn tempdb() -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("garlemald-social-{nanos}-{seq}.db"))
+    }
+
+    async fn open_test_db() -> Arc<crate::database::Database> {
+        Arc::new(
+            crate::database::Database::open(tempdb())
+                .await
+                .expect("db stub"),
+        )
+    }
+
     #[tokio::test]
     async fn chat_broadcast_reaches_nearby_player_client() {
         let world = Arc::new(WorldManager::new());
@@ -144,7 +163,7 @@ mod integration_tests {
             sender_name: "Sender".to_string(),
             message: "hello world".to_string(),
         };
-        dispatch_social_event(&event, &registry, &world).await;
+        { let db = open_test_db().await; dispatch_social_event(&event, &registry, &world, &db).await };
         let got = rx.recv().await.expect("chat should reach nearby player");
         assert!(!got.is_empty());
     }
@@ -170,7 +189,7 @@ mod integration_tests {
             name: "Griefer".to_string(),
             success: true,
         };
-        dispatch_social_event(&event, &registry, &world).await;
+        { let db = open_test_db().await; dispatch_social_event(&event, &registry, &world, &db).await };
         let got = rx.recv().await.expect("blacklist-added packet on queue");
         assert!(!got.is_empty());
     }
@@ -195,7 +214,7 @@ mod integration_tests {
             actor_id: 1,
             faqs: vec!["Faq 1".into(), "Faq 2".into()],
         };
-        dispatch_social_event(&event, &registry, &world).await;
+        { let db = open_test_db().await; dispatch_social_event(&event, &registry, &world, &db).await };
         let got = rx.recv().await.expect("faq-list packet on queue");
         assert!(!got.is_empty());
     }
