@@ -158,13 +158,16 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Spawn the game-loop ticker.
+    // Spawn the game-loop ticker. Pass the Lua engine so combat-side
+    // hooks (onKillBNpc on BattleNpc death) can fire from
+    // `die_if_defender_fell` via the ticker's battle-event dispatch.
     tokio::spawn({
-        let ticker = GameTicker::new(
+        let ticker = GameTicker::with_lua(
             TickerConfig::default(),
             world.clone(),
             registry.clone(),
             db.clone(),
+            Some(lua.clone()),
         );
         async move {
             ticker.run().await;

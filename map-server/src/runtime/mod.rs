@@ -29,6 +29,7 @@
 pub mod actor_registry;
 pub mod broadcast;
 pub mod dispatcher;
+pub mod quest_hook;
 pub mod ticker;
 
 #[cfg(test)]

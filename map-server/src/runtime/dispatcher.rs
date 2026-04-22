@@ -161,6 +161,7 @@ pub async fn dispatch_battle_event(
     registry: &ActorRegistry,
     world: &WorldManager,
     zone: &Arc<RwLock<Zone>>,
+    lua: Option<&Arc<crate::lua::LuaEngine>>,
 ) {
     match event {
         BattleEvent::Engage {
@@ -174,6 +175,10 @@ pub async fn dispatch_battle_event(
             tracing::debug!(owner = owner_actor_id, kind = ?event_tag(event), "battle event");
         }
         BattleEvent::Die { owner_actor_id } => {
+            // `BattleEvent::Die` carries no attacker (scripted / GM
+            // `!die` paths don't need one). `die_if_defender_fell` is
+            // where real combat deaths route through with an attacker
+            // id for `onKillBNpc` dispatch.
             apply_die(*owner_actor_id, registry, world, zone).await;
         }
         BattleEvent::Revive { owner_actor_id } => {
@@ -279,6 +284,7 @@ pub async fn dispatch_battle_event(
                 registry,
                 world,
                 zone,
+                lua,
             )
             .await;
         }
@@ -294,6 +300,7 @@ pub async fn dispatch_battle_event(
                 registry,
                 world,
                 zone,
+                lua,
             )
             .await;
         }
@@ -323,6 +330,7 @@ async fn resolve_auto_attack(
     registry: &ActorRegistry,
     world: &WorldManager,
     zone: &Arc<RwLock<Zone>>,
+    lua: Option<&Arc<crate::lua::LuaEngine>>,
 ) {
     if attacker_actor_id == defender_actor_id {
         return;
@@ -414,7 +422,15 @@ async fn resolve_auto_attack(
     )
     .await;
 
-    die_if_defender_fell(defender_actor_id, registry, world, zone).await;
+    die_if_defender_fell(
+        defender_actor_id,
+        Some(attacker_actor_id),
+        registry,
+        world,
+        zone,
+        lua,
+    )
+    .await;
 }
 
 async fn resolve_action(
@@ -424,6 +440,7 @@ async fn resolve_action(
     registry: &ActorRegistry,
     world: &WorldManager,
     zone: &Arc<RwLock<Zone>>,
+    lua: Option<&Arc<crate::lua::LuaEngine>>,
 ) {
     let Some(attacker_handle) = registry.get(attacker_actor_id).await else {
         return;
@@ -542,7 +559,15 @@ async fn resolve_action(
     )
     .await;
 
-    die_if_defender_fell(defender_actor_id, registry, world, zone).await;
+    die_if_defender_fell(
+        defender_actor_id,
+        Some(attacker_actor_id),
+        registry,
+        world,
+        zone,
+        lua,
+    )
+    .await;
 }
 
 async fn broadcast_results(
@@ -1143,11 +1168,19 @@ async fn apply_recalc_stats(registry: &ActorRegistry, actor_id: u32) {
 /// defender's HP crossed to 0 on this frame and they're not already in
 /// the DEAD state, flip them into it and broadcast the wire change.
 /// Idempotent — a double-invoke for the same actor is a cheap no-op.
+///
+/// `attacker_actor_id` and `lua` are threaded through for the
+/// `onKillBNpc(player, quest, bnpc_class_id)` hook: when the defender
+/// is a BattleNpc and the attacker is a Player, fire the hook once per
+/// quest in the attacker's journal (Meteor's convention — scripts
+/// filter by `bnpc_class_id` themselves).
 async fn die_if_defender_fell(
     defender_actor_id: u32,
+    attacker_actor_id: Option<u32>,
     registry: &ActorRegistry,
     world: &WorldManager,
     zone: &Arc<RwLock<Zone>>,
+    lua: Option<&Arc<crate::lua::LuaEngine>>,
 ) {
     let Some(handle) = registry.get(defender_actor_id).await else {
         return;
@@ -1162,7 +1195,38 @@ async fn die_if_defender_fell(
     if !is_dead_now || already_marked {
         return;
     }
+    let is_bnpc = matches!(
+        handle.kind,
+        crate::runtime::actor_registry::ActorKindTag::BattleNpc,
+    );
+    let bnpc_class_id = if is_bnpc {
+        let c = handle.character.read().await;
+        c.chara.actor_class_id
+    } else {
+        0
+    };
+
     apply_die(defender_actor_id, registry, world, zone).await;
+
+    if !is_bnpc {
+        return;
+    }
+    let Some(attacker_id) = attacker_actor_id else {
+        return;
+    };
+    let Some(lua) = lua else {
+        return;
+    };
+    let Some(attacker_handle) = registry.get(attacker_id).await else {
+        return;
+    };
+    if !matches!(
+        attacker_handle.kind,
+        crate::runtime::actor_registry::ActorKindTag::Player,
+    ) {
+        return;
+    }
+    crate::runtime::quest_hook::fire_on_kill_bnpc(&attacker_handle, lua, bnpc_class_id).await;
 }
 
 /// Port of Meteor's `DeathState.OnStart` tail: disengage the AI, flip

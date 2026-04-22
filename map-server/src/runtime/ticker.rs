@@ -49,6 +49,7 @@ use crate::battle::controller::ControllerOwnerView;
 use crate::battle::outbox::BattleOutbox;
 use crate::battle::target_find::{ActorArena, ActorView};
 use crate::database::Database;
+use crate::lua::LuaEngine;
 use crate::status::StatusOutbox;
 use crate::world_manager::WorldManager;
 use crate::zone::outbox::AreaOutbox;
@@ -77,6 +78,10 @@ pub struct GameTicker {
     pub world: Arc<WorldManager>,
     pub registry: Arc<ActorRegistry>,
     pub db: Arc<Database>,
+    /// Optional Lua engine — when present, combat-side hooks like
+    /// `onKillBNpc` can fire from the ticker's `dispatch_battle_event`
+    /// path. Test harnesses pass `None`; main.rs wires the real engine.
+    pub lua: Option<Arc<LuaEngine>>,
     /// Server-start wall-clock — `now_ms` on each tick is relative to this.
     start: Instant,
 }
@@ -88,11 +93,22 @@ impl GameTicker {
         registry: Arc<ActorRegistry>,
         db: Arc<Database>,
     ) -> Self {
+        Self::with_lua(config, world, registry, db, None)
+    }
+
+    pub fn with_lua(
+        config: TickerConfig,
+        world: Arc<WorldManager>,
+        registry: Arc<ActorRegistry>,
+        db: Arc<Database>,
+        lua: Option<Arc<LuaEngine>>,
+    ) -> Self {
         Self {
             config,
             world,
             registry,
             db,
+            lua,
             start: Instant::now(),
         }
     }
@@ -149,7 +165,14 @@ impl GameTicker {
                 dispatch_status_event(&e, &self.registry, &self.world, &self.db).await;
             }
             for e in battle_outbox.drain() {
-                dispatch_battle_event(&e, &self.registry, &self.world, zone).await;
+                dispatch_battle_event(
+                    &e,
+                    &self.registry,
+                    &self.world,
+                    zone,
+                    self.lua.as_ref(),
+                )
+                .await;
             }
         }
 

@@ -139,7 +139,7 @@ async fn do_battle_action_reaches_player_client_queue() {
     };
 
     let zone_arc = world.zone(100).await.unwrap();
-    dispatch_battle_event(&event, &registry, &world, &zone_arc).await;
+    dispatch_battle_event(&event, &registry, &world, &zone_arc, None).await;
 
     // The player's ClientHandle should have received at least one SubPacket.
     let got = rx
@@ -1090,6 +1090,7 @@ async fn die_flips_main_state_and_broadcasts_around_actor() {
         &registry,
         &world,
         &zone_arc,
+        None,
     )
     .await;
 
@@ -1164,6 +1165,7 @@ async fn revive_restores_hp_and_flips_state_back_to_passive() {
         &registry,
         &world,
         &zone_arc,
+        None,
     )
     .await;
 
@@ -1311,7 +1313,7 @@ async fn hate_add_event_updates_attacker_hate_container() {
         amount: 250,
     };
     let zone_arc = world.zone(100).await.unwrap();
-    dispatch_battle_event(&event, &registry, &world, &zone_arc).await;
+    dispatch_battle_event(&event, &registry, &world, &zone_arc, None).await;
 
     let handle = registry.get(1).await.unwrap();
     let chara = handle.character.read().await;
