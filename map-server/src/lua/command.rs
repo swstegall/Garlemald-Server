@@ -371,6 +371,31 @@ pub enum LuaCommand {
         player_id: u32,
         name: String,
     },
+    /// `player:JoinGC(gc)` — enlist in a Grand Company. Sets
+    /// `gc_current` to the GC id (1/2/3) and flips the player's
+    /// starter rank to Recruit (127) if not already set. Emits
+    /// `SetGrandCompanyPacket` to the client.
+    JoinGC {
+        player_id: u32,
+        gc: u8,
+    },
+    /// `player:SetGCRank(gc, rank)` — direct rank write, typically
+    /// called from the promotion flow. Persists via
+    /// `Database::set_gc_rank` + emits `SetGrandCompanyPacket`.
+    SetGCRank {
+        player_id: u32,
+        gc: u8,
+        rank: u8,
+    },
+    /// `player:AddSeals(gc, amount)` — grant seals of a specific GC.
+    /// Uses `Database::add_seals` (same transactional upsert as gil).
+    /// Zero or negative amounts are treated as "no-op / decay" and
+    /// clamped at 0.
+    AddSeals {
+        player_id: u32,
+        gc: u8,
+        amount: i32,
+    },
     LogError(String),
 }
 

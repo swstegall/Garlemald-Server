@@ -29,6 +29,7 @@
 
 pub mod chara;
 pub mod event_conditions;
+pub mod gc;
 pub mod inn;
 pub mod modifier;
 pub mod player;
@@ -186,6 +187,23 @@ pub struct CharaState {
     pub chocobo_name: String,
     pub rental_expire_time: u32,
     pub rental_min_left: u8,
+    // Grand Company state — runtime-mutable slice of
+    // `PlayerState.gc_current` / `gc_rank_limsa` / `gc_rank_gridania`
+    // / `gc_rank_uldah`. Same CharaState-vs-PlayerState split as the
+    // chocobo fields (see above): CharaState for processor mutation
+    // via the registry, PlayerState for the login DTO shape.
+    //
+    // `gc_current`: 0 = not enlisted, 1 = Maelstrom (Limsa), 2 =
+    // Order of the Twin Adder (Gridania), 3 = Immortal Flames
+    // (Ul'dah). The `rank_<city>` fields use the 1.x rank codes
+    // from `gcseals.lua::rankSealCap` — 127 means "Recruit" (the
+    // pre-rank-11 state every fresh character starts in for every
+    // GC), 11 = Private Third Class, 100 = Champion, 111 = GC
+    // leader (Chief Admiral / Elder Seedseer / General).
+    pub gc_current: u8,
+    pub gc_rank_limsa: u8,
+    pub gc_rank_gridania: u8,
+    pub gc_rank_uldah: u8,
     /// Set when `player.lua:onBeginLogin` invokes `player:SetLoginDirector(...)`.
     /// Non-zero → the ScriptBind LuaParam layout switches to the
     /// "tutorial with init director" variant C# `Player.CreateScriptBindPacket`
@@ -247,6 +265,10 @@ impl Default for CharaState {
             chocobo_name: String::new(),
             rental_expire_time: 0,
             rental_min_left: 0,
+            gc_current: 0,
+            gc_rank_limsa: 127,
+            gc_rank_gridania: 127,
+            gc_rank_uldah: 127,
             login_director_actor_id: 0,
             animation_id: 0,
             current_target: 0,

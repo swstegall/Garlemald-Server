@@ -93,6 +93,9 @@ impl CommandProcessor {
             "issuechocobo" => self.handle_issue_chocobo(&args).await,
             "rentchocobo" => self.handle_rent_chocobo(&args).await,
             "dismount" => self.handle_dismount(&args).await,
+            "joingc" => self.handle_join_gc(&args).await,
+            "setgcrank" => self.handle_set_gc_rank(&args).await,
+            "addgcseals" => self.handle_add_gc_seals(&args).await,
             other => format!("unknown command: {other} (args={:?})", args.rest()),
         };
         Ok(response)
@@ -108,7 +111,9 @@ impl CommandProcessor {
          setsleeping <name>, dream <id> <name>, wake <name>, \
          accruerest <minutes> <name>, \
          issuechocobo <appearance> <chocobo_name> <player_name>, \
-         rentchocobo <minutes> <name>, dismount <name>"
+         rentchocobo <minutes> <name>, dismount <name>, \
+         joingc <gc> <name>, setgcrank <gc> <rank> <name>, \
+         addgcseals <gc> <amount> <name>"
             .into()
     }
 
@@ -441,6 +446,117 @@ impl CommandProcessor {
         format!("dismounted {name}")
     }
 
+    async fn handle_join_gc(&self, args: &Args<'_>) -> String {
+        let gc = match args.parse_u8(0) {
+            Ok(g) => g,
+            Err(e) => return format!("usage: joingc <gc> <name> — {e}"),
+        };
+        let Some(name) = args.rest_joined(1) else {
+            return "usage: joingc <gc> <name>".into();
+        };
+        if !crate::actor::gc::is_valid_gc(gc) {
+            return format!("invalid gc id {gc} (expected 1/2/3 = Maelstrom/TwinAdder/Flames)");
+        }
+        let Some(chara_id) = self.lookup_character_id(&name).await else {
+            return format!("unknown character: {name}");
+        };
+        if let Err(e) = self.db.set_gc_current(chara_id, gc).await {
+            return format!("joingc failed: {e}");
+        }
+        // Start at Recruit if they've never been promoted in this GC.
+        // `load_player_character` returns `Result<Option<LoadedPlayer>>`
+        // — flatten the Result → Option layer first.
+        let existing = self
+            .db
+            .load_player_character(chara_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|p| match gc {
+                1 => p.gc_limsa_rank,
+                2 => p.gc_gridania_rank,
+                3 => p.gc_uldah_rank,
+                _ => 0,
+            })
+            .unwrap_or(0);
+        let rank = if existing == 0 { crate::actor::gc::RANK_RECRUIT } else { existing };
+        if let Err(e) = self.db.set_gc_rank(chara_id, gc, rank).await {
+            return format!("joingc: set_gc_rank failed: {e}");
+        }
+        if let Some(handle) = self.registry.get(chara_id).await {
+            let mut c = handle.character.write().await;
+            c.chara.gc_current = gc;
+            match gc {
+                1 => c.chara.gc_rank_limsa = rank,
+                2 => c.chara.gc_rank_gridania = rank,
+                3 => c.chara.gc_rank_uldah = rank,
+                _ => {}
+            }
+        }
+        format!("{name} joined GC {gc} at rank {rank}")
+    }
+
+    async fn handle_set_gc_rank(&self, args: &Args<'_>) -> String {
+        let gc = match args.parse_u8(0) {
+            Ok(g) => g,
+            Err(e) => return format!("usage: setgcrank <gc> <rank> <name> — {e}"),
+        };
+        let rank = match args.parse_u8(1) {
+            Ok(r) => r,
+            Err(e) => return format!("usage: setgcrank <gc> <rank> <name> — {e}"),
+        };
+        let Some(name) = args.rest_joined(2) else {
+            return "usage: setgcrank <gc> <rank> <name>".into();
+        };
+        if !crate::actor::gc::is_valid_gc(gc) {
+            return format!("invalid gc id {gc} (expected 1/2/3)");
+        }
+        let Some(chara_id) = self.lookup_character_id(&name).await else {
+            return format!("unknown character: {name}");
+        };
+        match self.db.set_gc_rank(chara_id, gc, rank).await {
+            Ok(()) => {
+                if let Some(handle) = self.registry.get(chara_id).await {
+                    let mut c = handle.character.write().await;
+                    match gc {
+                        1 => c.chara.gc_rank_limsa = rank,
+                        2 => c.chara.gc_rank_gridania = rank,
+                        3 => c.chara.gc_rank_uldah = rank,
+                        _ => {}
+                    }
+                }
+                format!("set {name}'s GC {gc} rank to {rank}")
+            }
+            Err(e) => format!("setgcrank failed: {e}"),
+        }
+    }
+
+    async fn handle_add_gc_seals(&self, args: &Args<'_>) -> String {
+        let gc = match args.parse_u8(0) {
+            Ok(g) => g,
+            Err(e) => return format!("usage: addgcseals <gc> <amount> <name> — {e}"),
+        };
+        let amount = match args.parse_i32(1) {
+            Ok(a) => a,
+            Err(e) => return format!("usage: addgcseals <gc> <amount> <name> — {e}"),
+        };
+        let Some(name) = args.rest_joined(2) else {
+            return "usage: addgcseals <gc> <amount> <name>".into();
+        };
+        if !crate::actor::gc::is_valid_gc(gc) {
+            return format!("invalid gc id {gc} (expected 1/2/3)");
+        }
+        let Some(chara_id) = self.lookup_character_id(&name).await else {
+            return format!("unknown character: {name}");
+        };
+        match self.db.add_seals(chara_id, gc, amount).await {
+            Ok(total) => format!(
+                "granted {amount} GC {gc} seals to {name} (total now {total})"
+            ),
+            Err(e) => format!("addgcseals failed: {e}"),
+        }
+    }
+
     async fn handle_accrue_rest(&self, args: &Args<'_>) -> String {
         let minutes = match args.parse_i32(0) {
             Ok(m) => m,
@@ -656,6 +772,65 @@ mod tests {
         let (cmd, _db) = fixture().await;
         let out = cmd.run("revive Nobody").await.unwrap();
         assert_eq!(out, "unknown character: Nobody");
+    }
+
+    #[tokio::test]
+    async fn joingc_and_setgcrank_and_addgcseals_round_trip() {
+        let (cmd, db) = fixture().await;
+        db.conn_for_test()
+            .call_db(|c| {
+                c.execute(
+                    r"INSERT INTO characters (id, userId, slot, serverId, name)
+                      VALUES (300, 0, 0, 0, 'Company Hopeful')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        // joingc 1 — enlists in Maelstrom at Recruit (127).
+        let out = cmd.run("joingc 1 Company Hopeful").await.unwrap();
+        assert!(out.contains("joined GC 1"), "got {out}");
+        let (gc, l): (i64, i64) = db
+            .conn_for_test()
+            .call_db(|c| {
+                Ok(c.query_row(
+                    r"SELECT gcCurrent, gcLimsaRank FROM characters WHERE id = 300",
+                    [],
+                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+                )?)
+            })
+            .await
+            .unwrap();
+        assert_eq!((gc, l), (1, 127));
+
+        // setgcrank 1 15 — promote to Private First Class.
+        let out2 = cmd.run("setgcrank 1 15 Company Hopeful").await.unwrap();
+        assert!(out2.contains("rank to 15"), "got {out2}");
+        let l2: i64 = db
+            .conn_for_test()
+            .call_db(|c| {
+                Ok(c.query_row(
+                    r"SELECT gcLimsaRank FROM characters WHERE id = 300",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(l2, 15);
+
+        // addgcseals 1 2500 — seal upsert.
+        let out3 = cmd.run("addgcseals 1 2500 Company Hopeful").await.unwrap();
+        assert!(out3.contains("total now 2500"), "got {out3}");
+        // Second deposit merges.
+        let out4 = cmd.run("addgcseals 1 500 Company Hopeful").await.unwrap();
+        assert!(out4.contains("total now 3000"), "got {out4}");
+
+        // Invalid gc id reports.
+        let out5 = cmd.run("joingc 9 Company Hopeful").await.unwrap();
+        assert!(out5.contains("invalid gc id 9"), "got {out5}");
     }
 
     #[tokio::test]

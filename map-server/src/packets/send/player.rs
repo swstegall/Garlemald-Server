@@ -134,20 +134,23 @@ pub fn build_set_has_goobbue(actor_id: u32, has_goobbue: bool) -> SubPacket {
 
 // --- Grand Company / Titles / Misc ------------------------------------------
 
-/// 0x0194 SetGrandCompany.
+/// 0x0194 SetGrandCompany. 4 bytes: currentAllegiance, rank_limsa,
+/// rank_gridania, rank_uldah — each a single byte, matching Meteor's
+/// `Byte()` writes. The prior u16 variant would have stuffed the
+/// rank_uldah byte into the low half of a misaligned u16 and left
+/// garbage in every nibble past the first byte.
 pub fn build_set_grand_company(
     actor_id: u32,
-    current_allegiance: u16,
-    rank_limsa: u16,
-    rank_gridania: u16,
-    rank_uldah: u16,
+    current_allegiance: u8,
+    rank_limsa: u8,
+    rank_gridania: u8,
+    rank_uldah: u8,
 ) -> SubPacket {
     let mut data = body(0x28);
-    let mut c = Cursor::new(&mut data[..]);
-    c.write_u16::<LittleEndian>(current_allegiance).unwrap();
-    c.write_u16::<LittleEndian>(rank_limsa).unwrap();
-    c.write_u16::<LittleEndian>(rank_gridania).unwrap();
-    c.write_u16::<LittleEndian>(rank_uldah).unwrap();
+    data[0] = current_allegiance;
+    data[1] = rank_limsa;
+    data[2] = rank_gridania;
+    data[3] = rank_uldah;
     SubPacket::new(OP_SET_GRAND_COMPANY, actor_id, data)
 }
 

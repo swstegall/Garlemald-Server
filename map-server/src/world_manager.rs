@@ -858,6 +858,18 @@ impl WorldManager {
         let has_login_director = login_director_actor_id != 0;
         let login_director_spec = session.login_director.clone();
         let pending_kick_event = session.pending_kick_event.clone();
+        // Grand Company tuple — read cheap from CharaState after
+        // the main destructure block, used downstream to conditionally
+        // emit `SetGrandCompanyPacket` in the zone-in bundle.
+        let (gc_current, gc_rank_limsa, gc_rank_gridania, gc_rank_uldah) = {
+            let c = actor_handle.character.read().await;
+            (
+                c.chara.gc_current,
+                c.chara.gc_rank_limsa,
+                c.chara.gc_rank_gridania,
+                c.chara.gc_rank_uldah,
+            )
+        };
         let (zone_actor_id, region_id, bgm_day, zone_name, zone_class_path, zone_class_name) = {
             let z = zone_arc.read().await;
             (
@@ -1358,6 +1370,20 @@ impl WorldManager {
                 common::luaparam::LuaParam::Nil,
             ],
         );
+
+        // Grand Company packet — port of `Player.Create0x132Packets`
+        // GC arm. Emitted only when the player has enlisted
+        // (`gc_current != 0`); sets the client-side allegiance +
+        // per-GC rank cache the UI reads for nameplate + menu.
+        if gc_current != 0 {
+            subpackets.push(crate::packets::send::player::build_set_grand_company(
+                actor_id,
+                gc_current,
+                gc_rank_limsa,
+                gc_rank_gridania,
+                gc_rank_uldah,
+            ));
+        }
 
         // Inn packets — port of `Player.Create0x132Packets` inn arm
         // (Meteor commit `42f0046e`). When the player lands in an inn

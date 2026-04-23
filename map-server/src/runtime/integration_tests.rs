@@ -3720,6 +3720,277 @@ async fn rental_expiry_tick_dismounts() {
     assert_eq!(c.base.current_main_state, crate::actor::MAIN_STATE_PASSIVE);
 }
 
+// ---------------------------------------------------------------------------
+// Grand Company — Tier 4 #16
+// ---------------------------------------------------------------------------
+
+/// `set_gc_current` + `set_gc_rank` persistence round-trip.
+#[tokio::test]
+async fn gc_setters_round_trip() {
+    use common::db::ConnCallExt;
+
+    let db = crate::database::Database::open(tempdb())
+        .await
+        .expect("db stub");
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (401, 0, 0, 0, 'Maelstrom Recruit')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    db.set_gc_current(401, 1).await.unwrap();
+    db.set_gc_rank(401, 1, 11).await.unwrap();
+    // Also write the other two GCs' ranks — per-GC columns stay independent.
+    db.set_gc_rank(401, 2, 13).await.unwrap();
+    db.set_gc_rank(401, 3, 15).await.unwrap();
+
+    let (gc, l, g, u): (i64, i64, i64, i64) = db
+        .conn_for_test()
+        .call_db(|c| {
+            Ok(c.query_row(
+                r"SELECT gcCurrent, gcLimsaRank, gcGridaniaRank, gcUldahRank
+                  FROM characters WHERE id = 401",
+                [],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, i64>(3)?,
+                    ))
+                },
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!((gc, l, g, u), (1, 11, 13, 15));
+}
+
+/// `add_seals` — transactional upsert against the three seal item
+/// ids. First call inserts, second call merges.
+#[tokio::test]
+async fn add_seals_creates_stack_then_increments() {
+    use common::db::ConnCallExt;
+
+    let db = crate::database::Database::open(tempdb())
+        .await
+        .expect("db stub");
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (402, 0, 0, 0, 'Seal Hoarder')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    // Storm seals first.
+    assert_eq!(
+        db.add_seals(402, crate::actor::gc::GC_MAELSTROM, 500)
+            .await
+            .unwrap(),
+        500
+    );
+    assert_eq!(db.get_seals(402, crate::actor::gc::GC_MAELSTROM).await.unwrap(), 500);
+
+    // Serpent seals land on a separate stack (different item id).
+    assert_eq!(
+        db.add_seals(402, crate::actor::gc::GC_TWIN_ADDER, 250)
+            .await
+            .unwrap(),
+        250
+    );
+    assert_eq!(
+        db.get_seals(402, crate::actor::gc::GC_TWIN_ADDER)
+            .await
+            .unwrap(),
+        250
+    );
+    assert_eq!(
+        db.get_seals(402, crate::actor::gc::GC_MAELSTROM)
+            .await
+            .unwrap(),
+        500,
+        "storm balance should not be touched by serpent add",
+    );
+
+    // Second storm deposit merges in place.
+    assert_eq!(
+        db.add_seals(402, crate::actor::gc::GC_MAELSTROM, 300)
+            .await
+            .unwrap(),
+        800
+    );
+
+    // Negative delta clamps at 0.
+    assert_eq!(
+        db.add_seals(402, crate::actor::gc::GC_MAELSTROM, -100_000)
+            .await
+            .unwrap(),
+        0
+    );
+
+    // Invalid GC id returns 0 without touching anything.
+    assert_eq!(db.add_seals(402, 99, 1000).await.unwrap(), 0);
+    assert_eq!(db.get_seals(402, 99).await.unwrap(), 0);
+}
+
+/// `apply_join_gc` → CharaState mirror + DB persist + packet emit.
+#[tokio::test]
+async fn join_gc_sets_chara_state_and_db() {
+    use crate::actor::Character;
+    use crate::data::Session as MapSession;
+    use crate::lua::LuaCommandKind as LuaCommand;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use common::db::ConnCallExt;
+    use std::sync::Arc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    let lua = Arc::new(crate::lua::LuaEngine::new(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("scripts/lua"),
+    ));
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (88, 0, 0, 0, 'Enlister')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let chara = Character::new(88);
+    registry
+        .insert(ActorHandle::new(88, ActorKindTag::Player, 200, 88, chara))
+        .await;
+    world
+        .upsert_session(MapSession {
+            id: 88,
+            current_zone_id: 200,
+            ..MapSession::default()
+        })
+        .await;
+
+    let processor = crate::processor::PacketProcessor {
+        db: db.clone(),
+        world: world.clone(),
+        registry: registry.clone(),
+        lua: Some(lua.clone()),
+    };
+    let handle = registry.get(88).await.unwrap();
+
+    processor
+        .apply_login_lua_command(
+            &handle,
+            LuaCommand::JoinGC {
+                player_id: 88,
+                gc: crate::actor::gc::GC_IMMORTAL_FLAMES,
+            },
+        )
+        .await;
+
+    // CharaState reflects.
+    {
+        let c = handle.character.read().await;
+        assert_eq!(c.chara.gc_current, crate::actor::gc::GC_IMMORTAL_FLAMES);
+        assert_eq!(c.chara.gc_rank_uldah, crate::actor::gc::RANK_RECRUIT);
+        // Other two GC ranks untouched.
+        assert_eq!(c.chara.gc_rank_limsa, 127);
+        assert_eq!(c.chara.gc_rank_gridania, 127);
+    }
+    // DB reflects.
+    let (gc, u): (i64, i64) = db
+        .conn_for_test()
+        .call_db(|c| {
+            Ok(c.query_row(
+                r"SELECT gcCurrent, gcUldahRank FROM characters WHERE id = 88",
+                [],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        (gc, u),
+        (crate::actor::gc::GC_IMMORTAL_FLAMES as i64, crate::actor::gc::RANK_RECRUIT as i64),
+    );
+
+    // Promotion via SetGCRank persists and survives.
+    processor
+        .apply_login_lua_command(
+            &handle,
+            LuaCommand::SetGCRank {
+                player_id: 88,
+                gc: crate::actor::gc::GC_IMMORTAL_FLAMES,
+                rank: 17, // Corporal
+            },
+        )
+        .await;
+    let post_rank: i64 = db
+        .conn_for_test()
+        .call_db(|c| {
+            Ok(c.query_row(
+                r"SELECT gcUldahRank FROM characters WHERE id = 88",
+                [],
+                |r| r.get::<_, i64>(0),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(post_rank, 17);
+}
+
+/// `gcseals.lua` helper module + the seven PopulaceCompany* NPC
+/// scripts should all parse after the new GC bindings land.
+#[tokio::test]
+async fn gc_lua_scripts_parse() {
+    use crate::lua::LuaEngine;
+
+    let script_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .join("scripts/lua");
+    let engine = LuaEngine::new(&script_root);
+
+    for rel in [
+        "gcseals.lua",
+        "base/chara/npc/populace/PopulaceCompanyOfficer.lua",
+        "base/chara/npc/populace/PopulaceCompanyShop.lua",
+        "base/chara/npc/populace/PopulaceCompanySupply.lua",
+        "base/chara/npc/populace/PopulaceCompanyBuffer.lua",
+        "base/chara/npc/populace/PopulaceCompanyWarp.lua",
+        "base/chara/npc/populace/PopulaceCompanyGLPublisher.lua",
+        "base/chara/npc/populace/PopulaceCompanyGuide.lua",
+    ] {
+        let script = script_root.join(rel);
+        if !script.exists() {
+            continue;
+        }
+        engine.load_script(&script).unwrap_or_else(|e| {
+            panic!("{rel} should parse: {e}");
+        });
+    }
+}
+
 /// Parse-all smoke: the existing `PopulaceChocoboLender.lua` script
 /// still loads after the new bindings land.
 #[tokio::test]

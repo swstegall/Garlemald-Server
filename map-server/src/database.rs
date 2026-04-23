@@ -2791,6 +2791,149 @@ impl Database {
         Ok(())
     }
 
+    /// Set the player's currently-joined Grand Company. `gc_current`
+    /// is 0 (none) / 1 (Maelstrom) / 2 (Twin Adder) / 3 (Immortal
+    /// Flames). Mirrors `Database.PlayerCharacterUpdateGrandCompany`
+    /// in Meteor — same column, same enum.
+    pub async fn set_gc_current(&self, chara_id: u32, gc: u8) -> Result<()> {
+        self.conn
+            .call_db(move |c| {
+                c.execute(
+                    r"UPDATE characters SET gcCurrent = :g WHERE id = :cid",
+                    named_params! { ":g": gc as i64, ":cid": chara_id },
+                )?;
+                Ok(())
+            })
+            .await?;
+        Ok(())
+    }
+
+    /// Set the player's rank for one specific GC. Picks the right
+    /// column based on the GC id (1/2/3); no-ops for invalid ids.
+    pub async fn set_gc_rank(&self, chara_id: u32, gc: u8, rank: u8) -> Result<()> {
+        let col = match gc {
+            crate::actor::gc::GC_MAELSTROM => "gcLimsaRank",
+            crate::actor::gc::GC_TWIN_ADDER => "gcGridaniaRank",
+            crate::actor::gc::GC_IMMORTAL_FLAMES => "gcUldahRank",
+            _ => return Ok(()),
+        };
+        let col = col.to_owned();
+        self.conn
+            .call_db(move |c| {
+                let sql = format!("UPDATE characters SET {col} = :r WHERE id = :cid");
+                c.execute(
+                    &sql,
+                    named_params! { ":r": rank as i64, ":cid": chara_id },
+                )?;
+                Ok(())
+            })
+            .await?;
+        Ok(())
+    }
+
+    /// Grant `delta` seals of `gc`'s currency to `chara_id`. The seal
+    /// stack lives in `characters_inventory` at `itemPackage =
+    /// PKG_CURRENCY_CRYSTALS (99)`, keyed by the 1_000_20X item id.
+    /// First call inserts a fresh stack; subsequent calls merge in
+    /// place. Same transactional-upsert shape as `add_gil`. Returns
+    /// the new total, or `0` for an invalid GC id.
+    pub async fn add_seals(&self, chara_id: u32, gc: u8, delta: i32) -> Result<i32> {
+        const PKG_CURRENCY: u16 = 99;
+        let Some(seal_id) = crate::actor::gc::seal_item_id(gc) else {
+            return Ok(0);
+        };
+        let total = self
+            .conn
+            .call_db(move |c| {
+                let tx = c.transaction()?;
+                let existing: Option<(i64, i32)> = tx
+                    .query_row(
+                        r"SELECT ci.serverItemId, si.quantity
+                          FROM characters_inventory ci
+                          INNER JOIN server_items si ON ci.serverItemId = si.id
+                          WHERE ci.characterId = :cid
+                            AND ci.itemPackage = :pkg
+                            AND si.itemId = :iid",
+                        named_params! { ":cid": chara_id, ":pkg": PKG_CURRENCY, ":iid": seal_id },
+                        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i32>(1)?)),
+                    )
+                    .optional()?;
+                let new_total = match existing {
+                    Some((sid, qty)) => {
+                        let updated = qty.saturating_add(delta).max(0);
+                        tx.execute(
+                            "UPDATE server_items SET quantity = :q WHERE id = :id",
+                            named_params! { ":q": updated, ":id": sid },
+                        )?;
+                        updated
+                    }
+                    None => {
+                        let seed = delta.max(0);
+                        tx.execute(
+                            r"INSERT INTO server_items (itemId, quantity, quality)
+                              VALUES (:iid, :q, 1)",
+                            named_params! { ":iid": seal_id, ":q": seed },
+                        )?;
+                        let sid = tx.last_insert_rowid();
+                        // Currency slot assignment — pick the next
+                        // free slot within the currency package
+                        // (matches add_gil behaviour).
+                        let next_slot: i32 = tx
+                            .query_row(
+                                r"SELECT COALESCE(MAX(slot), -1) + 1
+                                  FROM characters_inventory
+                                  WHERE characterId = :cid AND itemPackage = :pkg",
+                                named_params! { ":cid": chara_id, ":pkg": PKG_CURRENCY },
+                                |r| r.get::<_, i32>(0),
+                            )
+                            .unwrap_or(0);
+                        tx.execute(
+                            r"INSERT INTO characters_inventory
+                                (characterId, itemPackage, serverItemId, slot)
+                              VALUES (:cid, :pkg, :sid, :slot)",
+                            named_params! {
+                                ":cid": chara_id, ":pkg": PKG_CURRENCY,
+                                ":sid": sid, ":slot": next_slot,
+                            },
+                        )?;
+                        seed
+                    }
+                };
+                tx.commit()?;
+                Ok(new_total)
+            })
+            .await?;
+        Ok(total)
+    }
+
+    /// Read current seal balance for `gc`. Returns `0` for unknown
+    /// GC ids or when no stack exists yet.
+    pub async fn get_seals(&self, chara_id: u32, gc: u8) -> Result<i32> {
+        const PKG_CURRENCY: u16 = 99;
+        let Some(seal_id) = crate::actor::gc::seal_item_id(gc) else {
+            return Ok(0);
+        };
+        let v = self
+            .conn
+            .call_db(move |c| {
+                let v: Option<i32> = c
+                    .query_row(
+                        r"SELECT si.quantity
+                          FROM characters_inventory ci
+                          INNER JOIN server_items si ON ci.serverItemId = si.id
+                          WHERE ci.characterId = :cid
+                            AND ci.itemPackage = :pkg
+                            AND si.itemId = :iid",
+                        named_params! { ":cid": chara_id, ":pkg": PKG_CURRENCY, ":iid": seal_id },
+                        |r| r.get::<_, i32>(0),
+                    )
+                    .optional()?;
+                Ok(v.unwrap_or(0))
+            })
+            .await?;
+        Ok(v)
+    }
+
     /// Rename the chocobo. Only updates `chocoboName`; appearance
     /// and ownership flags are untouched.
     pub async fn change_player_chocobo_name(

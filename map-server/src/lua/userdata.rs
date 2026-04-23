@@ -235,6 +235,12 @@ pub struct PlayerSnapshot {
     pub chocobo_name: String,
     pub rental_expire_time: u32,
     pub rental_min_left: u8,
+    /// Grand Company allegiance — 0 = not enlisted, 1 = Maelstrom,
+    /// 2 = Twin Adder, 3 = Immortal Flames.
+    pub gc_current: u8,
+    pub gc_rank_limsa: u8,
+    pub gc_rank_gridania: u8,
+    pub gc_rank_uldah: u8,
     pub is_gm: bool,
 
     pub is_engaged: bool,
@@ -373,6 +379,10 @@ impl From<&crate::actor::Player> for PlayerSnapshot {
             chocobo_name: p.character.chara.chocobo_name.clone(),
             rental_expire_time: p.character.chara.rental_expire_time,
             rental_min_left: p.character.chara.rental_min_left,
+            gc_current: p.character.chara.gc_current,
+            gc_rank_limsa: p.character.chara.gc_rank_limsa,
+            gc_rank_gridania: p.character.chara.gc_rank_gridania,
+            gc_rank_uldah: p.character.chara.gc_rank_uldah,
             is_gm: p.player.is_gm,
             is_engaged: p.character.is_engaged(),
             is_trading: p.is_trading(),
@@ -457,6 +467,18 @@ impl UserData for LuaPlayer {
         });
         fields.add_field_method_get("chocoboName", |_, this| {
             Ok(this.snapshot.chocobo_name.clone())
+        });
+        // Grand Company dot-syntax fields — `gcseals.lua` and
+        // `PopulaceCompanyOfficer.lua` read all four directly as
+        // `player.gcCurrent` / `player.gcRankLimsa` / `.gcRankGridania`
+        // / `.gcRankUldah`.
+        fields.add_field_method_get("gcCurrent", |_, this| Ok(this.snapshot.gc_current));
+        fields.add_field_method_get("gcRankLimsa", |_, this| Ok(this.snapshot.gc_rank_limsa));
+        fields.add_field_method_get("gcRankGridania", |_, this| {
+            Ok(this.snapshot.gc_rank_gridania)
+        });
+        fields.add_field_method_get("gcRankUldah", |_, this| {
+            Ok(this.snapshot.gc_rank_uldah)
         });
     }
 
@@ -688,6 +710,62 @@ impl UserData for LuaPlayer {
         });
         methods.add_method("GetChocoboName", |_, this, _: ()| {
             Ok(this.snapshot.chocobo_name.clone())
+        });
+
+        // --- Grand Company -------------------------------------------------
+        // `gcseals.lua::AddGCSeals` + `PopulaceCompanyOfficer.lua`'s
+        // promotion flow drive these. `JoinGC(gc)` enlists; `SetGCRank`
+        // promotes; `AddSeals(gc, amount)` grants the per-GC currency;
+        // the `GetGC*` readers return the snapshot fields.
+        methods.add_method("JoinGC", |_, this, gc: u8| {
+            push(
+                &this.queue,
+                LuaCommand::JoinGC {
+                    player_id: this.snapshot.actor_id,
+                    gc,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method("SetGCRank", |_, this, (gc, rank): (u8, u8)| {
+            push(
+                &this.queue,
+                LuaCommand::SetGCRank {
+                    player_id: this.snapshot.actor_id,
+                    gc,
+                    rank,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method("AddSeals", |_, this, (gc, amount): (u8, i32)| {
+            push(
+                &this.queue,
+                LuaCommand::AddSeals {
+                    player_id: this.snapshot.actor_id,
+                    gc,
+                    amount,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method("GetGC", |_, this, _: ()| Ok(this.snapshot.gc_current));
+        methods.add_method("GetGCRank", |_, this, gc: u8| {
+            Ok(match gc {
+                1 => this.snapshot.gc_rank_limsa,
+                2 => this.snapshot.gc_rank_gridania,
+                3 => this.snapshot.gc_rank_uldah,
+                _ => 0,
+            })
+        });
+        methods.add_method("GetSealCap", |_, this, gc: u8| {
+            let rank = match gc {
+                1 => this.snapshot.gc_rank_limsa,
+                2 => this.snapshot.gc_rank_gridania,
+                3 => this.snapshot.gc_rank_uldah,
+                _ => return Ok(0),
+            };
+            Ok(crate::actor::gc::rank_seal_cap(rank))
         });
 
         // --- Inn / dream -----------------------------------------------------

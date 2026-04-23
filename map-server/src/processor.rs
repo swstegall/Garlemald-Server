@@ -264,6 +264,14 @@ impl PacketProcessor {
         character.chara.has_chocobo = loaded.chocobo.has_chocobo;
         character.chara.chocobo_appearance = loaded.chocobo.chocobo_appearance;
         character.chara.chocobo_name = loaded.chocobo.chocobo_name.clone();
+        // Grand Company hydration. Same motivation as the chocobo
+        // fields — processor handlers mutate via the registry's
+        // `Arc<RwLock<Character>>`, so runtime state lives on
+        // CharaState rather than PlayerState.
+        character.chara.gc_current = loaded.gc_current;
+        character.chara.gc_rank_limsa = loaded.gc_limsa_rank;
+        character.chara.gc_rank_gridania = loaded.gc_gridania_rank;
+        character.chara.gc_rank_uldah = loaded.gc_uldah_rank;
         character.chara.tp = 0;
 
         // Hydrate the quest journal from the DB. `loaded.quest_scenario`
@@ -1135,6 +1143,15 @@ impl PacketProcessor {
             LC::SetChocoboName { player_id, name } => {
                 self.apply_set_chocobo_name(player_id, name).await;
             }
+            LC::JoinGC { player_id, gc } => {
+                self.apply_join_gc(player_id, gc).await;
+            }
+            LC::SetGCRank { player_id, gc, rank } => {
+                self.apply_set_gc_rank(player_id, gc, rank).await;
+            }
+            LC::AddSeals { player_id, gc, amount } => {
+                self.apply_add_seals(player_id, gc, amount).await;
+            }
             other => {
                 tracing::debug!(?other, "login lua cmd (unhandled)");
             }
@@ -1549,6 +1566,133 @@ impl PacketProcessor {
             }
         }
         tracing::info!(player = player_id, name = %name, "SetChocoboName applied");
+    }
+
+    // =======================================================================
+    // Grand Company lifecycle helpers (Tier 4 #16)
+    // =======================================================================
+
+    /// Shared helper: emit the current `SetGrandCompanyPacket` for
+    /// a player whose CharaState has freshly updated GC fields. The
+    /// packet is self-only (the client uses it for its own menu /
+    /// nameplate rendering — other players see the GC via the
+    /// propertyFlags path). Assumes the caller already mutated
+    /// CharaState; just reads + emits.
+    async fn emit_grand_company_packet(&self, handle: &ActorHandle) {
+        let (gc, l, g, u) = {
+            let c = handle.character.read().await;
+            (
+                c.chara.gc_current,
+                c.chara.gc_rank_limsa,
+                c.chara.gc_rank_gridania,
+                c.chara.gc_rank_uldah,
+            )
+        };
+        if let Some(client) = self.world.client(handle.session_id).await {
+            let pkt = crate::packets::send::player::build_set_grand_company(
+                handle.actor_id,
+                gc,
+                l,
+                g,
+                u,
+            );
+            if let Ok(base) = common::BasePacket::create_from_subpacket(&pkt, true, false) {
+                client.send_bytes(base.to_bytes()).await;
+            }
+        }
+    }
+
+    async fn apply_join_gc(&self, player_id: u32, gc: u8) {
+        let Some(handle) = self.registry.get(player_id).await else {
+            return;
+        };
+        if !crate::actor::gc::is_valid_gc(gc) {
+            tracing::debug!(player = player_id, gc, "JoinGC: invalid gc id");
+            return;
+        }
+        // Flip CharaState and, if the per-GC rank is still the
+        // "never-promoted" sentinel, leave it at `RANK_RECRUIT`
+        // (127) — matches retail, which shows a newly-joined
+        // character as Recruit until their first promotion.
+        {
+            let mut c = handle.character.write().await;
+            c.chara.gc_current = gc;
+            let rank_ref = match gc {
+                crate::actor::gc::GC_MAELSTROM => &mut c.chara.gc_rank_limsa,
+                crate::actor::gc::GC_TWIN_ADDER => &mut c.chara.gc_rank_gridania,
+                crate::actor::gc::GC_IMMORTAL_FLAMES => &mut c.chara.gc_rank_uldah,
+                _ => return,
+            };
+            if *rank_ref == 0 {
+                *rank_ref = crate::actor::gc::RANK_RECRUIT;
+            }
+        }
+        if let Err(e) = self.db.set_gc_current(player_id, gc).await {
+            tracing::warn!(player = player_id, gc, err = %e, "JoinGC: DB set_gc_current failed");
+        }
+        // Persist the rank too — if we bumped it from 0 to 127 the
+        // DB currently has 0; if it was already set we're writing
+        // back the same value.
+        let rank = {
+            let c = handle.character.read().await;
+            match gc {
+                crate::actor::gc::GC_MAELSTROM => c.chara.gc_rank_limsa,
+                crate::actor::gc::GC_TWIN_ADDER => c.chara.gc_rank_gridania,
+                crate::actor::gc::GC_IMMORTAL_FLAMES => c.chara.gc_rank_uldah,
+                _ => 0,
+            }
+        };
+        if let Err(e) = self.db.set_gc_rank(player_id, gc, rank).await {
+            tracing::warn!(player = player_id, gc, err = %e, "JoinGC: DB set_gc_rank failed");
+        }
+        self.emit_grand_company_packet(&handle).await;
+        tracing::info!(player = player_id, gc, rank, "JoinGC applied");
+    }
+
+    async fn apply_set_gc_rank(&self, player_id: u32, gc: u8, rank: u8) {
+        let Some(handle) = self.registry.get(player_id).await else {
+            return;
+        };
+        if !crate::actor::gc::is_valid_gc(gc) {
+            tracing::debug!(player = player_id, gc, "SetGCRank: invalid gc id");
+            return;
+        }
+        {
+            let mut c = handle.character.write().await;
+            match gc {
+                crate::actor::gc::GC_MAELSTROM => c.chara.gc_rank_limsa = rank,
+                crate::actor::gc::GC_TWIN_ADDER => c.chara.gc_rank_gridania = rank,
+                crate::actor::gc::GC_IMMORTAL_FLAMES => c.chara.gc_rank_uldah = rank,
+                _ => return,
+            }
+        }
+        if let Err(e) = self.db.set_gc_rank(player_id, gc, rank).await {
+            tracing::warn!(player = player_id, gc, rank, err = %e, "SetGCRank: DB persist failed");
+        }
+        self.emit_grand_company_packet(&handle).await;
+        tracing::info!(player = player_id, gc, rank, "SetGCRank applied");
+    }
+
+    async fn apply_add_seals(&self, player_id: u32, gc: u8, amount: i32) {
+        if !crate::actor::gc::is_valid_gc(gc) {
+            tracing::debug!(player = player_id, gc, "AddSeals: invalid gc id");
+            return;
+        }
+        match self.db.add_seals(player_id, gc, amount).await {
+            Ok(total) => tracing::info!(
+                player = player_id,
+                gc,
+                delta = amount,
+                total,
+                "AddSeals applied",
+            ),
+            Err(e) => tracing::warn!(
+                player = player_id,
+                gc,
+                err = %e,
+                "AddSeals: DB persist failed",
+            ),
+        }
     }
 
     async fn apply_dismiss_my_retainer(&self, player_id: u32, retainer_id: u32) {
@@ -2845,6 +2989,10 @@ fn build_player_snapshot_for_login(c: &Character) -> crate::lua::userdata::Playe
         chocobo_name: c.chara.chocobo_name.clone(),
         rental_expire_time: c.chara.rental_expire_time,
         rental_min_left: c.chara.rental_min_left,
+        gc_current: c.chara.gc_current,
+        gc_rank_limsa: c.chara.gc_rank_limsa,
+        gc_rank_gridania: c.chara.gc_rank_gridania,
+        gc_rank_uldah: c.chara.gc_rank_uldah,
         is_gm: false,
         is_engaged: false,
         is_trading: false,
