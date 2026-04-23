@@ -249,68 +249,270 @@ async fn dispatch_event_started(
         return;
     }
 
+    dispatch_npc_event_started(
+        registry,
+        world,
+        db,
+        lua,
+        player_actor_id,
+        owner_actor_id,
+        event_name,
+        event_type,
+        lua_params,
+    )
+    .await;
+}
+
+/// NPC-flavoured `onEventStarted` dispatch.
+///
+/// Mirrors Meteor's `LuaEngine.CallLuaFunction` for non-director
+/// targets (`origin/develop:Map Server/Lua/LuaEngine.cs:555`): build
+/// `args = [player, target, ...lparams]` (where `lparams[0]` is the
+/// `eventName` string the C# `EventStarted` shim inserts ahead of the
+/// player's params, see `Map Server/Lua/LuaEngine.cs:601`) and resume
+/// the script's `onEventStarted` global.
+///
+/// Goes through `LuaEngine::call_quest_hook`-style snapshot
+/// construction so the script sees real `LuaPlayer` + `LuaNpc`
+/// userdata. The previous implementation passed the player as a raw
+/// integer, which silently broke every NPC script that called
+/// `player:HasQuest(...)` / `player:GetItemPackage(0):AddItem(...)` /
+/// any other userdata-method (the call would error with "attempt to
+/// index a number value" the moment the script ran). Hook-emitted
+/// commands also drain through `apply_runtime_lua_commands` instead
+/// of being silently dropped.
+///
+/// Lookup walks the NPC's unique-override path first
+/// (`unique/<zone>/<class>/<unique>.lua`) then falls back to the
+/// base class (`base/<class_path>.lua`). Quietly no-ops on:
+/// * missing owner (NPC despawned mid-event-start),
+/// * missing player (player disconnected mid-event-start),
+/// * missing script on disk (NPC has no Lua entry),
+/// * missing `onEventStarted` global on the loaded script.
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_npc_event_started(
+    registry: &ActorRegistry,
+    world: &WorldManager,
+    db: &Database,
+    lua: &Arc<LuaEngine>,
+    player_actor_id: u32,
+    owner_actor_id: u32,
+    event_name: &str,
+    event_type: u8,
+    lua_params: &[LuaParam],
+) {
     let Some(owner_handle) = registry.get(owner_actor_id).await else {
         tracing::debug!(owner = owner_actor_id, "event: owner actor missing");
         return;
     };
-    let (class_path, class_name, unique_id) = {
+    let (class_path, class_name, unique_id, npc_state, npc_pos, npc_rot, actor_class_id) = {
         let chara = owner_handle.character.read().await;
         (
             chara.base.class_path.clone(),
             chara.base.class_name.clone(),
             chara.base.actor_name.clone(),
+            chara.base.current_main_state,
+            (
+                chara.base.position_x,
+                chara.base.position_y,
+                chara.base.position_z,
+            ),
+            chara.base.rotation,
+            chara.chara.actor_class_id,
         )
     };
     let zone_name = zone_name_for(world, owner_handle.zone_id).await;
 
-    let args_vec = event_args_vec(player_actor_id, event_name, event_type, lua_params);
+    let unique_path = lua.resolver().npc(&zone_name, &class_name, &unique_id);
+    let base_path = lua.resolver().base_class(&class_path);
+    let script_path = if unique_path.exists() {
+        unique_path
+    } else if base_path.exists() {
+        base_path
+    } else {
+        tracing::debug!(
+            owner = owner_actor_id,
+            class = %class_path,
+            "NPC onEventStarted skipped — no script on disk",
+        );
+        return;
+    };
+
+    let Some(player_handle) = registry.get(player_actor_id).await else {
+        tracing::debug!(
+            player = player_actor_id,
+            owner = owner_actor_id,
+            "NPC onEventStarted skipped — player not in registry",
+        );
+        return;
+    };
+    let snapshot = {
+        let c = player_handle.character.read().await;
+        crate::lua::userdata::PlayerSnapshot {
+            actor_id: c.base.actor_id,
+            name: c.base.actor_name.clone(),
+            zone_id: c.base.zone_id,
+            pos: (c.base.position_x, c.base.position_y, c.base.position_z),
+            rotation: c.base.rotation,
+            state: c.base.current_main_state,
+            hp: c.chara.hp,
+            max_hp: c.chara.max_hp,
+            mp: c.chara.mp,
+            max_mp: c.chara.max_mp,
+            tp: c.chara.tp,
+            active_quests: c
+                .quest_journal
+                .slots
+                .iter()
+                .flatten()
+                .map(|q| q.quest_id())
+                .collect(),
+            active_quest_states: c
+                .quest_journal
+                .slots
+                .iter()
+                .flatten()
+                .map(|q| crate::lua::QuestStateSnapshot {
+                    quest_id: q.quest_id(),
+                    sequence: q.get_sequence(),
+                    flags: q.get_flags(),
+                    counters: [q.get_counter(0), q.get_counter(1), q.get_counter(2)],
+                })
+                .collect(),
+            completed_quests: c.quest_journal.iter_completed().collect(),
+            ..Default::default()
+        }
+    };
+
     let lua_clone = Arc::clone(lua);
     let event_name_owned = event_name.to_string();
+    let class_name_owned = class_name.clone();
+    let class_path_owned = class_path.clone();
+    let unique_id_owned = unique_id.clone();
+    let zone_name_owned = zone_name.clone();
+    let npc_actor_id = owner_actor_id;
+    let npc_zone_id = owner_handle.zone_id;
+    let lua_params_owned: Vec<LuaParam> = lua_params.to_vec();
+    let _ = event_type; // Meteor's NPC dispatch ignores event_type for onEventStarted — eventName is what scripts branch on.
 
     let result = tokio::task::spawn_blocking(move || {
-        // Try the NPC's unique-override script first, fall back to its
-        // base class. Either way we end up with a Lua VM + a fresh
-        // command queue; the queue is drained and discarded here
-        // (Phase 4 only wires the Lua-hook side — command replay lands
-        // with the broader scheduler integration).
-        let (lua_vm, _queue) = match lua_clone.load_script(&lua_clone.resolver().npc(
-            &zone_name,
-            &class_name,
-            &unique_id,
-        )) {
+        let (lua_vm, queue) = match lua_clone.load_script(&script_path) {
             Ok(pair) => pair,
-            Err(_) => match lua_clone.load_script(&lua_clone.resolver().base_class(&class_path)) {
-                Ok(pair) => pair,
-                Err(e) => {
-                    return Err(format!("no script for {class_path}: {e}"));
-                }
-            },
+            Err(e) => {
+                return Err(format!("load_script failed: {e}"));
+            }
         };
-        let args =
-            to_multi_value(&lua_vm, &args_vec).map_err(|e| format!("args conversion: {e}"))?;
         let globals = lua_vm.globals();
         let Some(f): Option<mlua::Function> = globals.get("onEventStarted").ok() else {
-            return Ok(());
+            // Quiet no-op — many NPC scripts only define `init()` /
+            // `main()` and rely on the global hook absence to skip.
+            return Ok((Vec::new(), None));
         };
-        f.call::<Value>(args)
-            .map(|_| ())
-            .map_err(|e| format!("onEventStarted failed: {e}"))
+
+        let player = crate::lua::userdata::LuaPlayer {
+            snapshot,
+            queue: queue.clone(),
+        };
+        let player_ud = lua_vm
+            .create_userdata(player)
+            .map_err(|e| format!("create_userdata(LuaPlayer): {e}"))?;
+        let npc = crate::lua::userdata::LuaNpc {
+            base: crate::lua::userdata::LuaActor {
+                actor_id: npc_actor_id,
+                name: class_name_owned.clone(),
+                class_name: class_name_owned,
+                class_path: class_path_owned,
+                unique_id: unique_id_owned,
+                zone_id: npc_zone_id,
+                zone_name: zone_name_owned,
+                state: npc_state,
+                pos: npc_pos,
+                rotation: npc_rot,
+                queue: queue.clone(),
+            },
+            actor_class_id,
+            quest_graphic: 0,
+        };
+        let npc_ud = lua_vm
+            .create_userdata(npc)
+            .map_err(|e| format!("create_userdata(LuaNpc): {e}"))?;
+
+        let mut mv = MultiValue::new();
+        mv.push_back(Value::UserData(player_ud));
+        mv.push_back(Value::UserData(npc_ud));
+        // Meteor inserts `eventName` ahead of the original lparams (see
+        // `LuaEngine.EventStarted` `lparams.Insert(0, ...)`). That's
+        // what surfaces as the third script arg — `triggerName` in
+        // most NPC scripts.
+        mv.push_back(Value::String(
+            lua_vm
+                .create_string(&event_name_owned)
+                .map_err(|e| format!("create_string(eventName): {e}"))?,
+        ));
+        for p in &lua_params_owned {
+            let v = match p {
+                LuaParam::Int32(i) => Value::Integer(*i as mlua::Integer),
+                LuaParam::UInt32(u) => Value::Integer(*u as mlua::Integer),
+                LuaParam::String(s) => Value::String(
+                    lua_vm
+                        .create_string(s)
+                        .map_err(|e| format!("create_string(lparam): {e}"))?,
+                ),
+                LuaParam::True => Value::Boolean(true),
+                LuaParam::False => Value::Boolean(false),
+                LuaParam::Nil => Value::Nil,
+                LuaParam::Actor(id) => Value::Integer(*id as mlua::Integer),
+                LuaParam::Type7 { actor_id, .. } => Value::Integer(*actor_id as mlua::Integer),
+                LuaParam::Type9 { item1, .. } => Value::Integer(*item1 as mlua::Integer),
+                LuaParam::Byte(b) => Value::Integer(*b as mlua::Integer),
+                LuaParam::Short(s) => Value::Integer(*s as mlua::Integer),
+            };
+            mv.push_back(v);
+        }
+
+        let call_err = f.call::<Value>(mv).err().map(|e| format!("{e}"));
+        let commands = crate::lua::command::CommandQueue::drain(&queue);
+        Ok((commands, call_err))
     })
     .await;
 
-    match result {
-        Ok(Ok(())) => {}
-        Ok(Err(msg)) => {
+    let (commands, hook_err) = match result {
+        Ok(Ok((cmds, err))) => (cmds, err),
+        Ok(Err(setup_err)) => {
             tracing::debug!(
-                %msg,
+                error = %setup_err,
                 owner = owner_actor_id,
-                event = %event_name_owned,
-                "event: Lua call",
+                event = %event_name,
+                "NPC onEventStarted setup failed",
             );
+            return;
         }
-        Err(join) => {
-            tracing::warn!(error = %join, "event: Lua dispatch task panicked");
+        Err(join_err) => {
+            tracing::warn!(
+                error = %join_err,
+                owner = owner_actor_id,
+                "NPC onEventStarted dispatch panicked",
+            );
+            return;
         }
+    };
+    if let Some(e) = hook_err {
+        tracing::debug!(
+            error = %e,
+            owner = owner_actor_id,
+            event = %event_name,
+            "NPC onEventStarted errored",
+        );
+    }
+    if !commands.is_empty() {
+        crate::runtime::quest_apply::apply_runtime_lua_commands(
+            commands,
+            registry,
+            db,
+            world,
+            Some(lua),
+        )
+        .await;
     }
 }
 
@@ -683,66 +885,6 @@ async fn zone_name_for(world: &WorldManager, zone_id: u32) -> String {
     zone.core.zone_name.clone()
 }
 
-/// Owned equivalents of the args Lua expects so we can move them into
-/// the `spawn_blocking` closure.
-#[derive(Debug, Clone)]
-enum OwnedArg {
-    Int32(i32),
-    UInt32(u32),
-    String(String),
-    Bool(bool),
-    Nil,
-    ActorId(u32),
-}
-
-fn event_args_vec(
-    player_actor_id: u32,
-    event_name: &str,
-    event_type: u8,
-    lua_params: &[LuaParam],
-) -> Vec<OwnedArg> {
-    let mut out = Vec::with_capacity(3 + lua_params.len());
-    out.push(OwnedArg::UInt32(player_actor_id));
-    out.push(OwnedArg::String(event_name.to_string()));
-    out.push(OwnedArg::Int32(event_type as i32));
-    for p in lua_params {
-        out.push(lua_param_to_owned(p));
-    }
-    out
-}
-
-fn lua_param_to_owned(p: &LuaParam) -> OwnedArg {
-    match p {
-        LuaParam::Int32(i) => OwnedArg::Int32(*i),
-        LuaParam::UInt32(u) => OwnedArg::UInt32(*u),
-        LuaParam::String(s) => OwnedArg::String(s.clone()),
-        LuaParam::True => OwnedArg::Bool(true),
-        LuaParam::False => OwnedArg::Bool(false),
-        LuaParam::Nil => OwnedArg::Nil,
-        LuaParam::Actor(id) => OwnedArg::ActorId(*id),
-        LuaParam::Type7 { actor_id, .. } => OwnedArg::ActorId(*actor_id),
-        LuaParam::Type9 { item1, .. } => OwnedArg::UInt32(*item1 as u32),
-        LuaParam::Byte(b) => OwnedArg::Int32(*b as i32),
-        LuaParam::Short(s) => OwnedArg::Int32(*s as i32),
-    }
-}
-
-fn to_multi_value(lua: &mlua::Lua, args: &[OwnedArg]) -> mlua::Result<MultiValue> {
-    let mut out = MultiValue::new();
-    for a in args {
-        let v = match a {
-            OwnedArg::Int32(i) => Value::Integer(*i as mlua::Integer),
-            OwnedArg::UInt32(u) => Value::Integer(*u as mlua::Integer),
-            OwnedArg::String(s) => Value::String(lua.create_string(s)?),
-            OwnedArg::Bool(b) => Value::Boolean(*b),
-            OwnedArg::Nil => Value::Nil,
-            OwnedArg::ActorId(id) => Value::Integer(*id as mlua::Integer),
-        };
-        out.push_back(v);
-    }
-    Ok(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -855,9 +997,25 @@ mod tests {
         let root = tmpdir();
         // Matches the C# base-class resolver: `scripts/base/<classPath>.lua`.
         std::fs::create_dir_all(root.join("base/Chara/Npc/Populace")).unwrap();
+        // Hook captures the userdata-accessor reads it does on each
+        // arg — `player.actorId` (LuaPlayer metatable Index),
+        // `npc:GetName()` (LuaNpc method), and the third positional
+        // `eventName` string. Asserting all three fields proves the
+        // dispatcher built proper userdata for player + npc and
+        // inserted `eventName` ahead of `lparams` per Meteor's
+        // `LuaEngine.EventStarted` shim.
         std::fs::write(
             root.join("base/Chara/Npc/Populace/Greeter.lua"),
-            "_talked_to = 0\nfunction onEventStarted(player) _talked_to = player end",
+            r#"
+                _talked_to = 0
+                _talked_npc = ""
+                _talked_event = ""
+                function onEventStarted(player, npc, eventName)
+                    _talked_to = player.actorId
+                    _talked_npc = npc:GetName()
+                    _talked_event = eventName
+                end
+            "#,
         )
         .unwrap();
 
@@ -866,7 +1024,8 @@ mod tests {
         let registry = ActorRegistry::new();
         let db = Database::open(tempdb()).await.expect("db stub");
 
-        // One Zone + one Greeter NPC in it.
+        // One Zone + one Greeter NPC in it + a Player so the
+        // dispatcher can build a real `LuaPlayer` userdata snapshot.
         let zone = Zone::new(
             100,
             "test",
@@ -892,6 +1051,17 @@ mod tests {
             .insert(ActorHandle::new(42, ActorKindTag::Npc, 100, 0, npc_chara))
             .await;
 
+        let player_chara = Character::new(1234);
+        registry
+            .insert(ActorHandle::new(
+                1234,
+                ActorKindTag::Player,
+                100,
+                42,
+                player_chara,
+            ))
+            .await;
+
         let event = EventEvent::EventStarted {
             player_actor_id: 1234,
             owner_actor_id: 42,
@@ -901,12 +1071,130 @@ mod tests {
         };
         dispatch_event_event(&event, &registry, &world, &db, Some(&lua)).await;
 
-        // Confirm the global was written — proves the Lua function ran
-        // with the player id as its first arg.
+        // Reload the cached VM and read back the three globals the
+        // hook wrote.
         let path = lua.resolver().base_class("Chara/Npc/Populace/Greeter");
         let (vm, _q) = lua.load_script(&path).unwrap();
         let talked: i64 = vm.globals().get("_talked_to").unwrap();
-        assert_eq!(talked, 1234);
+        let npc_class: String = vm.globals().get("_talked_npc").unwrap();
+        let event_name: String = vm.globals().get("_talked_event").unwrap();
+        assert_eq!(talked, 1234, "player.actorId must round-trip the player's actor id");
+        assert_eq!(npc_class, "Greeter", "npc:GetName() must reach the LuaNpc accessor (it returns LuaActor.name, which the dispatcher seeds from class_name)");
+        assert_eq!(
+            event_name, "onTalk",
+            "eventName must be the third positional arg per Meteor's `LuaEngine.EventStarted` shim",
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// NPC `onEventStarted` hooks can now emit `LuaCommand`s — the
+    /// drain re-enters `apply_runtime_lua_commands` so quest mutations
+    /// (`AddQuest`, `SetQuestFlag`, …) actually persist. Previously
+    /// the queue was discarded, silently breaking any NPC script that
+    /// awarded a quest from a `delegateEvent` confirm path.
+    #[tokio::test]
+    async fn npc_event_started_drains_emitted_lua_commands() {
+        use crate::actor::Character;
+        use crate::actor::quest::{Quest, quest_actor_id};
+        use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+        use crate::zone::navmesh::StubNavmeshLoader;
+        use crate::zone::zone::Zone;
+
+        let root = tmpdir();
+        std::fs::create_dir_all(root.join("base/Chara/Npc/Populace")).unwrap();
+        // NPC hook gives the player quest 110_500 then flips bit 7 on
+        // it. The drain has to handle both `AddQuest` (which feeds
+        // through `apply_add_quest`) and the subsequent `QuestSetFlag`
+        // — both registry-mutating commands.
+        std::fs::write(
+            root.join("base/Chara/Npc/Populace/QuestGiver.lua"),
+            r#"
+                function onEventStarted(player, npc, eventName)
+                    player:AddQuest(110500)
+                    local quest = player:GetQuest(110500)
+                    quest:SetQuestFlag(7)
+                end
+            "#,
+        )
+        .unwrap();
+
+        let lua = Arc::new(LuaEngine::new(&root));
+        {
+            let mut quests = std::collections::HashMap::new();
+            quests.insert(
+                110_500u32,
+                crate::gamedata::QuestMeta {
+                    id: 110_500,
+                    quest_name: "Test Drain Quest".to_string(),
+                    class_name: "TestDrain".to_string(),
+                    prerequisite: 0,
+                    min_level: 1,
+                },
+            );
+            lua.catalogs().install_quests(quests);
+        }
+
+        let world = WorldManager::new();
+        let registry = ActorRegistry::new();
+        let db = Database::open(tempdb()).await.expect("db stub");
+
+        let zone = Zone::new(
+            100,
+            "test",
+            1,
+            "/Area/Zone/Test",
+            0,
+            0,
+            0,
+            false,
+            false,
+            false,
+            false,
+            false,
+            Some(&StubNavmeshLoader),
+        );
+        world.register_zone(zone).await;
+
+        let mut npc_chara = Character::new(99);
+        npc_chara.base.class_path = "Chara/Npc/Populace/QuestGiver".into();
+        npc_chara.base.class_name = "QuestGiver".into();
+        npc_chara.base.actor_name = "questgiver_main".into();
+        registry
+            .insert(ActorHandle::new(99, ActorKindTag::Npc, 100, 0, npc_chara))
+            .await;
+
+        let mut player_chara = Character::new(55);
+        // Pre-seed quest in the journal so the SetQuestFlag(7) lands
+        // on a real Quest. `AddQuest` from the hook would also create
+        // it, but threading that through requires `gamedata_quests`
+        // installed (above) AND `apply_add_quest`'s `from_db_row`
+        // schema to be reachable — easier to seed and verify the
+        // flag-set path independently.
+        let mut quest = Quest::new(quest_actor_id(110_500), "TestDrain".to_string());
+        quest.clear_dirty();
+        player_chara.quest_journal.add(quest);
+        let player_handle = ActorHandle::new(55, ActorKindTag::Player, 100, 42, player_chara);
+        registry.insert(player_handle.clone()).await;
+
+        let event = EventEvent::EventStarted {
+            player_actor_id: 55,
+            owner_actor_id: 99,
+            event_name: "talk".to_string(),
+            event_type: 0,
+            lua_params: vec![],
+        };
+        dispatch_event_event(&event, &registry, &world, &db, Some(&lua)).await;
+
+        let flags = {
+            let c = player_handle.character.read().await;
+            c.quest_journal.get(110_500).map(|q| q.get_flags()).unwrap_or(0)
+        };
+        assert_eq!(
+            flags & (1 << 7),
+            1 << 7,
+            "NPC onEventStarted should have drained QuestSetFlag(7) into the live quest",
+        );
+
         let _ = std::fs::remove_dir_all(root);
     }
 
