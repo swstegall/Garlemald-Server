@@ -3723,6 +3723,263 @@ async fn rental_expiry_tick_dismounts() {
 }
 
 // ---------------------------------------------------------------------------
+// Death-state ticker passes — Tier 1 #7 follow-up
+//   * Modifier::Raise auto-revive
+//   * BattleNpc respawn timer
+// ---------------------------------------------------------------------------
+
+/// `Modifier::Raise > 0` on a dead actor → next tick brings them back.
+/// Verifies the auto-revive fires regardless of actor kind (Player or
+/// BattleNpc) and within a single tick — no respawn-delay wait.
+#[tokio::test]
+async fn modifier_raise_auto_revives_dead_player_on_next_tick() {
+    use crate::actor::Character;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use crate::runtime::ticker::{GameTicker, TickerConfig};
+    use crate::zone::zone::Zone;
+    use std::sync::Arc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    let zone = Zone::new(
+        910,
+        "RaiseZone".to_string(),
+        1,
+        String::new(),
+        0,
+        0,
+        0,
+        false,
+        false,
+        false,
+        false,
+        false,
+        None,
+    );
+    world.register_zone(zone).await;
+
+    // Dead player with a Raise modifier set.
+    let mut chara = Character::new(700);
+    chara.base.zone_id = 910;
+    chara.base.current_main_state = crate::actor::MAIN_STATE_DEAD;
+    chara.chara.new_main_state = crate::actor::MAIN_STATE_DEAD;
+    chara.chara.hp = 0;
+    chara.chara.max_hp = 1500;
+    chara.chara.max_mp = 500;
+    chara.chara.time_of_death_utc = 1_000_000;
+    chara.chara.mods.set(crate::actor::Modifier::Raise, 1.0);
+    registry
+        .insert(ActorHandle::new(700, ActorKindTag::Player, 910, 700, chara))
+        .await;
+
+    let ticker = GameTicker::new(TickerConfig::default(), world.clone(), registry.clone(), db);
+    ticker.tick_once(2_000_000_000).await;
+
+    let c = registry.get(700).await.unwrap().character.read().await.clone();
+    assert_eq!(
+        c.base.current_main_state,
+        crate::actor::MAIN_STATE_PASSIVE,
+        "raise should auto-revive on the next tick"
+    );
+    assert_eq!(c.chara.hp, 1500, "HP restored to max on revive");
+    assert_eq!(c.chara.time_of_death_utc, 0, "death timestamp cleared");
+}
+
+/// BattleNpc respawn — when `time_of_death_utc + BNPC_DEFAULT_RESPAWN_SECS`
+/// elapses, the next tick restores the NPC at its spawn position with
+/// full HP. The same condition wouldn't trigger for a Player without a
+/// Raise modifier.
+#[tokio::test]
+async fn battle_npc_respawns_after_default_delay() {
+    use crate::actor::Character;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use crate::runtime::ticker::{BNPC_DEFAULT_RESPAWN_SECS, GameTicker, TickerConfig};
+    use crate::zone::zone::Zone;
+    use std::sync::Arc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    let zone = Zone::new(
+        911,
+        "RespawnZone".to_string(),
+        1,
+        String::new(),
+        0,
+        0,
+        0,
+        false,
+        false,
+        false,
+        false,
+        false,
+        None,
+    );
+    world.register_zone(zone).await;
+
+    // Dead BattleNpc — death stamped 100s ago, respawn cadence is 30s.
+    let mut chara = Character::new(800);
+    chara.base.zone_id = 911;
+    chara.base.current_main_state = crate::actor::MAIN_STATE_DEAD;
+    chara.chara.new_main_state = crate::actor::MAIN_STATE_DEAD;
+    chara.chara.hp = 0;
+    chara.chara.max_hp = 200;
+    chara.chara.max_mp = 0;
+    chara.chara.spawn_x = 50.0;
+    chara.chara.spawn_y = 0.0;
+    chara.chara.spawn_z = -50.0;
+    // Move the corpse off the spawn point so we can verify the
+    // tick snaps it back.
+    chara.base.position_x = 9.0;
+    chara.base.position_z = 9.0;
+    let now_secs = 5_000_000u64;
+    chara.chara.time_of_death_utc = (now_secs - 100) as u32;
+    registry
+        .insert(ActorHandle::new(800, ActorKindTag::BattleNpc, 911, 0, chara))
+        .await;
+
+    let ticker = GameTicker::new(TickerConfig::default(), world.clone(), registry.clone(), db);
+    ticker.tick_once(now_secs * 1000).await;
+
+    let c = registry.get(800).await.unwrap().character.read().await.clone();
+    assert_eq!(
+        c.base.current_main_state,
+        crate::actor::MAIN_STATE_PASSIVE,
+        "BattleNpc should respawn after {BNPC_DEFAULT_RESPAWN_SECS}s",
+    );
+    assert_eq!(c.chara.hp, 200);
+    assert!((c.base.position_x - 50.0).abs() < 0.01, "snapped back to spawn x");
+    assert!((c.base.position_z - (-50.0)).abs() < 0.01, "snapped back to spawn z");
+    assert_eq!(c.chara.time_of_death_utc, 0);
+}
+
+/// Within the respawn delay window, no respawn fires. Same fixture
+/// as above but death-stamp is recent enough that the timer hasn't
+/// elapsed.
+#[tokio::test]
+async fn battle_npc_does_not_respawn_before_delay() {
+    use crate::actor::Character;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use crate::runtime::ticker::{GameTicker, TickerConfig};
+    use crate::zone::zone::Zone;
+    use std::sync::Arc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    let zone = Zone::new(
+        912,
+        "NoRespawnZone".to_string(),
+        1,
+        String::new(),
+        0,
+        0,
+        0,
+        false,
+        false,
+        false,
+        false,
+        false,
+        None,
+    );
+    world.register_zone(zone).await;
+
+    let mut chara = Character::new(801);
+    chara.base.zone_id = 912;
+    chara.base.current_main_state = crate::actor::MAIN_STATE_DEAD;
+    chara.chara.hp = 0;
+    chara.chara.max_hp = 100;
+    let now_secs = 6_000_000u64;
+    // Died 5 seconds ago — well under the 30s default delay.
+    chara.chara.time_of_death_utc = (now_secs - 5) as u32;
+    registry
+        .insert(ActorHandle::new(801, ActorKindTag::BattleNpc, 912, 0, chara))
+        .await;
+
+    let ticker = GameTicker::new(TickerConfig::default(), world.clone(), registry.clone(), db);
+    ticker.tick_once(now_secs * 1000).await;
+
+    let c = registry.get(801).await.unwrap().character.read().await.clone();
+    assert_eq!(
+        c.base.current_main_state,
+        crate::actor::MAIN_STATE_DEAD,
+        "respawn should not fire before delay",
+    );
+    assert_eq!(c.chara.hp, 0);
+}
+
+/// A dead Player without a Raise modifier should NOT auto-revive
+/// from the BattleNpc respawn pass — that branch is BattleNpc-only.
+/// Player home-point revive waits on a future packet handler.
+#[tokio::test]
+async fn dead_player_without_raise_does_not_auto_respawn() {
+    use crate::actor::Character;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use crate::runtime::ticker::{GameTicker, TickerConfig};
+    use crate::zone::zone::Zone;
+    use std::sync::Arc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    let zone = Zone::new(
+        913,
+        "PlayerDeadZone".to_string(),
+        1,
+        String::new(),
+        0,
+        0,
+        0,
+        false,
+        false,
+        false,
+        false,
+        false,
+        None,
+    );
+    world.register_zone(zone).await;
+
+    let mut chara = Character::new(802);
+    chara.base.zone_id = 913;
+    chara.base.current_main_state = crate::actor::MAIN_STATE_DEAD;
+    chara.chara.hp = 0;
+    chara.chara.max_hp = 1000;
+    // Long-elapsed death-stamp — would trigger respawn for a BNPC.
+    chara.chara.time_of_death_utc = 1;
+    // No Raise modifier set.
+    registry
+        .insert(ActorHandle::new(802, ActorKindTag::Player, 913, 802, chara))
+        .await;
+
+    let ticker = GameTicker::new(TickerConfig::default(), world.clone(), registry.clone(), db);
+    ticker.tick_once(9_000_000_000).await;
+
+    let c = registry.get(802).await.unwrap().character.read().await.clone();
+    assert_eq!(
+        c.base.current_main_state,
+        crate::actor::MAIN_STATE_DEAD,
+        "dead Player without Raise should stay dead — home-point revive isn't on the auto-tick path",
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Inn auto-accrual tick — consolidation (Tier 4 #17 follow-up)
 // ---------------------------------------------------------------------------
 

@@ -55,7 +55,7 @@ use crate::world_manager::WorldManager;
 use crate::zone::outbox::AreaOutbox;
 use crate::zone::zone::Zone;
 
-use super::actor_registry::ActorRegistry;
+use super::actor_registry::{ActorKindTag, ActorRegistry};
 use super::dispatcher::{dispatch_area_event, dispatch_battle_event, dispatch_status_event};
 
 /// Inn rested-XP accrual rate: 1 percentage point per N seconds while
@@ -67,6 +67,28 @@ pub const INN_REST_INTERVAL_SECS: u32 = 60;
 /// (matches the `accruerest` GM-command clamp + `consume_rested_xp`'s
 /// `rested_pct.min(100)` ceiling).
 pub const INN_REST_BONUS_CAP: i32 = 100;
+
+/// BattleNpc respawn delay — how many seconds after `apply_die`
+/// elapses before the ticker brings the NPC back at its spawn
+/// position. Retail tunes this per-spawner via
+/// `server_battlenpc_spawn_locations.respawnTimeMs`; the value here
+/// is the conservative default the spawner falls back to when the
+/// per-row override is missing or zero. 30s is a reasonable
+/// playtest value (Meteor's default is 60s).
+pub const BNPC_DEFAULT_RESPAWN_SECS: u32 = 30;
+
+/// Per-actor death-state tick decision. Returned from the read-lock
+/// scan inside `tick_zone` so the follow-up write lock + dispatcher
+/// call happens after the read lock is released.
+enum DeathTickAction {
+    None,
+    /// `Modifier::Raise > 0` on a dead actor — bring them back where
+    /// they fell.
+    AutoRevive,
+    /// BattleNpc whose respawn timer has elapsed — snap back to
+    /// spawn position + revive.
+    Respawn,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct TickerConfig {
@@ -248,6 +270,68 @@ impl GameTicker {
                     // tick) — reset the anchor so a future inn entry
                     // starts a fresh accrual window.
                     chara.chara.last_rest_accrual_utc = 0;
+                }
+            }
+
+            // ---- Death-state housekeeping (Tier 1 #7 follow-up) ----
+            //   * `Modifier::Raise > 0` — auto-revive a dead actor on
+            //     the next tick (Players + NPCs alike). Mirrors
+            //     Meteor's `Spawn` tail when a Raise modifier catches
+            //     the actor before the despawn timer fires. Modifier
+            //     stays in place — the matching status effect
+            //     (Medic raise, Phoenix down) owns its own
+            //     decay/cleanup.
+            //   * BattleNpc respawn timer — for non-Player actors,
+            //     when `time_of_death_utc + BNPC_DEFAULT_RESPAWN_SECS
+            //     <= now`, restore HP/MP to max + flip back to
+            //     PASSIVE at the spawn position. Player home-point
+            //     revive is *not* automatic; it waits on a future
+            //     packet handler.
+            let action = {
+                let chara = handle.character.read().await;
+                if chara.base.current_main_state != crate::actor::MAIN_STATE_DEAD {
+                    DeathTickAction::None
+                } else {
+                    let raise = chara.chara.mods.get(crate::actor::Modifier::Raise);
+                    if raise > 0.0 {
+                        DeathTickAction::AutoRevive
+                    } else if !matches!(handle.kind, ActorKindTag::Player)
+                        && chara.chara.time_of_death_utc != 0
+                        && (now_ms / 1000) as u32
+                            >= chara
+                                .chara
+                                .time_of_death_utc
+                                .saturating_add(BNPC_DEFAULT_RESPAWN_SECS)
+                    {
+                        DeathTickAction::Respawn
+                    } else {
+                        DeathTickAction::None
+                    }
+                }
+            };
+            match action {
+                DeathTickAction::None => {}
+                DeathTickAction::AutoRevive | DeathTickAction::Respawn => {
+                    // For respawn, also snap back to the spawn
+                    // position before reviving — matches Meteor's
+                    // BattleNpc respawn flow which restores to the
+                    // initial spawn coords. AutoRevive (raise) just
+                    // brings the actor back where they fell.
+                    if matches!(action, DeathTickAction::Respawn) {
+                        let mut c = handle.character.write().await;
+                        let (sx, sy, sz) =
+                            (c.chara.spawn_x, c.chara.spawn_y, c.chara.spawn_z);
+                        c.base.position_x = sx;
+                        c.base.position_y = sy;
+                        c.base.position_z = sz;
+                    }
+                    crate::runtime::dispatcher::apply_revive(
+                        handle.actor_id,
+                        &self.registry,
+                        &self.world,
+                        zone,
+                    )
+                    .await;
                 }
             }
 

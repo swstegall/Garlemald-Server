@@ -1488,6 +1488,11 @@ pub(crate) async fn apply_die(
         }
         c.base.current_main_state = crate::actor::MAIN_STATE_DEAD;
         c.chara.new_main_state = crate::actor::MAIN_STATE_DEAD;
+        // Stamp the death timestamp so the ticker's NPC respawn pass
+        // (and the Modifier::Raise auto-revive pass) can measure
+        // elapsed time. Wall-clock seconds, mirroring how
+        // `last_rest_accrual_utc` carries the inn-tick anchor.
+        c.chara.time_of_death_utc = common::utils::unix_timestamp() as u32;
         // Skip `internal_disengage` here — it would push a follow-up
         // Disengage event. The state-change packet we emit below is
         // load-bearing; the per-actor AI also picks the DEAD state on its
@@ -1525,6 +1530,9 @@ pub(crate) async fn apply_revive(
         c.set_mp(max_mp);
         c.base.current_main_state = crate::actor::MAIN_STATE_PASSIVE;
         c.chara.new_main_state = crate::actor::MAIN_STATE_PASSIVE;
+        // Clear the death-timestamp so the ticker stops tracking the
+        // raise / respawn window for this actor.
+        c.chara.time_of_death_utc = 0;
     }
     let sub = tx::build_set_actor_state(
         owner_actor_id,

@@ -182,6 +182,11 @@ pub struct CharaState {
     /// `is_inn` zone so a fresh entry restarts the accrual clock
     /// instead of back-dating rested points.
     pub last_rest_accrual_utc: u32,
+    /// UNIX timestamp (seconds) of the most recent death. `0` means
+    /// "alive" / "never died" — `apply_die` stamps the current tick
+    /// time, the ticker's NPC respawn pass reads it to decide when
+    /// to bring a BattleNpc back. Cleared by `apply_revive`.
+    pub time_of_death_utc: u32,
     // Mount / chocobo state — the runtime-mutable slice of
     // `PlayerState.has_chocobo` / `chocobo_appearance` /
     // `chocobo_name` / `mount_state` / `rental_expire_time` /
@@ -268,6 +273,7 @@ impl Default for CharaState {
             initial_town: 0,
             rest_bonus_exp_rate: 0,
             last_rest_accrual_utc: 0,
+            time_of_death_utc: 0,
             has_chocobo: false,
             mount_state: 0,
             chocobo_appearance: 0,
