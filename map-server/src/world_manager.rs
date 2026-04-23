@@ -1052,10 +1052,25 @@ impl WorldManager {
                 );
             }
         }
+        // Mount-music persistence — port of Meteor commit `ea7bf4b8`.
+        // When the player zones while mounted, the normal zone BGM is
+        // overridden with the mount theme (64 = rental chocobo, 83 =
+        // owned chocobo or goobbue). Non-mounted zones use the day BGM.
+        let (mount_state_char, rental_expire) = {
+            let c = actor_handle.character.read().await;
+            (c.chara.mount_state, c.chara.rental_expire_time)
+        };
+        let music_id = if main_state == crate::actor::MAIN_STATE_MOUNTED as u8
+            && mount_state_char != 0
+        {
+            if rental_expire != 0 { 64 } else { 83 }
+        } else {
+            bgm_day
+        };
         subpackets.extend(vec![
             tx::actor::build_set_actor_is_zoning(actor_id, false),
             tx::misc::build_set_dalamud(actor_id, 0),
-            tx::misc::build_set_music(actor_id, bgm_day, 0x01),
+            tx::misc::build_set_music(actor_id, music_id, 0x01),
             tx::misc::build_set_weather(actor_id, 1, 1),
             tx::misc::build_set_map(actor_id, region_id, zone_actor_id),
             tx::actor::build_add_actor(actor_id, 8),

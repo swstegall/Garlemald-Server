@@ -329,6 +329,48 @@ pub enum LuaCommand {
     EndDream {
         player_id: u32,
     },
+    /// `player:IssueChocobo(appearance, name)` — Grand Company
+    /// chocobo license award. Flips `hasChocobo = true`, saves the
+    /// appearance id + chosen name to `characters_chocobo` via
+    /// `Database::issue_player_chocobo`, and emits
+    /// `SetHasChocobo` + `SetChocoboName` to the client.
+    IssueChocobo {
+        player_id: u32,
+        appearance_id: u8,
+        name: String,
+    },
+    /// `player:StartChocoboRental(minutes)` — called from
+    /// `PopulaceChocoboLender.lua` on the rental menu choice. Sets
+    /// `rentalExpireTime = now + minutes*60`, `rentalMinLeft = minutes`.
+    /// The per-tick update then decrements minLeft and auto-dismounts
+    /// on expiry.
+    StartChocoboRental {
+        player_id: u32,
+        minutes: u8,
+    },
+    /// `player:SetMountState(state)` — 0 = on foot, 1 = chocobo,
+    /// 2 = goobbue. Flips the helper flag and (when mounted) emits
+    /// the `SetCurrentMountChocoboPacket` or `SetCurrentMountGoobbue`
+    /// packet broadcast.
+    SetMountState {
+        player_id: u32,
+        state: u8,
+    },
+    /// `player:SendMountAppearance()` — force a broadcast of the
+    /// current mount appearance (used after zone-in or appearance
+    /// change). Re-emits `SetCurrentMountChocobo(appearance,
+    /// expire, minLeft)` / `SetCurrentMountGoobbue(appearance)` to
+    /// every nearby player + self.
+    SendMountAppearance {
+        player_id: u32,
+    },
+    /// `player:SetChocoboName(name)` — rename the chocobo without
+    /// affecting the rental timer or appearance. Persists via
+    /// `Database::change_player_chocobo_name`.
+    SetChocoboName {
+        player_id: u32,
+        name: String,
+    },
     LogError(String),
 }
 

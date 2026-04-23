@@ -90,6 +90,9 @@ impl CommandProcessor {
             "dream" => self.handle_dream(&args).await,
             "wake" => self.handle_wake(&args).await,
             "accruerest" => self.handle_accrue_rest(&args).await,
+            "issuechocobo" => self.handle_issue_chocobo(&args).await,
+            "rentchocobo" => self.handle_rent_chocobo(&args).await,
+            "dismount" => self.handle_dismount(&args).await,
             other => format!("unknown command: {other} (args={:?})", args.rest()),
         };
         Ok(response)
@@ -103,7 +106,9 @@ impl CommandProcessor {
          dismissretainer <retainer_id> <name>, \
          listretainers <name>, \
          setsleeping <name>, dream <id> <name>, wake <name>, \
-         accruerest <minutes> <name>"
+         accruerest <minutes> <name>, \
+         issuechocobo <appearance> <chocobo_name> <player_name>, \
+         rentchocobo <minutes> <name>, dismount <name>"
             .into()
     }
 
@@ -345,6 +350,97 @@ impl CommandProcessor {
         format!("cleared dream state on {name}")
     }
 
+    async fn handle_issue_chocobo(&self, args: &Args<'_>) -> String {
+        // issuechocobo <appearance> <chocobo_name> <player_name>
+        // `chocobo_name` is a single token to keep parsing simple;
+        // multi-word player names can still have spaces in the tail.
+        let appearance = match args.parse_u8(0) {
+            Ok(a) => a,
+            Err(e) => {
+                return format!(
+                    "usage: issuechocobo <appearance> <chocobo_name> <player_name> — {e}"
+                );
+            }
+        };
+        let Some(chocobo_name) = args.token(1) else {
+            return "usage: issuechocobo <appearance> <chocobo_name> <player_name>".into();
+        };
+        let Some(player_name) = args.rest_joined(2) else {
+            return "usage: issuechocobo <appearance> <chocobo_name> <player_name>".into();
+        };
+        let Some(chara_id) = self.lookup_character_id(&player_name).await else {
+            return format!("unknown character: {player_name}");
+        };
+        if let Err(e) = self
+            .db
+            .issue_player_chocobo(chara_id, appearance, chocobo_name)
+            .await
+        {
+            return format!("issuechocobo failed: {e}");
+        }
+        // If the character is online, mirror into CharaState so the
+        // next snapshot reads are right without a re-login.
+        if let Some(handle) = self.registry.get(chara_id).await {
+            let mut c = handle.character.write().await;
+            c.chara.has_chocobo = true;
+            c.chara.chocobo_appearance = appearance;
+            c.chara.chocobo_name = chocobo_name.to_string();
+        }
+        format!(
+            "issued chocobo (appearance={appearance}, name={chocobo_name}) to {player_name}"
+        )
+    }
+
+    async fn handle_rent_chocobo(&self, args: &Args<'_>) -> String {
+        let minutes = match args.parse_u8(0) {
+            Ok(m) => m,
+            Err(e) => return format!("usage: rentchocobo <minutes> <name> — {e}"),
+        };
+        let Some(name) = args.rest_joined(1) else {
+            return "usage: rentchocobo <minutes> <name>".into();
+        };
+        let Some(chara_id) = self.lookup_character_id(&name).await else {
+            return format!("unknown character: {name}");
+        };
+        let Some(handle) = self.registry.get(chara_id).await else {
+            return format!("{name} is not online");
+        };
+        let now = common::utils::unix_timestamp() as u32;
+        {
+            let mut c = handle.character.write().await;
+            c.chara.rental_expire_time = now + (minutes as u32 * 60);
+            c.chara.rental_min_left = minutes;
+            c.chara.mount_state = 1;
+            c.base.current_main_state = crate::actor::MAIN_STATE_MOUNTED;
+            c.chara.new_main_state = crate::actor::MAIN_STATE_MOUNTED;
+        }
+        format!(
+            "rented chocobo for {name} ({minutes}m; expires at unix {})",
+            now + (minutes as u32 * 60)
+        )
+    }
+
+    async fn handle_dismount(&self, args: &Args<'_>) -> String {
+        let Some(name) = args.rest_joined(0) else {
+            return "usage: dismount <name>".into();
+        };
+        let Some(chara_id) = self.lookup_character_id(&name).await else {
+            return format!("unknown character: {name}");
+        };
+        let Some(handle) = self.registry.get(chara_id).await else {
+            return format!("{name} is not online");
+        };
+        {
+            let mut c = handle.character.write().await;
+            c.chara.mount_state = 0;
+            c.chara.rental_expire_time = 0;
+            c.chara.rental_min_left = 0;
+            c.base.current_main_state = crate::actor::MAIN_STATE_PASSIVE;
+            c.chara.new_main_state = crate::actor::MAIN_STATE_PASSIVE;
+        }
+        format!("dismounted {name}")
+    }
+
     async fn handle_accrue_rest(&self, args: &Args<'_>) -> String {
         let minutes = match args.parse_i32(0) {
             Ok(m) => m,
@@ -437,6 +533,11 @@ impl<'a> Args<'a> {
         };
         raw.parse::<u8>()
             .map_err(|_| format!("arg {idx} '{raw}' is not a byte"))
+    }
+
+    /// Single token at position `idx`, or `None` if out of range.
+    fn token(&self, idx: usize) -> Option<&'a str> {
+        self.tokens.get(idx).copied()
     }
 
     /// Concatenate tokens `[from..]` into a single space-separated string
@@ -555,6 +656,73 @@ mod tests {
         let (cmd, _db) = fixture().await;
         let out = cmd.run("revive Nobody").await.unwrap();
         assert_eq!(out, "unknown character: Nobody");
+    }
+
+    #[tokio::test]
+    async fn issuechocobo_persists_and_is_idempotent() {
+        let (cmd, db) = fixture().await;
+        db.conn_for_test()
+            .call_db(|c| {
+                c.execute(
+                    r"INSERT INTO characters (id, userId, slot, serverId, name)
+                      VALUES (200, 0, 0, 0, 'Chocobo Get')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        // issuechocobo <appearance> <chocobo_name> <player_name>
+        let out = cmd
+            .run("issuechocobo 5 Boco Chocobo Get")
+            .await
+            .unwrap();
+        assert!(out.contains("issued chocobo"), "got {out}");
+        // DB persistence:
+        let (has, app, name): (i64, i64, String) = db
+            .conn_for_test()
+            .call_db(|c| {
+                Ok(c.query_row(
+                    r"SELECT hasChocobo, chocoboAppearance, chocoboName
+                      FROM characters_chocobo WHERE characterId = 200",
+                    [],
+                    |r| {
+                        Ok((
+                            r.get::<_, i64>(0)?,
+                            r.get::<_, i64>(1)?,
+                            r.get::<_, String>(2)?,
+                        ))
+                    },
+                )?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(has, 1);
+        assert_eq!(app, 5);
+        assert_eq!(name, "Boco");
+
+        // Re-issue overwrites (upsert semantics — Meteor's C# uses
+        // ON CONFLICT DO UPDATE).
+        let out2 = cmd
+            .run("issuechocobo 9 Pecopeco Chocobo Get")
+            .await
+            .unwrap();
+        assert!(out2.contains("issued chocobo"), "got {out2}");
+        let (app2, name2): (i64, String) = db
+            .conn_for_test()
+            .call_db(|c| {
+                Ok(c.query_row(
+                    r"SELECT chocoboAppearance, chocoboName
+                      FROM characters_chocobo WHERE characterId = 200",
+                    [],
+                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+                )?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(app2, 9);
+        assert_eq!(name2, "Pecopeco");
     }
 
     #[tokio::test]

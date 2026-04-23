@@ -84,7 +84,11 @@ pub fn build_set_completed_achievements(actor_id: u32, bits: &[bool]) -> SubPack
 
 // --- Mounts / Chocobo -------------------------------------------------------
 
-/// 0x0197 SetCurrentMountChocobo.
+/// 0x0197 SetCurrentMountChocobo. Matches Meteor's commit `8687e431`
+/// body layout exactly: u32 rentalExpireTime at 0, u8 rentalMinLeft at
+/// 4, u8 chocoboAppearance at 5. The earlier `appearance, minLeft,
+/// u16 0, expire` ordering in garlemald was out-of-order vs. Meteor and
+/// the client would have rendered a garbled mount + timer.
 pub fn build_set_current_mount_chocobo(
     actor_id: u32,
     chocobo_appearance: u8,
@@ -93,10 +97,9 @@ pub fn build_set_current_mount_chocobo(
 ) -> SubPacket {
     let mut data = body(0x28);
     let mut c = Cursor::new(&mut data[..]);
-    c.write_u8(chocobo_appearance).unwrap();
-    c.write_u8(rental_min_left).unwrap();
-    c.write_u16::<LittleEndian>(0).unwrap();
     c.write_u32::<LittleEndian>(rental_expire_time).unwrap();
+    c.write_u8(rental_min_left).unwrap();
+    c.write_u8(chocobo_appearance).unwrap();
     SubPacket::new(OP_SET_CURRENT_MOUNT_CHOCOBO, actor_id, data)
 }
 

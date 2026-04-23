@@ -44,6 +44,10 @@ pub const INVALID_ACTORID: u32 = 0xC0000000;
 pub const MAIN_STATE_PASSIVE: u16 = 0x00;
 pub const MAIN_STATE_ACTIVE: u16 = 0x01;
 pub const MAIN_STATE_DEAD: u16 = 0x02;
+/// Retail 1.x mounted state — client flips its own animation and
+/// speed rigs on seeing this. `PopulaceChocoboLender.lua` sets it via
+/// `player:ChangeState(15)`.
+pub const MAIN_STATE_MOUNTED: u16 = 0x0F;
 
 #[derive(Debug, Clone, Default)]
 pub struct BaseActor {
@@ -169,6 +173,19 @@ pub struct CharaState {
     pub birthday_month: u8,
     pub initial_town: u8,
     pub rest_bonus_exp_rate: i32,
+    // Mount / chocobo state — the runtime-mutable slice of
+    // `PlayerState.has_chocobo` / `chocobo_appearance` /
+    // `chocobo_name` / `mount_state` / `rental_expire_time` /
+    // `rental_min_left`. Lives on CharaState so the processor can
+    // mutate it via the registry's `Arc<RwLock<Character>>` — the
+    // matching PlayerState fields stay as the login DTO shape and
+    // are copied into CharaState when the player loads.
+    pub has_chocobo: bool,
+    pub mount_state: u8,
+    pub chocobo_appearance: u8,
+    pub chocobo_name: String,
+    pub rental_expire_time: u32,
+    pub rental_min_left: u8,
     /// Set when `player.lua:onBeginLogin` invokes `player:SetLoginDirector(...)`.
     /// Non-zero → the ScriptBind LuaParam layout switches to the
     /// "tutorial with init director" variant C# `Player.CreateScriptBindPacket`
@@ -224,6 +241,12 @@ impl Default for CharaState {
             birthday_month: 0,
             initial_town: 0,
             rest_bonus_exp_rate: 0,
+            has_chocobo: false,
+            mount_state: 0,
+            chocobo_appearance: 0,
+            chocobo_name: String::new(),
+            rental_expire_time: 0,
+            rental_min_left: 0,
             login_director_actor_id: 0,
             animation_id: 0,
             current_target: 0,

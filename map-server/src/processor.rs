@@ -256,6 +256,14 @@ impl PacketProcessor {
         character.chara.birthday_month = loaded.birth_month;
         character.chara.initial_town = loaded.initial_town;
         character.chara.rest_bonus_exp_rate = loaded.rest_bonus_exp_rate;
+        // Mount/chocobo hydration. The DB load lands them on the
+        // LoadedPlayer's `ChocoboData`; mirror into CharaState so
+        // the runtime chocobo helpers (`apply_issue_chocobo`,
+        // `apply_send_mount_appearance`, …) can mutate via the
+        // registry without routing through Player helpers.
+        character.chara.has_chocobo = loaded.chocobo.has_chocobo;
+        character.chara.chocobo_appearance = loaded.chocobo.chocobo_appearance;
+        character.chara.chocobo_name = loaded.chocobo.chocobo_name.clone();
         character.chara.tp = 0;
 
         // Hydrate the quest journal from the DB. `loaded.quest_scenario`
@@ -1108,6 +1116,25 @@ impl PacketProcessor {
             LC::EndDream { player_id } => {
                 self.apply_end_dream(player_id).await;
             }
+            LC::IssueChocobo {
+                player_id,
+                appearance_id,
+                name,
+            } => {
+                self.apply_issue_chocobo(player_id, appearance_id, name).await;
+            }
+            LC::StartChocoboRental { player_id, minutes } => {
+                self.apply_start_chocobo_rental(player_id, minutes).await;
+            }
+            LC::SetMountState { player_id, state } => {
+                self.apply_set_mount_state(player_id, state).await;
+            }
+            LC::SendMountAppearance { player_id } => {
+                self.apply_send_mount_appearance(player_id).await;
+            }
+            LC::SetChocoboName { player_id, name } => {
+                self.apply_set_chocobo_name(player_id, name).await;
+            }
             other => {
                 tracing::debug!(?other, "login lua cmd (unhandled)");
             }
@@ -1380,6 +1407,148 @@ impl PacketProcessor {
             }
         }
         tracing::info!(player = player_id, "EndDream applied");
+    }
+
+    // =======================================================================
+    // Chocobo lifecycle helpers (Tier 4 #15)
+    //
+    // Session snapshot stores the live mount state, but most of the
+    // mutation is on `Character::chara` (`mount_state`, `has_chocobo`,
+    // `chocobo_appearance`, `chocobo_name`, `rental_expire_time`,
+    // `rental_min_left`). DB persistence is through the existing
+    // `issue_player_chocobo` / `change_player_chocobo_appearance` /
+    // `change_player_chocobo_name` setters.
+    // =======================================================================
+
+    async fn apply_issue_chocobo(&self, player_id: u32, appearance_id: u8, name: String) {
+        let Some(handle) = self.registry.get(player_id).await else {
+            return;
+        };
+        {
+            let mut c = handle.character.write().await;
+            c.chara.has_chocobo = true;
+            c.chara.chocobo_appearance = appearance_id;
+            c.chara.chocobo_name = name.clone();
+        }
+        if let Err(e) = self
+            .db
+            .issue_player_chocobo(player_id, appearance_id, &name)
+            .await
+        {
+            tracing::warn!(player = player_id, err = %e, "IssueChocobo: DB persist failed");
+        }
+        // Client-visible updates: flag + name.
+        if let Some(client) = self.world.client(handle.session_id).await {
+            let name_pkt =
+                crate::packets::send::player::build_set_chocobo_name(handle.actor_id, &name);
+            let has_pkt =
+                crate::packets::send::player::build_set_has_chocobo(handle.actor_id, true);
+            if let Ok(base) = common::BasePacket::create_from_subpacket(&name_pkt, true, false) {
+                client.send_bytes(base.to_bytes()).await;
+            }
+            if let Ok(base) = common::BasePacket::create_from_subpacket(&has_pkt, true, false) {
+                client.send_bytes(base.to_bytes()).await;
+            }
+        }
+        tracing::info!(
+            player = player_id,
+            appearance = appearance_id,
+            name = %name,
+            "IssueChocobo applied",
+        );
+    }
+
+    async fn apply_start_chocobo_rental(&self, player_id: u32, minutes: u8) {
+        let Some(handle) = self.registry.get(player_id).await else {
+            return;
+        };
+        let now = common::utils::unix_timestamp() as u32;
+        let expire = now + (minutes as u32 * 60);
+        {
+            let mut c = handle.character.write().await;
+            c.chara.rental_expire_time = expire;
+            c.chara.rental_min_left = minutes;
+        }
+        tracing::info!(
+            player = player_id,
+            minutes,
+            "StartChocoboRental applied (expire in {minutes}m)",
+        );
+    }
+
+    async fn apply_set_mount_state(&self, player_id: u32, state: u8) {
+        let Some(handle) = self.registry.get(player_id).await else {
+            return;
+        };
+        {
+            let mut c = handle.character.write().await;
+            c.chara.mount_state = state;
+        }
+        // Trigger a full mount appearance broadcast so nearby players
+        // see the mount swap immediately — matches Meteor's
+        // `Player.SetMountState` which calls SendMountAppearance.
+        self.apply_send_mount_appearance(player_id).await;
+    }
+
+    async fn apply_send_mount_appearance(&self, player_id: u32) {
+        let Some(handle) = self.registry.get(player_id).await else {
+            return;
+        };
+        let (mount_state, appearance, expire, min_left) = {
+            let c = handle.character.read().await;
+            (
+                c.chara.mount_state,
+                c.chara.chocobo_appearance,
+                c.chara.rental_expire_time,
+                c.chara.rental_min_left,
+            )
+        };
+        if mount_state == 0 {
+            return; // No mount — nothing to broadcast.
+        }
+        let pkt = match mount_state {
+            1 => crate::packets::send::player::build_set_current_mount_chocobo(
+                handle.actor_id,
+                appearance,
+                expire,
+                min_left,
+            ),
+            2 => crate::packets::send::player::build_set_current_mount_goobbue(
+                handle.actor_id,
+                1,
+            ),
+            _ => return,
+        };
+        if let Some(client) = self.world.client(handle.session_id).await
+            && let Ok(base) = common::BasePacket::create_from_subpacket(&pkt, true, false)
+        {
+            client.send_bytes(base.to_bytes()).await;
+        }
+        // NOTE: nearby-player broadcast uses the zone's spatial
+        // broadcast; deferred to the follow-up sprint that
+        // generalises the broadcast helper. For now self-emit is
+        // sufficient for the owning client to render the mount.
+    }
+
+    async fn apply_set_chocobo_name(&self, player_id: u32, name: String) {
+        let Some(handle) = self.registry.get(player_id).await else {
+            return;
+        };
+        {
+            let mut c = handle.character.write().await;
+            c.chara.chocobo_name = name.clone();
+        }
+        if let Err(e) = self.db.change_player_chocobo_name(player_id, &name).await {
+            tracing::warn!(player = player_id, err = %e, "SetChocoboName: DB persist failed");
+        }
+        if let Some(client) = self.world.client(handle.session_id).await {
+            let pkt =
+                crate::packets::send::player::build_set_chocobo_name(handle.actor_id, &name);
+            if let Ok(base) = common::BasePacket::create_from_subpacket(&pkt, true, false) {
+                client.send_bytes(base.to_bytes()).await;
+            }
+        }
+        tracing::info!(player = player_id, name = %name, "SetChocoboName applied");
     }
 
     async fn apply_dismiss_my_retainer(&self, player_id: u32, retainer_id: u32) {
@@ -2670,8 +2839,12 @@ fn build_player_snapshot_for_login(c: &Character) -> crate::lua::userdata::Playe
         birth_day: c.chara.birthday_day,
         homepoint: 0,
         homepoint_inn: 0,
-        mount_state: 0,
-        has_chocobo: false,
+        mount_state: c.chara.mount_state,
+        has_chocobo: c.chara.has_chocobo,
+        chocobo_appearance: c.chara.chocobo_appearance,
+        chocobo_name: c.chara.chocobo_name.clone(),
+        rental_expire_time: c.chara.rental_expire_time,
+        rental_min_left: c.chara.rental_min_left,
         is_gm: false,
         is_engaged: false,
         is_trading: false,

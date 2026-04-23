@@ -231,6 +231,10 @@ pub struct PlayerSnapshot {
 
     pub mount_state: u8,
     pub has_chocobo: bool,
+    pub chocobo_appearance: u8,
+    pub chocobo_name: String,
+    pub rental_expire_time: u32,
+    pub rental_min_left: u8,
     pub is_gm: bool,
 
     pub is_engaged: bool,
@@ -359,8 +363,16 @@ impl From<&crate::actor::Player> for PlayerSnapshot {
             birth_day: 0,
             homepoint: p.player.homepoint,
             homepoint_inn: p.player.homepoint_inn,
-            mount_state: p.player.mount_state,
-            has_chocobo: p.player.has_chocobo,
+            // Mount/chocobo state moved to CharaState so the processor
+            // can mutate it via the registry. Read from CharaState here
+            // — PlayerState stays as the login DTO shape and is copied
+            // into CharaState at login (see `processor::handle_session_begin`).
+            mount_state: p.character.chara.mount_state,
+            has_chocobo: p.character.chara.has_chocobo,
+            chocobo_appearance: p.character.chara.chocobo_appearance,
+            chocobo_name: p.character.chara.chocobo_name.clone(),
+            rental_expire_time: p.character.chara.rental_expire_time,
+            rental_min_left: p.character.chara.rental_min_left,
             is_gm: p.player.is_gm,
             is_engaged: p.character.is_engaged(),
             is_trading: p.is_trading(),
@@ -425,6 +437,29 @@ impl LuaPlayer {
 }
 
 impl UserData for LuaPlayer {
+    // `PopulaceChocoboLender.lua` and a handful of other scripts
+    // address a few read-only fields via dot syntax (`player.hasChocobo`,
+    // `player.mountState`, `player.currentGil`, …) rather than the
+    // colon-call form (`player:HasChocobo()`). mlua only exposes them
+    // through the __index metamethod if they're registered as
+    // `add_field_method_get`, so we mirror the most-used scalar getters
+    // here. New scripts should prefer the method form when adding a
+    // binding.
+    fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
+        fields.add_field_method_get("hasChocobo", |_, this| {
+            Ok(this.snapshot.has_chocobo)
+        });
+        fields.add_field_method_get("mountState", |_, this| {
+            Ok(this.snapshot.mount_state)
+        });
+        fields.add_field_method_get("chocoboAppearance", |_, this| {
+            Ok(this.snapshot.chocobo_appearance)
+        });
+        fields.add_field_method_get("chocoboName", |_, this| {
+            Ok(this.snapshot.chocobo_name.clone())
+        });
+    }
+
     #[allow(clippy::too_many_lines)]
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         // --- Identity --------------------------------------------------------
@@ -579,6 +614,80 @@ impl UserData for LuaPlayer {
         });
         methods.add_method("HasSpawnedRetainer", |_, this, _: ()| {
             Ok(this.snapshot.spawned_retainer.is_some())
+        });
+
+        // --- Chocobo / mount ------------------------------------------------
+        // `PopulaceChocoboLender.lua` drives all of these on hire /
+        // rent / summon flows. `IssueChocobo(appearance, name)`
+        // records a fresh license; `StartChocoboRental(minutes)`
+        // starts the rental timer; `SetMountState(state)` flips the
+        // mount flag and triggers an appearance broadcast;
+        // `SendMountAppearance()` re-emits the packet (used on
+        // zone-in + appearance change).
+        methods.add_method(
+            "IssueChocobo",
+            |_, this, (appearance, name): (u8, String)| {
+                push(
+                    &this.queue,
+                    LuaCommand::IssueChocobo {
+                        player_id: this.snapshot.actor_id,
+                        appearance_id: appearance,
+                        name,
+                    },
+                );
+                Ok(())
+            },
+        );
+        methods.add_method("StartChocoboRental", |_, this, minutes: u8| {
+            push(
+                &this.queue,
+                LuaCommand::StartChocoboRental {
+                    player_id: this.snapshot.actor_id,
+                    minutes,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method("SetMountState", |_, this, state: u8| {
+            push(
+                &this.queue,
+                LuaCommand::SetMountState {
+                    player_id: this.snapshot.actor_id,
+                    state,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method("SendMountAppearance", |_, this, _: ()| {
+            push(
+                &this.queue,
+                LuaCommand::SendMountAppearance {
+                    player_id: this.snapshot.actor_id,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method("SetChocoboName", |_, this, name: String| {
+            push(
+                &this.queue,
+                LuaCommand::SetChocoboName {
+                    player_id: this.snapshot.actor_id,
+                    name,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method("HasChocobo", |_, this, _: ()| {
+            Ok(this.snapshot.has_chocobo)
+        });
+        methods.add_method("IsChocoboRentalActive", |_, this, _: ()| {
+            Ok(this.snapshot.rental_expire_time != 0)
+        });
+        methods.add_method("GetChocoboAppearance", |_, this, _: ()| {
+            Ok(this.snapshot.chocobo_appearance)
+        });
+        methods.add_method("GetChocoboName", |_, this, _: ()| {
+            Ok(this.snapshot.chocobo_name.clone())
         });
 
         // --- Inn / dream -----------------------------------------------------

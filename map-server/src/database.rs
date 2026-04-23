@@ -2791,6 +2791,26 @@ impl Database {
         Ok(())
     }
 
+    /// Rename the chocobo. Only updates `chocoboName`; appearance
+    /// and ownership flags are untouched.
+    pub async fn change_player_chocobo_name(
+        &self,
+        chara_id: u32,
+        name: &str,
+    ) -> Result<()> {
+        let name = name.to_owned();
+        self.conn
+            .call_db(move |c| {
+                c.execute(
+                    "UPDATE characters_chocobo SET chocoboName = :n WHERE characterId = :cid",
+                    named_params! { ":n": name, ":cid": chara_id },
+                )?;
+                Ok(())
+            })
+            .await?;
+        Ok(())
+    }
+
     pub async fn save_player_status_effects(
         &self,
         chara_id: u32,

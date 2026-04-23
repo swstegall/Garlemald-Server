@@ -3506,6 +3506,240 @@ async fn start_dream_sets_session_id_then_end_clears_it() {
     assert!(world.session(13).await.unwrap().current_dream_id.is_none());
 }
 
+// ---------------------------------------------------------------------------
+// Chocobo — Tier 4 #15
+// ---------------------------------------------------------------------------
+
+/// `issue_player_chocobo` + `load_chocobo` round-trip — confirms the
+/// `characters_chocobo` upsert path works against the SQLite schema
+/// garlemald ships.
+#[tokio::test]
+async fn chocobo_issue_and_load_round_trip() {
+    use common::db::ConnCallExt;
+
+    let db = crate::database::Database::open(tempdb())
+        .await
+        .expect("db stub");
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (101, 0, 0, 0, 'Chocobo Owner')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    db.issue_player_chocobo(101, 5, "Boco").await.unwrap();
+    // Read it back through the private load_chocobo via the public
+    // `load_player_character` path — approximate by raw SQL since
+    // load_chocobo is `async fn` marked private.
+    let (has, app, name): (i64, i64, String) = db
+        .conn_for_test()
+        .call_db(|c| {
+            let row = c.query_row(
+                r"SELECT hasChocobo, chocoboAppearance, chocoboName
+                  FROM characters_chocobo WHERE characterId = 101",
+                [],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?)),
+            )?;
+            Ok(row)
+        })
+        .await
+        .unwrap();
+    assert_eq!(has, 1);
+    assert_eq!(app, 5);
+    assert_eq!(name, "Boco");
+
+    // Rename, appearance-change both persist without touching the
+    // has-chocobo flag.
+    db.change_player_chocobo_name(101, "Pecopeco").await.unwrap();
+    db.change_player_chocobo_appearance(101, 9).await.unwrap();
+    let (has2, app2, name2): (i64, i64, String) = db
+        .conn_for_test()
+        .call_db(|c| {
+            Ok(c.query_row(
+                r"SELECT hasChocobo, chocoboAppearance, chocoboName
+                  FROM characters_chocobo WHERE characterId = 101",
+                [],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?)),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(has2, 1, "has-chocobo flag should persist across rename");
+    assert_eq!(app2, 9);
+    assert_eq!(name2, "Pecopeco");
+}
+
+/// `apply_issue_chocobo` → CharaState mirror + DB write.
+#[tokio::test]
+async fn issue_chocobo_lua_command_mirrors_state() {
+    use crate::actor::Character;
+    use crate::data::Session as MapSession;
+    use crate::lua::LuaCommandKind as LuaCommand;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use common::db::ConnCallExt;
+    use std::sync::Arc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    let lua = Arc::new(crate::lua::LuaEngine::new(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("scripts/lua"),
+    ));
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (55, 0, 0, 0, 'Chocoberry')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let chara = Character::new(55);
+    registry
+        .insert(ActorHandle::new(55, ActorKindTag::Player, 200, 55, chara))
+        .await;
+    world
+        .upsert_session(MapSession {
+            id: 55,
+            current_zone_id: 200,
+            ..MapSession::default()
+        })
+        .await;
+
+    let processor = crate::processor::PacketProcessor {
+        db: db.clone(),
+        world: world.clone(),
+        registry: registry.clone(),
+        lua: Some(lua.clone()),
+    };
+    let handle = registry.get(55).await.unwrap();
+    processor
+        .apply_login_lua_command(
+            &handle,
+            LuaCommand::IssueChocobo {
+                player_id: 55,
+                appearance_id: 7,
+                name: "Boco".into(),
+            },
+        )
+        .await;
+
+    // CharaState now reflects.
+    {
+        let c = handle.character.read().await;
+        assert!(c.chara.has_chocobo);
+        assert_eq!(c.chara.chocobo_appearance, 7);
+        assert_eq!(c.chara.chocobo_name, "Boco");
+    }
+    // DB also reflects.
+    let row: (i64, i64, String) = db
+        .conn_for_test()
+        .call_db(|c| {
+            Ok(c.query_row(
+                r"SELECT hasChocobo, chocoboAppearance, chocoboName
+                  FROM characters_chocobo WHERE characterId = 55",
+                [],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?)),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(row, (1, 7, "Boco".to_string()));
+}
+
+/// Rental-expiry tick — if `rental_expire_time` is in the past the
+/// ticker dismounts the player (flips mount_state + main_state).
+#[tokio::test]
+async fn rental_expiry_tick_dismounts() {
+    use crate::actor::Character;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use crate::runtime::ticker::{GameTicker, TickerConfig};
+    use crate::zone::zone::Zone;
+    use std::sync::Arc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    let zone = Zone::new(
+        900,
+        "RentalTest".to_string(),
+        1,
+        String::new(),
+        0,
+        0,
+        0,
+        false,
+        false,
+        true, // canRideChocobo
+        false,
+        false,
+        None,
+    );
+    world.register_zone(zone).await;
+
+    let mut chara = Character::new(33);
+    chara.base.current_main_state = crate::actor::MAIN_STATE_MOUNTED;
+    chara.chara.new_main_state = crate::actor::MAIN_STATE_MOUNTED;
+    chara.chara.mount_state = 1;
+    chara.chara.chocobo_appearance = 5;
+    // Expire 10 seconds ago.
+    let past = common::utils::unix_timestamp() as u32 - 10;
+    chara.chara.rental_expire_time = past;
+    chara.chara.rental_min_left = 1;
+    registry
+        .insert(ActorHandle::new(33, ActorKindTag::Player, 900, 33, chara))
+        .await;
+
+    let ticker = GameTicker::new(TickerConfig::default(), world, registry.clone(), db);
+    ticker
+        .tick_once((common::utils::unix_timestamp() as u64) * 1000)
+        .await;
+
+    let c = registry.get(33).await.unwrap().character.read().await.clone();
+    assert_eq!(c.chara.rental_expire_time, 0);
+    assert_eq!(c.chara.rental_min_left, 0);
+    assert_eq!(c.chara.mount_state, 0);
+    assert_eq!(c.base.current_main_state, crate::actor::MAIN_STATE_PASSIVE);
+}
+
+/// Parse-all smoke: the existing `PopulaceChocoboLender.lua` script
+/// still loads after the new bindings land.
+#[tokio::test]
+async fn populace_chocobo_lender_lua_parses() {
+    use crate::lua::LuaEngine;
+
+    let script_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .join("scripts/lua");
+    let script = script_root.join("base/chara/npc/populace/PopulaceChocoboLender.lua");
+    if !script.exists() {
+        return;
+    }
+    let engine = LuaEngine::new(&script_root);
+    engine
+        .load_script(&script)
+        .expect("PopulaceChocoboLender.lua should parse after chocobo bindings land");
+}
+
 /// Parse-all smoke: the existing `ObjectBed.lua` script still loads
 /// after the new `player:SetSleeping()` / dream bindings land.
 #[tokio::test]

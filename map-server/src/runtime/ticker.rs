@@ -172,6 +172,29 @@ impl GameTicker {
                     .update(now_ms, owner_view, &*zone_read, &mut battle_outbox);
             }
 
+            // Chocobo rental expiry — port of Meteor commit `8687e431`'s
+            // `Player.Update` arm. If the actor has an active rental
+            // whose expire timestamp has elapsed, dismount and
+            // restore the zone's BGM; otherwise tick down the
+            // UI-visible minutes-remaining counter.
+            {
+                let tick_utc = (now_ms / 1000) as u32;
+                let mut chara = handle.character.write().await;
+                if chara.chara.rental_expire_time != 0 {
+                    if chara.chara.rental_expire_time <= tick_utc {
+                        chara.chara.rental_expire_time = 0;
+                        chara.chara.rental_min_left = 0;
+                        chara.chara.mount_state = 0;
+                        chara.base.current_main_state = crate::actor::MAIN_STATE_PASSIVE;
+                        chara.chara.new_main_state = crate::actor::MAIN_STATE_PASSIVE;
+                    } else {
+                        chara.chara.rental_min_left =
+                            (((chara.chara.rental_expire_time - tick_utc) / 60) as u8)
+                                .min(255);
+                    }
+                }
+            }
+
             for e in status_outbox.drain() {
                 dispatch_status_event(
                     &e,
