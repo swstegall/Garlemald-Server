@@ -76,6 +76,18 @@ pub struct Session {
     /// Lua can inspect via `player:GetSpawnedRetainer()` / the
     /// bell-NPC scripts can address directly.
     pub spawned_retainer: Option<SpawnedRetainer>,
+    /// Set by `ObjectBed.lua`'s `player:SetSleeping()` binding right
+    /// before the script calls `QuitGame`/`Logout`. The zone-in
+    /// packet bundle reads this back on the next session to emit the
+    /// right `SetPlayerDreamPacket` arm, and the processor's logout
+    /// path persists the snap position so the re-login puts the
+    /// player at the bed rather than at the last free-movement
+    /// position. Cleared by the next zone-out / wake event.
+    pub is_sleeping: bool,
+    /// Scripted dream state — `player:StartDream(dreamId)` sets this
+    /// to `Some(dreamId)` and emits the fade-in packet; `EndDream()`
+    /// clears it. `IsDreaming()` reads this via the snapshot.
+    pub current_dream_id: Option<u8>,
 }
 
 /// Runtime-only snapshot of an in-world retainer. Holds the minimal

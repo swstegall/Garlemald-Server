@@ -191,20 +191,57 @@ pub fn build_set_player_item_storage(actor_id: u32) -> SubPacket {
     SubPacket::new(OP_SET_PLAYER_ITEM_STORAGE, actor_id, body(0x50))
 }
 
-/// 0x01A3 SetCutsceneBook — last-watched cutscene plus NPC hint.
+/// 0x01A3 SetCutsceneBook — "rewatch-cutscene" inventory the Path
+/// Companion NPC uses at inns. Matches Meteor's wire layout exactly:
+///
+///   offset 0x01  Int16 magic `2`
+///   offset 0x03  Byte  padding
+///   offset 0x04  Int16 npcActorIdOffset
+///   offset 0x06  Byte  npcSkin
+///   offset 0x07  Byte  npcPersonality
+///   offset 0x08  256 bytes of packed cutscene flags (2048 bits)
+///   offset 0x109 null-terminated ASCII npcName
+///
+/// `cutscene_flags` is `Some(&bits)` with up to 2048 entries (MSB-first
+/// per byte, matching `Utils.ConvertBoolArrayToBinaryStream`). Passing
+/// `None` leaves the flag region zeroed — used when we just want to
+/// refresh the NPC name.
 pub fn build_set_cutscene_book(
     actor_id: u32,
     npc_name: &str,
     npc_actor_id_offset: i16,
     npc_skin: u8,
     npc_personality: u8,
+    cutscene_flags: Option<&[bool]>,
 ) -> SubPacket {
     let mut data = body(0x150);
-    let mut c = Cursor::new(&mut data[..]);
-    write_padded_ascii(&mut c, npc_name, 0x20);
-    c.write_i16::<LittleEndian>(npc_actor_id_offset).unwrap();
-    c.write_u8(npc_skin).unwrap();
-    c.write_u8(npc_personality).unwrap();
+    // Header triple at 0x01.
+    data[0x01] = 2;
+    data[0x02] = 0;
+    data[0x03] = 0;
+    let offset_bytes = npc_actor_id_offset.to_le_bytes();
+    data[0x04] = offset_bytes[0];
+    data[0x05] = offset_bytes[1];
+    data[0x06] = npc_skin;
+    data[0x07] = npc_personality;
+    // Packed flag bitstream at 0x08. 2048 bits / 8 = 256 bytes; clamp
+    // if the caller passes fewer.
+    if let Some(flags) = cutscene_flags {
+        let mut bytes = [0u8; 256];
+        for (i, flag) in flags.iter().enumerate().take(2048) {
+            if *flag {
+                // MSB-first within each byte (matches C# `ConvertBoolArrayToBinaryStream`).
+                bytes[i >> 3] |= 0x80 >> (i & 7);
+            }
+        }
+        data[0x08..0x08 + 256].copy_from_slice(&bytes);
+    }
+    // NPC name at 0x109, null-terminated.
+    let bytes = npc_name.as_bytes();
+    let max = (data.len().saturating_sub(0x109)).saturating_sub(1); // leave room for null
+    let copy = bytes.len().min(max);
+    data[0x109..0x109 + copy].copy_from_slice(&bytes[..copy]);
+    // Terminator is already 0.
     SubPacket::new(OP_SET_CUTSCENE_BOOK, actor_id, data)
 }
 

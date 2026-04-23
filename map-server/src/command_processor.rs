@@ -86,6 +86,10 @@ impl CommandProcessor {
             "hireretainer" => self.handle_hire_retainer(&args).await,
             "dismissretainer" => self.handle_dismiss_retainer(&args).await,
             "listretainers" => self.handle_list_retainers(&args).await,
+            "setsleeping" => self.handle_set_sleeping(&args).await,
+            "dream" => self.handle_dream(&args).await,
+            "wake" => self.handle_wake(&args).await,
+            "accruerest" => self.handle_accrue_rest(&args).await,
             other => format!("unknown command: {other} (args={:?})", args.rest()),
         };
         Ok(response)
@@ -97,7 +101,9 @@ impl CommandProcessor {
          giveexp <qty> <class_id> <name>, \
          hireretainer <retainer_id> <name>, \
          dismissretainer <retainer_id> <name>, \
-         listretainers <name>"
+         listretainers <name>, \
+         setsleeping <name>, dream <id> <name>, wake <name>, \
+         accruerest <minutes> <name>"
             .into()
     }
 
@@ -254,6 +260,120 @@ impl CommandProcessor {
                 out
             }
             Err(e) => format!("listretainers failed: {e}"),
+        }
+    }
+
+    async fn handle_set_sleeping(&self, args: &Args<'_>) -> String {
+        let Some(name) = args.rest_joined(0) else {
+            return "usage: setsleeping <name>".into();
+        };
+        let Some(chara_id) = self.lookup_character_id(&name).await else {
+            return format!("unknown character: {name}");
+        };
+        let Some(handle) = self.registry.get(chara_id).await else {
+            return format!("{name} is not online");
+        };
+        let Some(zone_arc) = self.world.zone(handle.zone_id).await else {
+            return format!("{name}'s zone {} not loaded", handle.zone_id);
+        };
+        let is_inn = { zone_arc.read().await.core.is_inn };
+        if !is_inn {
+            return format!("{name} is not in an inn zone (zone {})", handle.zone_id);
+        }
+        let (x, y, z) = {
+            let c = handle.character.read().await;
+            (c.base.position_x, c.base.position_y, c.base.position_z)
+        };
+        let inn_code = crate::actor::inn::inn_code_from_position((x, y, z), true);
+        let Some(bed) = crate::actor::inn::sleeping_position_for_inn(inn_code) else {
+            return format!("{name} is in zone {} but not in any known inn room", handle.zone_id);
+        };
+        {
+            let mut c = handle.character.write().await;
+            c.base.position_x = bed.0;
+            c.base.position_y = bed.1;
+            c.base.position_z = bed.2;
+            c.base.rotation = bed.3;
+        }
+        format!("snapped {name} to inn-room {inn_code} bed ({:.2}, {:.2}, {:.2})", bed.0, bed.1, bed.2)
+    }
+
+    async fn handle_dream(&self, args: &Args<'_>) -> String {
+        let dream_id = match args.parse_u8(0) {
+            Ok(d) => d,
+            Err(e) => return format!("usage: dream <id> <name> — {e}"),
+        };
+        let Some(name) = args.rest_joined(1) else {
+            return "usage: dream <id> <name>".into();
+        };
+        let Some(chara_id) = self.lookup_character_id(&name).await else {
+            return format!("unknown character: {name}");
+        };
+        let Some(handle) = self.registry.by_session(chara_id).await else {
+            return format!("{name} is not online");
+        };
+        let session_id = handle.session_id;
+        if session_id == 0 {
+            return format!("{name} has no session");
+        }
+        if let Some(mut s) = self.world.session(session_id).await {
+            s.current_dream_id = Some(dream_id);
+            self.world.upsert_session(s).await;
+        }
+        format!("set dream id {dream_id} on {name} (actor {})", handle.actor_id)
+    }
+
+    async fn handle_wake(&self, args: &Args<'_>) -> String {
+        let Some(name) = args.rest_joined(0) else {
+            return "usage: wake <name>".into();
+        };
+        let Some(chara_id) = self.lookup_character_id(&name).await else {
+            return format!("unknown character: {name}");
+        };
+        let Some(handle) = self.registry.by_session(chara_id).await else {
+            return format!("{name} is not online");
+        };
+        let session_id = handle.session_id;
+        if session_id == 0 {
+            return format!("{name} has no session");
+        }
+        if let Some(mut s) = self.world.session(session_id).await {
+            s.current_dream_id = None;
+            s.is_sleeping = false;
+            self.world.upsert_session(s).await;
+        }
+        format!("cleared dream state on {name}")
+    }
+
+    async fn handle_accrue_rest(&self, args: &Args<'_>) -> String {
+        let minutes = match args.parse_i32(0) {
+            Ok(m) => m,
+            Err(e) => return format!("usage: accruerest <minutes> <name> — {e}"),
+        };
+        let Some(name) = args.rest_joined(1) else {
+            return "usage: accruerest <minutes> <name>".into();
+        };
+        let Some(chara_id) = self.lookup_character_id(&name).await else {
+            return format!("unknown character: {name}");
+        };
+        let current = self
+            .db
+            .get_rest_bonus_exp_rate(chara_id)
+            .await
+            .unwrap_or(0);
+        // 1.x rest bonus: +1% per minute at an inn, capped at +100%.
+        // The cap is Meteor's observed max (`Player.restBonus = restBonus`
+        // assignments never exceed 100 in the commit history). A
+        // negative `minutes` argument decays the bonus.
+        let new_total = (current.saturating_add(minutes)).clamp(0, 100);
+        match self.db.set_rest_bonus_exp_rate(chara_id, new_total).await {
+            Ok(()) => {
+                format!(
+                    "rest bonus for {name}: {current}% → {new_total}% ({:+} min)",
+                    minutes
+                )
+            }
+            Err(e) => format!("accruerest failed: {e}"),
         }
     }
 
@@ -435,6 +555,32 @@ mod tests {
         let (cmd, _db) = fixture().await;
         let out = cmd.run("revive Nobody").await.unwrap();
         assert_eq!(out, "unknown character: Nobody");
+    }
+
+    #[tokio::test]
+    async fn accruerest_rolls_up_and_caps_at_hundred() {
+        let (cmd, db) = fixture().await;
+        db.conn_for_test()
+            .call_db(|c| {
+                c.execute(
+                    r"INSERT INTO characters (id, userId, slot, serverId, name)
+                      VALUES (99, 0, 0, 0, 'Inn Sleeper')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        let out = cmd.run("accruerest 30 Inn Sleeper").await.unwrap();
+        assert!(out.contains("0% → 30%"), "got {out}");
+        let out2 = cmd.run("accruerest 90 Inn Sleeper").await.unwrap();
+        assert!(out2.contains("30% → 100%"), "got {out2}");
+        // Decay below zero clamps to 0.
+        let out3 = cmd.run("accruerest -500 Inn Sleeper").await.unwrap();
+        assert!(out3.contains("100% → 0%"), "got {out3}");
+        // Final DB value is 0.
+        assert_eq!(db.get_rest_bonus_exp_rate(99).await.unwrap(), 0);
     }
 
     #[tokio::test]

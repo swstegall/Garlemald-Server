@@ -1099,6 +1099,15 @@ impl PacketProcessor {
             } => {
                 self.apply_dismiss_my_retainer(player_id, retainer_id).await;
             }
+            LC::SetSleeping { player_id } => {
+                self.apply_set_sleeping(player_id).await;
+            }
+            LC::StartDream { player_id, dream_id } => {
+                self.apply_start_dream(player_id, dream_id).await;
+            }
+            LC::EndDream { player_id } => {
+                self.apply_end_dream(player_id).await;
+            }
             other => {
                 tracing::debug!(?other, "login lua cmd (unhandled)");
             }
@@ -1236,6 +1245,141 @@ impl PacketProcessor {
                 "HireRetainer: DB insert failed",
             ),
         }
+    }
+
+    // =======================================================================
+    // Inn / dream helpers (Tier 4 #17)
+    // =======================================================================
+
+    /// `player:SetSleeping()` — called from `ObjectBed.lua` right
+    /// before the client-facing `Logout` / `QuitGame` RPC. Resolves
+    /// the player's zone to its `is_inn` flag, maps their XZ
+    /// position to an inn-room code (1/2/3), and snaps the character
+    /// transform to the canonical bed coord for that room. Zero-inn
+    /// zones + positions outside any room are silently no-oped so
+    /// GM `/bed` spawns from open fields don't teleport the player.
+    async fn apply_set_sleeping(&self, player_id: u32) {
+        let Some(handle) = self.registry.get(player_id).await else {
+            return;
+        };
+        let Some(zone_arc) = self.world.zone(handle.zone_id).await else {
+            return;
+        };
+        let is_inn = { zone_arc.read().await.core.is_inn };
+        if !is_inn {
+            tracing::debug!(player = player_id, "SetSleeping: not in inn zone, no-op");
+            return;
+        }
+        let (x, y, z) = {
+            let c = handle.character.read().await;
+            (c.base.position_x, c.base.position_y, c.base.position_z)
+        };
+        let inn_code = crate::actor::inn::inn_code_from_position((x, y, z), true);
+        let Some(bed) = crate::actor::inn::sleeping_position_for_inn(inn_code) else {
+            tracing::debug!(
+                player = player_id,
+                inn_code,
+                "SetSleeping: player not in any known inn room; skipping snap",
+            );
+            return;
+        };
+        {
+            let mut c = handle.character.write().await;
+            c.base.position_x = bed.0;
+            c.base.position_y = bed.1;
+            c.base.position_z = bed.2;
+            c.base.rotation = bed.3;
+        }
+        // Mark the session as sleeping so the next login reads it.
+        let session_id = handle.session_id;
+        if session_id != 0
+            && let Some(mut session) = self.world.session(session_id).await
+        {
+            session.is_sleeping = true;
+            self.world.upsert_session(session).await;
+        }
+        tracing::info!(
+            player = player_id,
+            inn_code,
+            pos = ?bed,
+            "SetSleeping applied",
+        );
+    }
+
+    async fn apply_start_dream(&self, player_id: u32, dream_id: u8) {
+        let Some(handle) = self.registry.get(player_id).await else {
+            return;
+        };
+        let session_id = handle.session_id;
+        let is_inn = if let Some(zone) = self.world.zone(handle.zone_id).await {
+            zone.read().await.core.is_inn
+        } else {
+            false
+        };
+        let inn_code = {
+            let c = handle.character.read().await;
+            crate::actor::inn::inn_code_from_position(
+                (c.base.position_x, c.base.position_y, c.base.position_z),
+                is_inn,
+            )
+        };
+        if session_id != 0
+            && let Some(mut session) = self.world.session(session_id).await
+        {
+            session.current_dream_id = Some(dream_id);
+            self.world.upsert_session(session).await;
+        }
+        if session_id != 0
+            && let Some(client) = self.world.client(session_id).await
+        {
+            let pkt = crate::packets::send::player::build_set_player_dream(
+                handle.actor_id,
+                dream_id,
+                inn_code,
+            );
+            if let Ok(base) = common::BasePacket::create_from_subpacket(&pkt, true, false) {
+                client.send_bytes(base.to_bytes()).await;
+            }
+        }
+        tracing::info!(player = player_id, dream_id, inn_code, "StartDream applied");
+    }
+
+    async fn apply_end_dream(&self, player_id: u32) {
+        let Some(handle) = self.registry.get(player_id).await else {
+            return;
+        };
+        let session_id = handle.session_id;
+        let is_inn = if let Some(zone) = self.world.zone(handle.zone_id).await {
+            zone.read().await.core.is_inn
+        } else {
+            false
+        };
+        let inn_code = {
+            let c = handle.character.read().await;
+            crate::actor::inn::inn_code_from_position(
+                (c.base.position_x, c.base.position_y, c.base.position_z),
+                is_inn,
+            )
+        };
+        if session_id != 0
+            && let Some(mut session) = self.world.session(session_id).await
+        {
+            session.current_dream_id = None;
+            self.world.upsert_session(session).await;
+        }
+        if session_id != 0
+            && let Some(client) = self.world.client(session_id).await
+        {
+            let pkt = crate::packets::send::player::build_set_player_dream(
+                handle.actor_id,
+                0,
+                inn_code,
+            );
+            if let Ok(base) = common::BasePacket::create_from_subpacket(&pkt, true, false) {
+                client.send_bytes(base.to_bytes()).await;
+            }
+        }
+        tracing::info!(player = player_id, "EndDream applied");
     }
 
     async fn apply_dismiss_my_retainer(&self, player_id: u32, retainer_id: u32) {
@@ -2546,6 +2690,11 @@ fn build_player_snapshot_for_login(c: &Character) -> crate::lua::userdata::Playe
         // Login snapshot never has a retainer spawned — the tutorial
         // hook runs before the player has even hit the world map.
         spawned_retainer: None,
+        // Dream/sleeping state is session-scoped; the caller
+        // overlays via `PlayerSnapshot::set_inn_state` if it has
+        // session access.
+        current_dream_id: None,
+        is_sleeping: false,
     }
 }
 

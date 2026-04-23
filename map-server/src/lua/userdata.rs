@@ -272,6 +272,14 @@ pub struct PlayerSnapshot {
     /// `&Player`, so the processor fills it in before handing the
     /// snapshot to Lua.
     pub spawned_retainer: Option<SpawnedRetainerSnapshot>,
+    /// Mirror of `Session.current_dream_id` — `Some(id)` while the
+    /// client is showing the dream-overlay view, `None` otherwise.
+    /// Read by `player:IsDreaming()` / `player:GetDreamId()`.
+    pub current_dream_id: Option<u8>,
+    /// Mirror of `Session.is_sleeping` — true between a
+    /// `SetSleeping` call and the next wake (zone-out / explicit
+    /// unset). Read by `player:IsSleeping()`.
+    pub is_sleeping: bool,
 }
 
 /// Script-visible view of [`crate::data::SpawnedRetainer`]. Keeps
@@ -374,6 +382,8 @@ impl From<&crate::actor::Player> for PlayerSnapshot {
             // processor overlay the real snapshot after the fact
             // via `PlayerSnapshot::set_spawned_retainer`.
             spawned_retainer: None,
+            current_dream_id: None,
+            is_sleeping: false,
         }
     }
 }
@@ -390,6 +400,15 @@ impl PlayerSnapshot {
             position: r.position,
             rotation: r.rotation,
         });
+    }
+
+    /// Overlay the inn/dream snapshot sourced from
+    /// [`crate::data::Session::current_dream_id`] +
+    /// [`crate::data::Session::is_sleeping`]. Called alongside
+    /// `set_spawned_retainer` when the session is available.
+    pub fn set_inn_state(&mut self, current_dream_id: Option<u8>, is_sleeping: bool) {
+        self.current_dream_id = current_dream_id;
+        self.is_sleeping = is_sleeping;
     }
 }
 
@@ -560,6 +579,52 @@ impl UserData for LuaPlayer {
         });
         methods.add_method("HasSpawnedRetainer", |_, this, _: ()| {
             Ok(this.snapshot.spawned_retainer.is_some())
+        });
+
+        // --- Inn / dream -----------------------------------------------------
+        // `ObjectBed.lua::onEventStarted` calls `player:SetSleeping()`
+        // right before `QuitGame` / `Logout`; the processor snaps the
+        // character's transform to the bed coord of whichever inn
+        // room they're in (1/2/3). No-ops outside an inn zone.
+        methods.add_method("SetSleeping", |_, this, _: ()| {
+            push(
+                &this.queue,
+                LuaCommand::SetSleeping {
+                    player_id: this.snapshot.actor_id,
+                },
+            );
+            Ok(())
+        });
+        // Hildibrand `etc5*` quest scripts drive dream cutscenes via
+        // these. `dreamId` is the visual-effect id (retail 1.x
+        // known codes: 0x16 for the standard inn fade).
+        methods.add_method("StartDream", |_, this, dream_id: u8| {
+            push(
+                &this.queue,
+                LuaCommand::StartDream {
+                    player_id: this.snapshot.actor_id,
+                    dream_id,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method("EndDream", |_, this, _: ()| {
+            push(
+                &this.queue,
+                LuaCommand::EndDream {
+                    player_id: this.snapshot.actor_id,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method("IsDreaming", |_, this, _: ()| {
+            Ok(this.snapshot.current_dream_id.is_some())
+        });
+        methods.add_method("GetDreamId", |_, this, _: ()| {
+            Ok(this.snapshot.current_dream_id.unwrap_or(0))
+        });
+        methods.add_method("IsSleeping", |_, this, _: ()| {
+            Ok(this.snapshot.is_sleeping)
         });
         // Returns `LuaRetainer | nil`. The snapshot already has the
         // retainer fields; we copy them into a userdata with a no-op

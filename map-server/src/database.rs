@@ -2863,6 +2863,42 @@ impl Database {
         Ok(())
     }
 
+    /// Persist the rest-bonus accumulator for a character. The value
+    /// is the "bonus multiplier %" the client displays in the UI (0 =
+    /// no bonus, 100 = +100% XP on the next gain). Stored in the
+    /// `characters.restBonus` column.
+    pub async fn set_rest_bonus_exp_rate(&self, chara_id: u32, rate: i32) -> Result<()> {
+        self.conn
+            .call_db(move |c| {
+                c.execute(
+                    r"UPDATE characters SET restBonus = :r WHERE id = :cid",
+                    named_params! { ":r": rate, ":cid": chara_id },
+                )?;
+                Ok(())
+            })
+            .await?;
+        Ok(())
+    }
+
+    /// Round-trip read for `characters.restBonus`. Returns `0` when
+    /// the character row is missing so callers don't have to unwrap.
+    pub async fn get_rest_bonus_exp_rate(&self, chara_id: u32) -> Result<i32> {
+        let v = self
+            .conn
+            .call_db(move |c| {
+                let v: Option<i32> = c
+                    .query_row(
+                        r"SELECT restBonus FROM characters WHERE id = :cid",
+                        named_params! { ":cid": chara_id },
+                        |r| r.get::<_, i32>(0),
+                    )
+                    .optional()?;
+                Ok(v.unwrap_or(0))
+            })
+            .await?;
+        Ok(v)
+    }
+
     /// Port of `Database.LoadRetainer` — find the Nth retainer a
     /// character owns (1-indexed, matching Meteor's caller at
     /// `Player.SpawnMyRetainer`), returning the full catalog template.

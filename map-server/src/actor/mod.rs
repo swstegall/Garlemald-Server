@@ -29,6 +29,7 @@
 
 pub mod chara;
 pub mod event_conditions;
+pub mod inn;
 pub mod modifier;
 pub mod player;
 pub mod quest;

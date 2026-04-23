@@ -3228,3 +3228,301 @@ async fn ported_retainer_scripts_parse() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Inn / dream — Tier 4 #17
+// ---------------------------------------------------------------------------
+
+/// `restBonus` column round-trip via the new setter/getter pair.
+#[tokio::test]
+async fn rest_bonus_setter_round_trips() {
+    use common::db::ConnCallExt;
+
+    let db = crate::database::Database::open(tempdb())
+        .await
+        .expect("db stub");
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (11, 0, 0, 0, 'Sleeper')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    // Default value is 0.
+    assert_eq!(db.get_rest_bonus_exp_rate(11).await.unwrap(), 0);
+    // Write then read.
+    db.set_rest_bonus_exp_rate(11, 35).await.unwrap();
+    assert_eq!(db.get_rest_bonus_exp_rate(11).await.unwrap(), 35);
+    // Overwrite with a larger value.
+    db.set_rest_bonus_exp_rate(11, 100).await.unwrap();
+    assert_eq!(db.get_rest_bonus_exp_rate(11).await.unwrap(), 100);
+    // Decay to zero.
+    db.set_rest_bonus_exp_rate(11, 0).await.unwrap();
+    assert_eq!(db.get_rest_bonus_exp_rate(11).await.unwrap(), 0);
+    // Unknown character just returns 0, doesn't error.
+    assert_eq!(db.get_rest_bonus_exp_rate(999).await.unwrap(), 0);
+}
+
+/// `apply_set_sleeping` snaps the character transform to the bed
+/// coord when the player is inside an inn room. Outside an inn
+/// room (or a non-inn zone) the character position is untouched.
+#[tokio::test]
+async fn set_sleeping_snaps_to_bed_when_in_inn_room() {
+    use crate::actor::Character;
+    use crate::data::Session as MapSession;
+    use crate::lua::LuaCommandKind as LuaCommand;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use crate::zone::zone::Zone;
+    use std::sync::Arc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    let lua = Arc::new(crate::lua::LuaEngine::new(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("scripts/lua"),
+    ));
+
+    // Install an inn zone (zone 700, is_inn = true).
+    let mut zone = Zone::new(
+        700,
+        "InnZone".to_string(),
+        1,
+        String::new(),
+        0,
+        0,
+        0,
+        false,
+        true, // is_inn
+        false,
+        false,
+        false,
+        None,
+    );
+    zone.core.class_path = "/Area/Inn".to_string();
+    zone.core.class_name = "Inn".to_string();
+    world.register_zone(zone).await;
+
+    // Player sitting at origin — inn-room code 3.
+    let mut chara = Character::new(42);
+    chara.base.position_x = 3.5;
+    chara.base.position_y = 0.0;
+    chara.base.position_z = -2.0;
+    registry
+        .insert(ActorHandle::new(42, ActorKindTag::Player, 700, 42, chara))
+        .await;
+    world
+        .upsert_session(MapSession {
+            id: 42,
+            current_zone_id: 700,
+            ..MapSession::default()
+        })
+        .await;
+
+    let processor = crate::processor::PacketProcessor {
+        db: db.clone(),
+        world: world.clone(),
+        registry: registry.clone(),
+        lua: Some(lua.clone()),
+    };
+    let handle = registry.get(42).await.unwrap();
+
+    // Before: default position.
+    {
+        let c = handle.character.read().await;
+        assert!((c.base.position_x - 3.5).abs() < 0.01);
+    }
+
+    processor
+        .apply_login_lua_command(&handle, LuaCommand::SetSleeping { player_id: 42 })
+        .await;
+
+    // After: snapped to INN3_BED.
+    let (x, y, z, rot) = {
+        let c = handle.character.read().await;
+        (c.base.position_x, c.base.position_y, c.base.position_z, c.base.rotation)
+    };
+    assert!((x - (-2.65)).abs() < 0.01, "expected INN3_BED.x, got {x}");
+    assert!((y - 0.0).abs() < 0.01);
+    assert!((z - 3.94).abs() < 0.01, "expected INN3_BED.z, got {z}");
+    assert!((rot - 1.52).abs() < 0.01);
+    // Session flag flipped.
+    assert!(world.session(42).await.unwrap().is_sleeping);
+}
+
+/// `apply_set_sleeping` no-ops outside any inn room — the player's
+/// position stays where it was.
+#[tokio::test]
+async fn set_sleeping_no_ops_outside_inn_rooms() {
+    use crate::actor::Character;
+    use crate::data::Session as MapSession;
+    use crate::lua::LuaCommandKind as LuaCommand;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use crate::zone::zone::Zone;
+    use std::sync::Arc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    let lua = Arc::new(crate::lua::LuaEngine::new(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("scripts/lua"),
+    ));
+
+    // Non-inn zone.
+    let mut zone = Zone::new(
+        701,
+        "OpenField".to_string(),
+        1,
+        String::new(),
+        0,
+        0,
+        0,
+        false,
+        false,
+        false,
+        false,
+        false,
+        None,
+    );
+    zone.core.class_path = "/Area/OpenField".to_string();
+    zone.core.class_name = "OpenField".to_string();
+    world.register_zone(zone).await;
+
+    let mut chara = Character::new(7);
+    chara.base.position_x = 100.0;
+    chara.base.position_y = 0.0;
+    chara.base.position_z = 100.0;
+    registry
+        .insert(ActorHandle::new(7, ActorKindTag::Player, 701, 7, chara))
+        .await;
+    world
+        .upsert_session(MapSession {
+            id: 7,
+            current_zone_id: 701,
+            ..MapSession::default()
+        })
+        .await;
+
+    let processor = crate::processor::PacketProcessor {
+        db: db.clone(),
+        world: world.clone(),
+        registry: registry.clone(),
+        lua: Some(lua.clone()),
+    };
+    let handle = registry.get(7).await.unwrap();
+
+    processor
+        .apply_login_lua_command(&handle, LuaCommand::SetSleeping { player_id: 7 })
+        .await;
+
+    let (x, z) = {
+        let c = handle.character.read().await;
+        (c.base.position_x, c.base.position_z)
+    };
+    assert!((x - 100.0).abs() < 0.01, "non-inn zone should not snap: got x={x}");
+    assert!((z - 100.0).abs() < 0.01);
+    assert!(!world.session(7).await.unwrap().is_sleeping);
+}
+
+/// `apply_start_dream` / `apply_end_dream` flip the session's
+/// `current_dream_id` state; the follow-on `PlayerSnapshot::set_inn_state`
+/// overlay would expose it to Lua via `player:IsDreaming()`.
+#[tokio::test]
+async fn start_dream_sets_session_id_then_end_clears_it() {
+    use crate::actor::Character;
+    use crate::data::Session as MapSession;
+    use crate::lua::LuaCommandKind as LuaCommand;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use std::sync::Arc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    let lua = Arc::new(crate::lua::LuaEngine::new(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("scripts/lua"),
+    ));
+
+    let chara = Character::new(13);
+    registry
+        .insert(ActorHandle::new(13, ActorKindTag::Player, 200, 13, chara))
+        .await;
+    world
+        .upsert_session(MapSession {
+            id: 13,
+            current_zone_id: 200,
+            ..MapSession::default()
+        })
+        .await;
+
+    let processor = crate::processor::PacketProcessor {
+        db,
+        world: world.clone(),
+        registry: registry.clone(),
+        lua: Some(lua),
+    };
+    let handle = registry.get(13).await.unwrap();
+
+    assert!(world.session(13).await.unwrap().current_dream_id.is_none());
+    processor
+        .apply_login_lua_command(
+            &handle,
+            LuaCommand::StartDream {
+                player_id: 13,
+                dream_id: 0x16,
+            },
+        )
+        .await;
+    assert_eq!(
+        world.session(13).await.unwrap().current_dream_id,
+        Some(0x16),
+    );
+    processor
+        .apply_login_lua_command(&handle, LuaCommand::EndDream { player_id: 13 })
+        .await;
+    assert!(world.session(13).await.unwrap().current_dream_id.is_none());
+}
+
+/// Parse-all smoke: the existing `ObjectBed.lua` script still loads
+/// after the new `player:SetSleeping()` / dream bindings land.
+#[tokio::test]
+async fn object_bed_lua_parses() {
+    use crate::lua::LuaEngine;
+
+    let script_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .join("scripts/lua");
+    let script = script_root.join("base/chara/npc/object/ObjectBed.lua");
+    if !script.exists() {
+        return;
+    }
+    let engine = LuaEngine::new(&script_root);
+    engine
+        .load_script(&script)
+        .expect("ObjectBed.lua should parse after SetSleeping binding land");
+}
+

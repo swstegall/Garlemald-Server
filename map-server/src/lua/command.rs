@@ -304,6 +304,31 @@ pub enum LuaCommand {
         player_id: u32,
         retainer_id: u32,
     },
+    /// `player:SetSleeping()` — snap the player's transform to the
+    /// bed of whatever inn room they're currently in (Limsa /
+    /// Gridania / Ul'dah — three rooms per inn). Called from
+    /// `ObjectBed.lua::onEventStarted` right before the logout /
+    /// quit-game RPC so the re-login drops the player onto the
+    /// bed rather than wherever they clicked from. Silently no-ops
+    /// outside an inn zone.
+    SetSleeping {
+        player_id: u32,
+    },
+    /// `player:StartDream(dreamId)` — begin a scripted dream
+    /// sequence. Sets the session's `current_dream_id` + emits
+    /// `SetPlayerDreamPacket(dreamId, innCode)` so the client
+    /// fades to the dream-overlay view. The Hildibrand `etc5*`
+    /// quests call this to drive their inn cutscenes.
+    StartDream {
+        player_id: u32,
+        dream_id: u8,
+    },
+    /// `player:EndDream()` — wake the player up. Clears the
+    /// session's dream state and emits `SetPlayerDreamPacket(0, innCode)`
+    /// so the client restores the normal view.
+    EndDream {
+        player_id: u32,
+    },
     LogError(String),
 }
 

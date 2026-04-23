@@ -1344,6 +1344,39 @@ impl WorldManager {
             ],
         );
 
+        // Inn packets — port of `Player.Create0x132Packets` inn arm
+        // (Meteor commit `42f0046e`). When the player lands in an inn
+        // zone, the client expects:
+        //   SetCutsceneBook — unlocks all 2048 "rewatched cutscene"
+        //   flags on the Path Companion sNPC so every past cutscene
+        //   shows up as rewatchable.
+        //   SetPlayerDream  — a pair of bytes (dreamId, innId). `0x16`
+        //   is the standard "player asleep" id used during login to
+        //   an inn; innId is derived from position via
+        //   `inn_code_from_position`.
+        if is_inn {
+            let inn_code = crate::actor::inn::inn_code_from_position(
+                (position.x, position.y, position.z),
+                true,
+            );
+            let all_flags = [true; 2048];
+            subpackets.push(
+                crate::packets::send::player::build_set_cutscene_book(
+                    actor_id,
+                    "<Path Companion>",
+                    11,
+                    1,
+                    1,
+                    Some(&all_flags[..]),
+                ),
+            );
+            // Meteor's Create0x132 passes dreamId = 0x16 as the
+            // "just logged into an inn" scene and innId = inn code.
+            subpackets.push(crate::packets::send::player::build_set_player_dream(
+                actor_id, 0x16, inn_code,
+            ));
+        }
+
         let _ = &main_state;
         let _ = &login_director_spec;
 
