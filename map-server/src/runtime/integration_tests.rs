@@ -3194,12 +3194,148 @@ async fn spawn_my_retainer_populates_session_snapshot() {
     assert_eq!(sr.retainer_id, 1001);
     assert_eq!(sr.actor_class_id, 3_001_101);
     assert_eq!(sr.name, "Wienta");
+    // Live-spawn fields: actor id deterministic from
+    // `(4 << 28) | ((zone & 0x1FF) << 19) | 0x40000 | (player & 0x3FFFF)`.
+    // Player 7 in zone 200 → `0x40000000 | (0xC8 << 19=0x6400000)
+    //   | 0x40000 | 7 = 0x46440007`.
+    assert_eq!(
+        sr.actor_id, 0x4644_0007,
+        "retainer actor id must follow the (kind|zone|local) encoding",
+    );
+    // class_path comes from the JOIN to gamedata_actor_class — empty
+    // means the seed row is missing or the JOIN regressed.
+    assert!(
+        !sr.class_path.is_empty(),
+        "retainer template should carry a non-empty class_path after the gamedata join",
+    );
 
     // Despawn clears it.
     processor
         .apply_login_lua_command(&handle, LuaCommand::DespawnMyRetainer { player_id: 7 })
         .await;
     assert!(world.session(7).await.unwrap().spawned_retainer.is_none());
+}
+
+/// Live-spawn end-to-end: with a ClientHandle wired, `SpawnMyRetainer`
+/// emits the NPC spawn bundle to the owner's session (multi-packet —
+/// AddActor + Speed + Position + Appearance + Name + State + …) and
+/// `DespawnMyRetainer` emits a single `RemoveActor` for the same
+/// allocated id.
+#[tokio::test]
+async fn spawn_my_retainer_sends_spawn_bundle_and_despawn_sends_remove() {
+    use crate::actor::{Character, Player};
+    use crate::data::{ClientHandle, Session as MapSession};
+    use crate::lua::LuaCommandKind as LuaCommand;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use common::db::ConnCallExt;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (8, 0, 0, 0, 'RetainerLiveSpawn')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    db.hire_retainer(8, 1001).await.unwrap();
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let lua = Arc::new(crate::lua::LuaEngine::new("/nonexistent"));
+
+    let mut chara = Character::new(8);
+    chara.base.position_x = 12.0;
+    chara.base.position_y = 0.0;
+    chara.base.position_z = 12.0;
+    chara.base.zone_id = 200;
+    let _player = Player::with_helpers(8);
+    registry
+        .insert(ActorHandle::new(8, ActorKindTag::Player, 200, 8, chara))
+        .await;
+    world
+        .upsert_session(MapSession {
+            id: 8,
+            current_zone_id: 200,
+            ..MapSession::default()
+        })
+        .await;
+
+    // Capture all packets the dispatcher would send to session 8.
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(64);
+    world.register_client(8, ClientHandle::new(8, tx)).await;
+
+    let processor = crate::processor::PacketProcessor {
+        db: db.clone(),
+        world: world.clone(),
+        registry: registry.clone(),
+        lua: Some(lua.clone()),
+    };
+    let handle = registry.get(8).await.expect("player handle");
+
+    processor
+        .apply_login_lua_command(
+            &handle,
+            LuaCommand::SpawnMyRetainer {
+                player_id: 8,
+                bell_actor_id: 0,
+                bell_position: (10.0, 0.0, 10.0),
+                retainer_index: 1,
+            },
+        )
+        .await;
+
+    // Drain — the spawn bundle is multi-packet (push_npc_spawn emits
+    // 11 subpackets per Meteor's `Npc.GetSpawnPackets`). The exact
+    // count varies if `event_conditions` are populated; assert ≥ 8 to
+    // catch outright drops without locking the test to one shape.
+    let mut spawn_packets = Vec::new();
+    while let Ok(p) = rx.try_recv() {
+        spawn_packets.push(p);
+    }
+    assert!(
+        spawn_packets.len() >= 8,
+        "spawn bundle should emit ≥ 8 subpackets, got {}",
+        spawn_packets.len(),
+    );
+
+    // Snapshot persists with the allocated actor id.
+    let snap = world
+        .session(8)
+        .await
+        .unwrap()
+        .spawned_retainer
+        .expect("retainer snapshot");
+    let retainer_actor_id = snap.actor_id;
+    assert_ne!(retainer_actor_id, 0);
+    assert_eq!(retainer_actor_id >> 28, 4, "retainer kind nibble = 4 (NPC)");
+
+    // Despawn fires exactly one RemoveActor packet — opcode 0x00CB.
+    processor
+        .apply_login_lua_command(&handle, LuaCommand::DespawnMyRetainer { player_id: 8 })
+        .await;
+    let mut despawn_packets = Vec::new();
+    while let Ok(p) = rx.try_recv() {
+        despawn_packets.push(p);
+    }
+    assert_eq!(
+        despawn_packets.len(),
+        1,
+        "despawn should emit exactly one packet (RemoveActor)",
+    );
+    assert!(
+        world.session(8).await.unwrap().spawned_retainer.is_none(),
+        "snapshot cleared after despawn",
+    );
 }
 
 /// Parse-all smoke: the three ported retainer scripts still load —

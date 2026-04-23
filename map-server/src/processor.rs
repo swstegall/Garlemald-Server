@@ -1206,18 +1206,26 @@ impl PacketProcessor {
                 return;
             }
         };
-        // Reproduce Meteor's 1-unit-toward-player offset math. The
-        // player's snapshot position lives on the Character; if we
-        // can't read it, just drop the retainer on top of the bell —
-        // the client tolerates a zero-distance offset.
+        if template.class_path.is_empty() {
+            tracing::warn!(
+                player = player_id,
+                retainer_id = template.id,
+                actor_class_id = template.actor_class_id,
+                "SpawnMyRetainer: retainer template has no actor class — `gamedata_actor_class` row missing",
+            );
+            return;
+        }
+        // Reproduce Meteor's 1-unit-toward-player offset math
+        // (Player.cs:2010-2012). Read the player's snapshot once.
+        // `handle.zone_id` is the registry's canonical zone — read
+        // from there rather than `c.base.zone_id` because login flow
+        // writes to the handle first and the Character mirror lags
+        // until the next position update.
         let player_pos = {
             let c = handle.character.read().await;
-            (
-                c.base.position_x,
-                c.base.position_y,
-                c.base.position_z,
-            )
+            (c.base.position_x, c.base.position_y, c.base.position_z)
         };
+        let zone_id = handle.zone_id;
         let (px, _py, pz) = player_pos;
         let (bx, by, bz) = bell_position;
         let dx = px - bx;
@@ -1231,25 +1239,109 @@ impl PacketProcessor {
         } else {
             (bx, bz, 0.0)
         };
+
+        // Allocate a deterministic actor id for the retainer.
+        // Mirrors Meteor's `(4 << 28 | zone << 19 | 0)` formula
+        // (Npc.cs:60), but garlemald's `ActorRegistry` is shared across
+        // sessions so the C# trick of reusing `local_id = 0` for every
+        // retainer would collide. Stash the player's actor id in the
+        // bottom 18 bits with the high bit set — the boot spawn pass
+        // hands out sequential local ids starting at 1, so the
+        // `0x40000` marker keeps retainer ids out of that range while
+        // staying unique per (player, zone).
+        let local_id = 0x40000u32 | (player_id & 0x3FFFF);
+        let retainer_actor_id = (4u32 << 28) | ((zone_id & 0x1FF) << 19) | local_id;
+
+        // Build a one-off `Character` shaped like an Npc just to
+        // satisfy the `push_npc_spawn` packet emitter. We don't insert
+        // it into `ActorRegistry`/`Zone` — retainers are session-
+        // private (only the owner sees them) and Meteor handles
+        // event-routing by checking `session.GetActor().currentSpawnedRetainer.actorId`
+        // before falling back to world lookup
+        // (PacketProcessor.cs:205). A future `EventStart` handler can
+        // do the same against `session.spawned_retainer`.
+        let actor_class = crate::npc::ActorClass::new(
+            template.actor_class_id,
+            template.class_path.clone(),
+            0,
+            0,
+            "",
+            0,
+            0,
+            0,
+        );
+        let mut npc = crate::npc::Npc::new(
+            local_id,
+            &actor_class,
+            "myretainer",
+            zone_id,
+            pos_x,
+            by,
+            pos_z,
+            rotation,
+            0,
+            0,
+            Some(template.name.clone()),
+        );
+        npc.character.base.actor_id = retainer_actor_id;
+        npc.character.chara.actor_class_id = template.actor_class_id;
+        // Retail uses `_rtnre{actorId:x7}` for the wire actor name.
+        npc.character.base.actor_name =
+            format!("_rtnre{:07x}", retainer_actor_id);
+
+        // Resolve the zone name for `generate_npc_actor_name` inside
+        // `push_npc_spawn`. Missing zone is non-fatal — the helper
+        // tolerates an empty string by using the raw class path.
+        let zone_name = match self.world.zone(zone_id).await {
+            Some(z) => z.read().await.core.zone_name.clone(),
+            None => String::new(),
+        };
+
+        // Emit the standard NPC spawn bundle, but ONLY to the owner's
+        // session. Retainers are personal-instance actors — Meteor
+        // never broadcasts them via `BroadcastPacketAroundActor`, only
+        // queues onto the owner's `actorInstanceList` in
+        // `Session.UpdateInstance` (Session.cs:134).
+        let bundle = crate::world_manager::build_retainer_spawn_bundle(
+            &npc.character,
+            &zone_name,
+        );
+        if let Some(client) = self.world.client(session_id).await {
+            for mut sub in bundle {
+                sub.set_target_id(session_id);
+                client.send_bytes(sub.to_bytes()).await;
+            }
+        } else {
+            tracing::debug!(
+                player = player_id,
+                session = session_id,
+                "SpawnMyRetainer: no client handle — packets dropped (session disconnected mid-summon)",
+            );
+        }
+
         let Some(mut session) = self.world.session(session_id).await else {
             return;
         };
         session.spawned_retainer = Some(crate::data::SpawnedRetainer {
             retainer_id: template.id,
             actor_class_id: template.actor_class_id,
+            class_path: template.class_path.clone(),
             name: template.name.clone(),
+            actor_id: retainer_actor_id,
             position: (pos_x, by, pos_z),
             rotation,
-            sent_spawn_packets: false,
+            sent_spawn_packets: true,
         });
         self.world.upsert_session(session).await;
-        let _ = bell_actor_id; // reserved for the live-spawn pass (bell → Group member)
+        let _ = bell_actor_id; // reserved for the bell → RetainerMeetingRelationGroup member packet (group.rs port deferred)
         tracing::info!(
             player = player_id,
             idx = retainer_index,
             retainer_id = template.id,
+            actor_id = format!("0x{:08X}", retainer_actor_id),
             name = %template.name,
-            "SpawnMyRetainer applied (session snapshot set; live actor spawn deferred)",
+            class_path = %template.class_path,
+            "SpawnMyRetainer applied (live actor packets sent to owner session)",
         );
     }
 
@@ -1264,11 +1356,24 @@ impl PacketProcessor {
         let Some(mut session) = self.world.session(session_id).await else {
             return;
         };
-        let had = session.spawned_retainer.take().is_some();
+        let despawned = session.spawned_retainer.take();
         self.world.upsert_session(session).await;
+
+        // Send `RemoveActor` to the owning session so the client drops
+        // the retainer model. Mirror of Meteor's Session.cs:121-125
+        // "actorInstanceList[i] is Retainer && currentSpawnedRetainer
+        // == null → QueuePacket(RemoveActorPacket)" sweep.
+        if let Some(snap) = &despawned
+            && let Some(client) = self.world.client(session_id).await
+        {
+            let mut sub = tx::actor::build_remove_actor(snap.actor_id);
+            sub.set_target_id(session_id);
+            client.send_bytes(sub.to_bytes()).await;
+        }
         tracing::info!(
             player = player_id,
-            had,
+            had = despawned.is_some(),
+            actor_id = ?despawned.as_ref().map(|s| format!("0x{:08X}", s.actor_id)),
             "DespawnMyRetainer applied",
         );
     }

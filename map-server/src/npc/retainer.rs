@@ -42,6 +42,11 @@ pub struct RetainerTemplate {
     pub id: u32,
     pub name: String,
     pub actor_class_id: u32,
+    /// `gamedata_actor_class.classPath` for the retainer's
+    /// `actor_class_id`. Threaded onto the template so the live-spawn
+    /// path can build the `ActorInstantiate` ScriptBind LuaParams
+    /// without a second DB round-trip per summon.
+    pub class_path: String,
     /// Short-code offset used by the client to pick the right
     /// "conversation data" row — see C# `Retainer.cdIDOffset`.
     pub cd_id_offset: u8,

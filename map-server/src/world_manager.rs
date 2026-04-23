@@ -240,6 +240,22 @@ fn generate_npc_actor_name(
     )
 }
 
+/// Public entry for the retainer-spawn path
+/// (`processor::apply_spawn_my_retainer`). Wraps `push_npc_spawn` so
+/// the processor can build a session-targeted spawn bundle for a
+/// session-private retainer without taking a hard dep on the private
+/// helper. `priv_level=0` matches a root-zone spawn (retainers always
+/// spawn in the player's current zone, never in a private area
+/// instance).
+pub fn build_retainer_spawn_bundle(
+    character: &crate::actor::Character,
+    zone_name: &str,
+) -> Vec<common::subpacket::SubPacket> {
+    let mut out = Vec::new();
+    push_npc_spawn(&mut out, character, zone_name, 0);
+    out
+}
+
 fn push_npc_spawn(
     subpackets: &mut Vec<common::subpacket::SubPacket>,
     character: &crate::actor::Character,

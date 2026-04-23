@@ -3079,9 +3079,11 @@ impl Database {
                 let v = c
                     .query_row(
                         r"SELECT sr.id, sr.name, sr.actorClassId, sr.cdIDOffset,
-                                 sr.placeName, sr.conditions, sr.level
+                                 sr.placeName, sr.conditions, sr.level,
+                                 COALESCE(ac.classPath, '')
                           FROM characters_retainers cr
                           INNER JOIN server_retainers sr ON cr.retainerId = sr.id
+                          LEFT JOIN gamedata_actor_class ac ON sr.actorClassId = ac.id
                           WHERE cr.characterId = :cid
                           ORDER BY sr.id
                           LIMIT 1 OFFSET :off",
@@ -3103,6 +3105,7 @@ impl Database {
                                     .clamp(0, 255)
                                     as u8,
                                 level: r.get::<_, i64>(6).unwrap_or(0).clamp(0, 255) as u8,
+                                class_path: r.get::<_, String>(7).unwrap_or_default(),
                             })
                         },
                     )
@@ -3125,9 +3128,11 @@ impl Database {
             .call_db(move |c| {
                 let mut stmt = c.prepare(
                     r"SELECT sr.id, sr.name, sr.actorClassId, sr.cdIDOffset,
-                             sr.placeName, sr.conditions, sr.level
+                             sr.placeName, sr.conditions, sr.level,
+                             COALESCE(ac.classPath, '')
                       FROM characters_retainers cr
                       INNER JOIN server_retainers sr ON cr.retainerId = sr.id
+                      LEFT JOIN gamedata_actor_class ac ON sr.actorClassId = ac.id
                       WHERE cr.characterId = :cid
                       ORDER BY sr.id",
                 )?;
@@ -3149,6 +3154,7 @@ impl Database {
                                 .clamp(0, 255)
                                 as u8,
                             level: r.get::<_, i64>(6).unwrap_or(0).clamp(0, 255) as u8,
+                            class_path: r.get::<_, String>(7).unwrap_or_default(),
                         })
                     })?
                     .collect::<rusqlite::Result<_>>()?;
@@ -3217,10 +3223,12 @@ impl Database {
             .call_db(move |c| {
                 let v = c
                     .query_row(
-                        r"SELECT id, name, actorClassId, cdIDOffset,
-                                 placeName, conditions, level
-                          FROM server_retainers
-                          WHERE id = :rid",
+                        r"SELECT sr.id, sr.name, sr.actorClassId, sr.cdIDOffset,
+                                 sr.placeName, sr.conditions, sr.level,
+                                 COALESCE(ac.classPath, '')
+                          FROM server_retainers sr
+                          LEFT JOIN gamedata_actor_class ac ON sr.actorClassId = ac.id
+                          WHERE sr.id = :rid",
                         named_params! { ":rid": retainer_id },
                         |r| {
                             Ok(crate::npc::RetainerTemplate {
@@ -3239,6 +3247,7 @@ impl Database {
                                     .clamp(0, 255)
                                     as u8,
                                 level: r.get::<_, i64>(6).unwrap_or(0).clamp(0, 255) as u8,
+                                class_path: r.get::<_, String>(7).unwrap_or_default(),
                             })
                         },
                     )

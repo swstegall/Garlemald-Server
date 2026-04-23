@@ -100,8 +100,22 @@ pub struct SpawnedRetainer {
     pub retainer_id: u32,
     /// `server_retainers.actorClassId` — drives the 3D model / race.
     pub actor_class_id: u32,
+    /// `gamedata_actor_class.classPath` for the spawned retainer.
+    /// Cached on the spawn snapshot so the despawn-side code (and
+    /// any future event-route lookup) doesn't need a second DB round-
+    /// trip per summon.
+    pub class_path: String,
     /// `server_retainers.name` — display name over the retainer's head.
     pub name: String,
+    /// Composite actor id allocated by `apply_spawn_my_retainer` —
+    /// `(4 << 28) | (zone << 19) | local_id` where `local_id` is
+    /// derived from the owning player's actor id (top bit set so the
+    /// boot spawn pass's sequential ids never collide). Routes the
+    /// despawn `RemoveActor` and lets `EventStart` handlers detect
+    /// "this is my retainer" by id-matching against the session
+    /// snapshot, mirroring Meteor's `playerActor.currentSpawnedRetainer.actorId`
+    /// check at `Map Server/PacketProcessor.cs:205`.
+    pub actor_id: u32,
     /// Position in the zone, relative to the retainer bell the player
     /// clicked. Matches the `SpawnMyRetainer(bell, idx)` math in C#.
     pub position: (f32, f32, f32),
