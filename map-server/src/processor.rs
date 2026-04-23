@@ -1183,6 +1183,22 @@ impl PacketProcessor {
             } => {
                 self.apply_dismiss_my_retainer(player_id, retainer_id).await;
             }
+            LC::AddRetainerBazaarItem {
+                retainer_id,
+                item_id,
+                quantity,
+                quality,
+                price_gil,
+            } => {
+                self.apply_add_retainer_bazaar_item(
+                    retainer_id,
+                    item_id,
+                    quantity,
+                    quality,
+                    price_gil,
+                )
+                .await;
+            }
             LC::SetSleeping { player_id } => {
                 self.apply_set_sleeping(player_id).await;
             }
@@ -2414,6 +2430,44 @@ impl PacketProcessor {
             cost,
             "PromoteGC applied",
         );
+    }
+
+    async fn apply_add_retainer_bazaar_item(
+        &self,
+        retainer_id: u32,
+        item_id: u32,
+        quantity: i32,
+        quality: u8,
+        price_gil: i32,
+    ) {
+        match self
+            .db
+            .add_retainer_bazaar_item(retainer_id, item_id, quantity, quality, price_gil)
+            .await
+        {
+            Ok(server_item_id) => {
+                tracing::info!(
+                    retainer_id,
+                    item_id,
+                    quantity,
+                    quality,
+                    price_gil,
+                    server_item_id,
+                    "AddRetainerBazaarItem applied",
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    retainer_id,
+                    item_id,
+                    quantity,
+                    quality,
+                    price_gil,
+                    err = %e,
+                    "AddRetainerBazaarItem: DB upsert failed",
+                );
+            }
+        }
     }
 
     async fn apply_dismiss_my_retainer(&self, player_id: u32, retainer_id: u32) {

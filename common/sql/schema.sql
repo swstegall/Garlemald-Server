@@ -246,6 +246,19 @@ CREATE TABLE IF NOT EXISTS characters_retainers (
     PRIMARY KEY (characterId, retainerId)
 );
 
+CREATE TABLE IF NOT EXISTS characters_retainer_bazaar (
+    retainerId   INTEGER NOT NULL,
+    serverItemId INTEGER NOT NULL,
+    slot         INTEGER NOT NULL,
+    priceGil     INTEGER NOT NULL DEFAULT 0,
+    createdUtc   INTEGER NOT NULL DEFAULT 0,
+    updatedUtc   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (retainerId, serverItemId)
+);
+
+CREATE INDEX IF NOT EXISTS idx_retainer_bazaar_retainer
+    ON characters_retainer_bazaar (retainerId);
+
 CREATE TABLE IF NOT EXISTS characters_linkshells (
     characterId INTEGER NOT NULL,
     linkshellId INTEGER NOT NULL,

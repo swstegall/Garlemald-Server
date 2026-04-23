@@ -7980,3 +7980,207 @@ async fn object_bed_lua_parses() {
         .expect("ObjectBed.lua should parse after SetSleeping binding land");
 }
 
+/// `add_retainer_bazaar_item` → `list_retainer_bazaar` round-trip.
+/// Covers fresh-insert slot assignment, merge semantics on a
+/// `(item, quality, price)` match, separate slot when price differs,
+/// separate slot when quality differs, and removal clearing both the
+/// bazaar row and the backing server_items row.
+#[tokio::test]
+async fn retainer_bazaar_add_list_remove_round_trip() {
+    let db = crate::database::Database::open(tempdb())
+        .await
+        .expect("db stub");
+
+    // Fresh retainer owns nothing.
+    assert!(
+        db.list_retainer_bazaar(1001).await.unwrap().is_empty(),
+        "empty retainer should list no bazaar rows",
+    );
+
+    // First listing: iron ingot x5 at 120 gil.
+    let total_a = db
+        .add_retainer_bazaar_item(1001, /*item=*/ 5100, /*delta=*/ 5, /*quality=*/ 0, 120)
+        .await
+        .unwrap();
+    assert_eq!(total_a, 5, "fresh insert returns seed quantity");
+
+    let rows = db.list_retainer_bazaar(1001).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].item_id, 5100);
+    assert_eq!(rows[0].quantity, 5);
+    assert_eq!(rows[0].price_gil, 120);
+    assert_eq!(rows[0].slot, 0);
+
+    // Same (item, quality, price) → merge into existing stack.
+    let total_b = db
+        .add_retainer_bazaar_item(1001, 5100, 3, 0, 120)
+        .await
+        .unwrap();
+    assert_eq!(total_b, 8, "same (item, quality, price) should merge stacks");
+    let rows = db.list_retainer_bazaar(1001).await.unwrap();
+    assert_eq!(rows.len(), 1, "merge must not spawn a new slot");
+    assert_eq!(rows[0].quantity, 8);
+
+    // Different price → separate slot.
+    db.add_retainer_bazaar_item(1001, 5100, 2, 0, 150)
+        .await
+        .unwrap();
+    // Different quality → separate slot.
+    db.add_retainer_bazaar_item(1001, 5100, 1, 1, 120)
+        .await
+        .unwrap();
+    let rows = db.list_retainer_bazaar(1001).await.unwrap();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].slot, 0);
+    assert_eq!(rows[1].slot, 1);
+    assert_eq!(rows[2].slot, 2);
+
+    // Scoping: listings for retainer 1001 don't leak into retainer 1002.
+    db.add_retainer_bazaar_item(1002, 5100, 1, 0, 120)
+        .await
+        .unwrap();
+    let other = db.list_retainer_bazaar(1002).await.unwrap();
+    assert_eq!(other.len(), 1, "retainer 1002 sees only its own listing");
+    assert_eq!(
+        db.list_retainer_bazaar(1001).await.unwrap().len(),
+        3,
+        "adding to retainer 1002 must not touch retainer 1001",
+    );
+
+    // Remove the first listing — cleanup deletes the bazaar row AND
+    // the backing server_items row (so `server_items` storage doesn't
+    // leak for bought-out stacks).
+    let target_sid = rows[0].server_item_id;
+    assert!(db.remove_retainer_bazaar_item(1001, target_sid).await.unwrap());
+    assert!(
+        !db.remove_retainer_bazaar_item(1001, target_sid).await.unwrap(),
+        "second remove on the same id should be a no-op",
+    );
+    let after = db.list_retainer_bazaar(1001).await.unwrap();
+    assert_eq!(after.len(), 2, "one removal should leave two rows");
+    assert!(
+        !after.iter().any(|r| r.server_item_id == target_sid),
+        "removed row must be gone",
+    );
+
+    // Ignore empty / zero-item no-ops without failing.
+    assert_eq!(
+        db.add_retainer_bazaar_item(1001, 0, 1, 0, 10).await.unwrap(),
+        0,
+        "item_catalog_id=0 is a no-op",
+    );
+    assert_eq!(
+        db.add_retainer_bazaar_item(1001, 5100, 0, 0, 10).await.unwrap(),
+        0,
+        "delta=0 is a no-op",
+    );
+}
+
+/// `LuaCommand::AddRetainerBazaarItem` drains through
+/// `apply_runtime_lua_commands` and lands as a row in
+/// `characters_retainer_bazaar`. Exercises the runtime-drain arm that
+/// scheduler-resumed director coroutines would hit when emitting
+/// bazaar-seed commands from outside the PacketProcessor.
+#[tokio::test]
+async fn add_retainer_bazaar_item_command_drains_to_db() {
+    use crate::lua::LuaCommandKind;
+    use crate::runtime::quest_apply::apply_runtime_lua_commands;
+
+    let db = crate::database::Database::open(tempdb())
+        .await
+        .expect("db stub");
+    let registry = ActorRegistry::new();
+    let world = WorldManager::new();
+
+    let cmds = vec![
+        LuaCommandKind::AddRetainerBazaarItem {
+            retainer_id: 2001,
+            item_id: 5100,
+            quantity: 4,
+            quality: 0,
+            price_gil: 200,
+        },
+        LuaCommandKind::AddRetainerBazaarItem {
+            retainer_id: 2001,
+            item_id: 5100,
+            quantity: 2,
+            quality: 0,
+            price_gil: 200,
+        },
+    ];
+    apply_runtime_lua_commands(cmds, &registry, &db, &world, None).await;
+
+    let rows = db.list_retainer_bazaar(2001).await.unwrap();
+    assert_eq!(rows.len(), 1, "two adds on same triple should merge");
+    assert_eq!(rows[0].quantity, 6);
+    assert_eq!(rows[0].item_id, 5100);
+    assert_eq!(rows[0].price_gil, 200);
+}
+
+/// `retainer:AddBazaarItem(...)` on the `LuaRetainer` userdata pushes a
+/// `LuaCommand::AddRetainerBazaarItem` onto the queue with the right
+/// shape. Regression guard — mlua `add_method` is last-write-wins for
+/// same-named methods, so a future registration collision would silently
+/// shadow this binding; the test asserts the command queue entry lands
+/// as wired above.
+#[tokio::test]
+async fn lua_retainer_add_bazaar_item_binding_queues_command() {
+    use crate::lua::LuaCommandQueue;
+    use crate::lua::userdata::LuaRetainer;
+    use mlua::Lua;
+
+    let lua = Lua::new();
+    let queue = LuaCommandQueue::new();
+    let retainer = LuaRetainer {
+        retainer_id: 3001,
+        actor_class_id: 3_001_101,
+        name: "Wienta".to_string(),
+        position: (0.0, 0.0, 0.0),
+        rotation: 0.0,
+        queue: queue.clone(),
+    };
+
+    lua.globals().set("retainer", retainer).unwrap();
+    // AddBazaarItem(itemId, qty, quality, priceGil).
+    lua.load("retainer:AddBazaarItem(5100, 3, 0, 150)")
+        .exec()
+        .expect("AddBazaarItem binding must exist");
+    // Default qty=1, quality=0, price=0 cover the optional args.
+    lua.load("retainer:AddBazaarItem(5101)").exec().unwrap();
+
+    let cmds = LuaCommandQueue::drain(&queue);
+    assert_eq!(cmds.len(), 2, "each call should push one command");
+    match &cmds[0] {
+        crate::lua::LuaCommandKind::AddRetainerBazaarItem {
+            retainer_id,
+            item_id,
+            quantity,
+            quality,
+            price_gil,
+        } => {
+            assert_eq!(*retainer_id, 3001);
+            assert_eq!(*item_id, 5100);
+            assert_eq!(*quantity, 3);
+            assert_eq!(*quality, 0);
+            assert_eq!(*price_gil, 150);
+        }
+        other => panic!("expected AddRetainerBazaarItem, got {other:?}"),
+    }
+    match &cmds[1] {
+        crate::lua::LuaCommandKind::AddRetainerBazaarItem {
+            retainer_id,
+            item_id,
+            quantity,
+            quality,
+            price_gil,
+        } => {
+            assert_eq!(*retainer_id, 3001);
+            assert_eq!(*item_id, 5101);
+            assert_eq!(*quantity, 1, "qty default should be 1");
+            assert_eq!(*quality, 0);
+            assert_eq!(*price_gil, 0, "price default should be 0");
+        }
+        other => panic!("expected AddRetainerBazaarItem, got {other:?}"),
+    }
+}
+

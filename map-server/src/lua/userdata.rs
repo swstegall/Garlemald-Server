@@ -2015,6 +2015,36 @@ impl UserData for LuaRetainer {
                 inventory_snapshot: Vec::new(),
             })
         });
+        // `retainer:AddBazaarItem(itemId, qty, quality, priceGil)` —
+        // list a stack of `itemId` at `priceGil` gil per unit in the
+        // retainer's BAZAAR bag. Emits `LuaCommand::AddRetainerBazaarItem`
+        // which the processor drains into the `characters_retainer_bazaar`
+        // table. Quality defaults to 0 (common) and quantity defaults to
+        // 1 — matches the C# `Retainer.AddBazaarItem` convenience shape
+        // used by staff bazaar-seed scripts.
+        methods.add_method(
+            "AddBazaarItem",
+            |_,
+             this,
+             (item_id, qty, quality, price_gil): (
+                u32,
+                Option<i32>,
+                Option<u8>,
+                Option<i32>,
+            )| {
+                push(
+                    &this.queue,
+                    LuaCommand::AddRetainerBazaarItem {
+                        retainer_id: this.retainer_id,
+                        item_id,
+                        quantity: qty.unwrap_or(1),
+                        quality: quality.unwrap_or(0),
+                        price_gil: price_gil.unwrap_or(0),
+                    },
+                );
+                Ok(())
+            },
+        );
     }
 }
 

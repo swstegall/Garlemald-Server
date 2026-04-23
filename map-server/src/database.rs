@@ -3266,4 +3266,219 @@ impl Database {
     ) -> Result<()> {
         self.set_level(chara_id, class_id, level).await
     }
+
+    // =======================================================================
+    // Retainer bazaar inventory (Tier 4 #14 bazaar follow-up).
+    //
+    // Retainer bazaar listings live in `characters_retainer_bazaar`,
+    // scoped to `retainerId` (the `server_retainers.id` — e.g. 1001 /
+    // 1002 / 1003 — NOT the composite actor id allocated at live-spawn
+    // time). Scoping by retainerId keeps listings alive across
+    // despawn/respawn cycles and player logouts. Each listing links
+    // to a `server_items` row for the actual stack (quantity +
+    // quality) + carries a per-item gil price the BazaarDeal flow
+    // will read.
+    // =======================================================================
+
+    /// Add a new bazaar listing (or merge into a matching open stack
+    /// at the same price). Returns the new stack's total quantity.
+    /// If a stack of the same `(item_catalog_id, quality, price_gil)`
+    /// triple already exists on this retainer, the new delta merges
+    /// in — matches retail's "stackable bazaar" behavior where two
+    /// identically-priced copper-ore listings coalesce rather than
+    /// occupying separate slots. Different price ⇒ new slot.
+    ///
+    /// Allocates a new `server_items` row for a fresh listing; re-
+    /// uses the existing row on merge. Slot assignment follows the
+    /// same `MAX(slot)+1` pattern the NORMAL-bag paths use.
+    pub async fn add_retainer_bazaar_item(
+        &self,
+        retainer_id: u32,
+        item_catalog_id: u32,
+        delta: i32,
+        quality: u8,
+        price_gil: i32,
+    ) -> Result<i32> {
+        if delta <= 0 || item_catalog_id == 0 {
+            return Ok(0);
+        }
+        let now_utc = common::utils::unix_timestamp() as i64;
+        let total = self
+            .conn
+            .call_db(move |c| {
+                let tx = c.transaction()?;
+                // Merge into an existing stack only when the
+                // `(item, quality, price)` triple matches — different
+                // prices force separate slots since the bazaar UI
+                // renders one row per price point.
+                let existing: Option<(i64, i32, i32)> = tx
+                    .query_row(
+                        r"SELECT si.id, si.quantity, rb.slot
+                          FROM characters_retainer_bazaar rb
+                          INNER JOIN server_items si ON rb.serverItemId = si.id
+                          WHERE rb.retainerId = :rid
+                            AND rb.priceGil = :p
+                            AND si.itemId = :iid
+                            AND si.quality = :q",
+                        named_params! {
+                            ":rid": retainer_id,
+                            ":p": price_gil,
+                            ":iid": item_catalog_id,
+                            ":q": quality as i64,
+                        },
+                        |r| Ok((
+                            r.get::<_, i64>(0)?,
+                            r.get::<_, i32>(1)?,
+                            r.get::<_, i32>(2)?,
+                        )),
+                    )
+                    .optional()?;
+                let new_total = match existing {
+                    Some((sid, qty, _slot)) => {
+                        let updated = qty.saturating_add(delta).max(0);
+                        tx.execute(
+                            "UPDATE server_items SET quantity = :q WHERE id = :id",
+                            named_params! { ":q": updated, ":id": sid },
+                        )?;
+                        tx.execute(
+                            r"UPDATE characters_retainer_bazaar
+                                 SET updatedUtc = :now
+                                 WHERE retainerId = :rid AND serverItemId = :sid",
+                            named_params! {
+                                ":now": now_utc,
+                                ":rid": retainer_id,
+                                ":sid": sid,
+                            },
+                        )?;
+                        updated
+                    }
+                    None => {
+                        let seed = delta.max(0);
+                        tx.execute(
+                            r"INSERT INTO server_items (itemId, quantity, quality)
+                              VALUES (:iid, :q, :qual)",
+                            named_params! {
+                                ":iid": item_catalog_id,
+                                ":q": seed,
+                                ":qual": quality as i64,
+                            },
+                        )?;
+                        let sid = tx.last_insert_rowid();
+                        let next_slot: i32 = tx
+                            .query_row(
+                                r"SELECT COALESCE(MAX(slot), -1) + 1
+                                  FROM characters_retainer_bazaar
+                                  WHERE retainerId = :rid",
+                                named_params! { ":rid": retainer_id },
+                                |r| r.get(0),
+                            )
+                            .unwrap_or(0);
+                        tx.execute(
+                            r"INSERT INTO characters_retainer_bazaar
+                                (retainerId, serverItemId, slot, priceGil, createdUtc, updatedUtc)
+                              VALUES (:rid, :sid, :slot, :price, :now, :now)",
+                            named_params! {
+                                ":rid": retainer_id,
+                                ":sid": sid,
+                                ":slot": next_slot,
+                                ":price": price_gil,
+                                ":now": now_utc,
+                            },
+                        )?;
+                        seed
+                    }
+                };
+                tx.commit()?;
+                Ok(new_total)
+            })
+            .await?;
+        Ok(total)
+    }
+
+    /// Read back every bazaar listing for `retainer_id`, ordered by
+    /// slot (the order the client would render them in).
+    pub async fn list_retainer_bazaar(
+        &self,
+        retainer_id: u32,
+    ) -> Result<Vec<RetainerBazaarListing>> {
+        let rows = self
+            .conn
+            .call_db(move |c| {
+                let mut stmt = c.prepare(
+                    r"SELECT rb.serverItemId, si.itemId, si.quantity, si.quality,
+                             rb.slot, rb.priceGil, rb.createdUtc, rb.updatedUtc
+                      FROM characters_retainer_bazaar rb
+                      INNER JOIN server_items si ON rb.serverItemId = si.id
+                      WHERE rb.retainerId = :rid
+                      ORDER BY rb.slot",
+                )?;
+                let rows: Vec<RetainerBazaarListing> = stmt
+                    .query_map(named_params! { ":rid": retainer_id }, |r| {
+                        Ok(RetainerBazaarListing {
+                            server_item_id: r.get::<_, i64>(0)? as u64,
+                            item_id: r.get::<_, u32>(1)?,
+                            quantity: r.get::<_, i32>(2)?,
+                            quality: r.get::<_, i64>(3)?.clamp(0, 255) as u8,
+                            slot: r.get::<_, i32>(4)?,
+                            price_gil: r.get::<_, i32>(5)?,
+                            created_utc: r.get::<_, i64>(6)?.max(0) as u32,
+                            updated_utc: r.get::<_, i64>(7)?.max(0) as u32,
+                        })
+                    })?
+                    .collect::<rusqlite::Result<_>>()?;
+                Ok(rows)
+            })
+            .await?;
+        Ok(rows)
+    }
+
+    /// Remove a specific listing — called from the BazaarUndeal flow
+    /// (owner retracts) and the BazaarDeal flow (buyer bought the
+    /// last of the stack). Returns `true` if a row was actually
+    /// deleted. The backing `server_items` row is deleted too so
+    /// the stack's storage doesn't leak.
+    pub async fn remove_retainer_bazaar_item(
+        &self,
+        retainer_id: u32,
+        server_item_id: u64,
+    ) -> Result<bool> {
+        let removed = self
+            .conn
+            .call_db(move |c| {
+                let tx = c.transaction()?;
+                let affected = tx.execute(
+                    r"DELETE FROM characters_retainer_bazaar
+                      WHERE retainerId = :rid AND serverItemId = :sid",
+                    named_params! {
+                        ":rid": retainer_id,
+                        ":sid": server_item_id as i64,
+                    },
+                )?;
+                if affected > 0 {
+                    tx.execute(
+                        "DELETE FROM server_items WHERE id = :sid",
+                        named_params! { ":sid": server_item_id as i64 },
+                    )?;
+                }
+                tx.commit()?;
+                Ok(affected > 0)
+            })
+            .await?;
+        Ok(removed)
+    }
+}
+
+/// One row of the retainer bazaar — surfaces through `list_retainer_bazaar`
+/// for the BazaarCheck packet emitter (when that lands) and GM
+/// command inspection in the meantime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetainerBazaarListing {
+    pub server_item_id: u64,
+    pub item_id: u32,
+    pub quantity: i32,
+    pub quality: u8,
+    pub slot: i32,
+    pub price_gil: i32,
+    pub created_utc: u32,
+    pub updated_utc: u32,
 }

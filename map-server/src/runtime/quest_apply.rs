@@ -286,7 +286,62 @@ pub async fn apply_runtime_lua_command(
             .await;
             true
         }
+        LC::AddRetainerBazaarItem {
+            retainer_id,
+            item_id,
+            quantity,
+            quality,
+            price_gil,
+        } => {
+            apply_add_retainer_bazaar_item(retainer_id, item_id, quantity, quality, price_gil, db)
+                .await;
+            true
+        }
         _ => false,
+    }
+}
+
+/// Runtime-side counterpart to the processor's
+/// `apply_add_retainer_bazaar_item`: transactional upsert into the
+/// `characters_retainer_bazaar` table. Exposed for scheduler-resumed
+/// coroutines so a parked retainer-bazaar-seed script (rare, but
+/// plausible once NPC-vendor bazaar seeding moves into director main
+/// coroutines) can drain without reaching back through the
+/// PacketProcessor.
+async fn apply_add_retainer_bazaar_item(
+    retainer_id: u32,
+    item_id: u32,
+    quantity: i32,
+    quality: u8,
+    price_gil: i32,
+    db: &Database,
+) {
+    match db
+        .add_retainer_bazaar_item(retainer_id, item_id, quantity, quality, price_gil)
+        .await
+    {
+        Ok(server_item_id) => {
+            tracing::info!(
+                retainer_id,
+                item_id,
+                quantity,
+                quality,
+                price_gil,
+                server_item_id,
+                "AddRetainerBazaarItem applied (runtime)",
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                retainer_id,
+                item_id,
+                quantity,
+                quality,
+                price_gil,
+                err = %e,
+                "AddRetainerBazaarItem (runtime): DB upsert failed",
+            );
+        }
     }
 }
 

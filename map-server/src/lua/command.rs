@@ -467,6 +467,23 @@ pub enum LuaCommand {
     SyncAllInfo {
         director_actor_id: u32,
     },
+    /// `retainer:AddBazaarItem(itemId, qty, quality, priceGil)` —
+    /// add a bazaar listing to the owning retainer. Bazaar
+    /// infrastructure foundation: persists to
+    /// `characters_retainer_bazaar` via
+    /// `Database::add_retainer_bazaar_item` and merges into an
+    /// existing same-price stack if one exists. The full
+    /// BazaarCheck/Deal/Trade packet family sits on top of this
+    /// storage layer; the packets can't ship without the listings
+    /// actually persisting across summon/despawn cycles, so this
+    /// came first.
+    AddRetainerBazaarItem {
+        retainer_id: u32,
+        item_id: u32,
+        quantity: i32,
+        quality: u8,
+        price_gil: i32,
+    },
     /// `director:StartDirector(spawn_immediate)` — the script-level
     /// trigger that kicks off a director's `main(thisDirector)`
     /// coroutine. Mirrors Meteor's `Director.StartDirector`
