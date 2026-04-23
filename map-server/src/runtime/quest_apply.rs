@@ -172,8 +172,187 @@ pub async fn apply_runtime_lua_command(
             apply_quest_on_notice(player_id, quest_id, registry, db, world, lua).await;
             true
         }
+        // --- Director outbox ops --------------------------------------
+        //
+        // Leve-side bindings — `director:StartGuildleve()`,
+        // `EndGuildleve`, etc. The runtime drain needs to handle
+        // these because scheduler-resumed director `main` coroutines
+        // (parked on `wait(N)`) emit them from inside
+        // `runtime::ticker::tick_once`, where the PacketProcessor's
+        // `apply_login_lua_command` isn't reachable. Same lock +
+        // drain shape as the processor's `apply_director_outbox_op`
+        // helper.
+        LC::EndGuildleve {
+            director_actor_id,
+            was_completed,
+        } => {
+            let now = common::utils::unix_timestamp() as u32;
+            apply_director_outbox_op(
+                director_actor_id,
+                "EndGuildleve",
+                registry,
+                db,
+                world,
+                |gld, ob| gld.end_guildleve(now, was_completed, ob),
+            )
+            .await;
+            true
+        }
+        LC::StartGuildleve { director_actor_id } => {
+            let now = common::utils::unix_timestamp() as u32;
+            apply_director_outbox_op(
+                director_actor_id,
+                "StartGuildleve",
+                registry,
+                db,
+                world,
+                |gld, ob| gld.start_guildleve(now, ob),
+            )
+            .await;
+            true
+        }
+        LC::AbandonGuildleve { director_actor_id } => {
+            let now = common::utils::unix_timestamp() as u32;
+            apply_director_outbox_op(
+                director_actor_id,
+                "AbandonGuildleve",
+                registry,
+                db,
+                world,
+                |gld, ob| gld.abandon_guildleve(now, ob),
+            )
+            .await;
+            true
+        }
+        LC::UpdateAimNumNow {
+            director_actor_id,
+            index,
+            value,
+        } => {
+            apply_director_outbox_op(
+                director_actor_id,
+                "UpdateAimNumNow",
+                registry,
+                db,
+                world,
+                |gld, ob| gld.update_aim_num_now(index, value, ob),
+            )
+            .await;
+            true
+        }
+        LC::UpdateUiState {
+            director_actor_id,
+            index,
+            value,
+        } => {
+            apply_director_outbox_op(
+                director_actor_id,
+                "UpdateUIState",
+                registry,
+                db,
+                world,
+                |gld, ob| gld.update_ui_state(index, value, ob),
+            )
+            .await;
+            true
+        }
+        LC::UpdateMarkers {
+            director_actor_id,
+            index,
+            x,
+            y,
+            z,
+        } => {
+            apply_director_outbox_op(
+                director_actor_id,
+                "UpdateMarkers",
+                registry,
+                db,
+                world,
+                |gld, ob| gld.update_marker(index, x, y, z, ob),
+            )
+            .await;
+            true
+        }
+        LC::SyncAllInfo { director_actor_id } => {
+            apply_director_outbox_op(
+                director_actor_id,
+                "SyncAllInfo",
+                registry,
+                db,
+                world,
+                |gld, ob| gld.sync_all(ob),
+            )
+            .await;
+            true
+        }
         _ => false,
     }
+}
+
+/// Runtime-side counterpart to the processor's
+/// `apply_director_outbox_op`: lets `apply_runtime_lua_command`
+/// route `EndGuildleve` / `StartGuildleve` / `UpdateAimNumNow` /
+/// etc. without reaching back through the processor. Same semantics:
+/// single zone write lock, roster snapshot BEFORE `mutate` (so ops
+/// that tear down the director — `abandon_guildleve`, which clears
+/// `player_members` via `Director::end` — still fan to the right
+/// recipients), immediate drain via `dispatch_director_event`.
+async fn apply_director_outbox_op<F>(
+    director_actor_id: u32,
+    op_name: &'static str,
+    registry: &ActorRegistry,
+    db: &Database,
+    world: &WorldManager,
+    mutate: F,
+) where
+    F: FnOnce(&mut crate::director::GuildleveDirector, &mut crate::director::DirectorOutbox),
+{
+    let zone_id = (director_actor_id >> 19) & 0x1FF;
+    let Some(zone_arc) = world.zone(zone_id).await else {
+        tracing::debug!(
+            director = director_actor_id,
+            zone = zone_id,
+            op = op_name,
+            "runtime director-outbox op skipped — zone not loaded",
+        );
+        return;
+    };
+    let (events, player_members) = {
+        let mut zone = zone_arc.write().await;
+        let Some(gld) = zone.core.guildleve_director_mut(director_actor_id) else {
+            tracing::debug!(
+                director = director_actor_id,
+                zone = zone_id,
+                op = op_name,
+                "runtime director-outbox op skipped — guildleve director not on zone",
+            );
+            return;
+        };
+        let roster: Vec<u32> = gld.base.player_members().collect();
+        let mut outbox = crate::director::DirectorOutbox::new();
+        mutate(gld, &mut outbox);
+        (outbox.drain(), roster)
+    };
+    // Pass the Arc<Database> through so `award_leve_completion_seals`
+    // can persist on the `GuildleveEnded { was_completed: true }`
+    // branch.
+    for e in events {
+        crate::director::dispatch_director_event(
+            &e,
+            &player_members,
+            registry,
+            world,
+            Some(db),
+        )
+        .await;
+    }
+    tracing::debug!(
+        director = director_actor_id,
+        zone = zone_id,
+        op = op_name,
+        "runtime director-outbox op applied",
+    );
 }
 
 /// Bulk-drain helper — calls [`apply_runtime_lua_command`] for every

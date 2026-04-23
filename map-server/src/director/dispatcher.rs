@@ -51,7 +51,7 @@ pub async fn dispatch_director_event(
     player_members: &[u32],
     registry: &ActorRegistry,
     world: &WorldManager,
-    db: Option<&Arc<Database>>,
+    db: Option<&Database>,
 ) {
     match event {
         DirectorEvent::DirectorStarted {

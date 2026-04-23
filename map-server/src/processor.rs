@@ -792,6 +792,20 @@ impl PacketProcessor {
                 })
                 .await;
             }
+            LC::StartDirectorMain {
+                director_actor_id,
+                class_path,
+                director_name,
+                spawn_immediate,
+            } => {
+                self.apply_start_director_main(
+                    director_actor_id,
+                    class_path,
+                    director_name,
+                    spawn_immediate,
+                )
+                .await;
+            }
             LC::SetLoginDirector {
                 player_id,
                 director_actor_id,
@@ -2032,6 +2046,103 @@ impl PacketProcessor {
             gld.abandon_guildleve(now_unix_s, ob);
         })
         .await;
+    }
+
+    /// `director:StartDirector(spawn_immediate)` — spawn the
+    /// director's `main(thisDirector)` coroutine and run it until the
+    /// first `wait()` yield. Any `director:StartGuildleve()` /
+    /// `UpdateMarkers(...)` / etc. calls that happen in the initial
+    /// slice (before the first `wait`) drain through the normal
+    /// `apply_runtime_lua_commands` pipeline; subsequent slices run
+    /// via the ticker's `lua.tick()` call on each game-loop frame.
+    ///
+    /// Quietly no-ops when:
+    /// * no `LuaEngine` is wired (headless/test harness),
+    /// * `directors/<name>.lua` isn't on disk,
+    /// * the script has no `main` global (e.g. `AfterQuestWarpDirector`
+    ///   only has `onEventStarted`; that path goes through the event
+    ///   dispatcher instead).
+    async fn apply_start_director_main(
+        &self,
+        director_actor_id: u32,
+        class_path: String,
+        director_name: String,
+        spawn_immediate: bool,
+    ) {
+        let Some(lua) = self.lua.as_ref() else {
+            tracing::debug!(
+                director = director_actor_id,
+                "StartDirectorMain skipped — no LuaEngine wired",
+            );
+            return;
+        };
+        // Class names resolve to scripts/lua/directors/<name>.lua via
+        // the resolver; LuaDirectorHandle's `class_path` is
+        // `/Director/<Name>` so the final segment is the script name.
+        let script_name = director_name.clone();
+        let script_path = lua.resolver().director(&script_name);
+        if !script_path.exists() {
+            tracing::debug!(
+                director = director_actor_id,
+                script = %script_path.display(),
+                "StartDirectorMain skipped — script not on disk",
+            );
+            return;
+        }
+
+        let handle = crate::lua::userdata::LuaDirectorHandle {
+            name: director_name.clone(),
+            actor_id: director_actor_id,
+            class_path: class_path.clone(),
+            // Engine re-points to the freshly-installed queue; any
+            // value here is fine, the script's `push` path will use
+            // the right one.
+            queue: crate::lua::command::CommandQueue::new(),
+        };
+
+        let lua_clone = lua.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            lua_clone.spawn_director_main(&script_path, handle)
+        })
+        .await;
+        let partial = match result {
+            Ok(p) => p,
+            Err(join_err) => {
+                tracing::warn!(
+                    director = director_actor_id,
+                    error = %join_err,
+                    "StartDirectorMain dispatch panicked",
+                );
+                return;
+            }
+        };
+        if let Some(e) = partial.error {
+            tracing::debug!(
+                director = director_actor_id,
+                error = %e,
+                "StartDirectorMain initial resume errored",
+            );
+        }
+        // Drain whatever the initial slice pushed (typically one or
+        // two commands if `main` starts with `wait(3)` — nothing, in
+        // that case — or an `EndGuildleve` if main immediately
+        // completes).
+        if !partial.commands.is_empty() {
+            crate::runtime::quest_apply::apply_runtime_lua_commands(
+                partial.commands,
+                &self.registry,
+                &self.db,
+                &self.world,
+                Some(lua),
+            )
+            .await;
+        }
+        tracing::info!(
+            director = director_actor_id,
+            class = %class_path,
+            spawn_immediate,
+            "StartDirectorMain applied — main coroutine spawned",
+        );
     }
 
     /// `player:SetHomePoint(aetheryteId)` — `AetheryteChild.lua` calls

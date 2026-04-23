@@ -1494,7 +1494,7 @@ pub fn leve_completion_seal_reward(difficulty: u8) -> i32 {
 pub async fn award_leve_completion_seals(
     member_handle: &crate::runtime::actor_registry::ActorHandle,
     difficulty: u8,
-    db: &Arc<crate::database::Database>,
+    db: &crate::database::Database,
 ) {
     let (gc, gc_rank) = {
         let c = member_handle.character.read().await;

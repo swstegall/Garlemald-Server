@@ -469,8 +469,114 @@ impl LuaEngine {
         );
     }
 
+    /// Spawn a director's `main(thisDirector)` coroutine against
+    /// `directors/<class_name>.lua`. Used by
+    /// `processor::apply_start_director_main` on a
+    /// `LuaCommand::StartDirectorMain` drain — the script-side
+    /// `director:StartDirector(true)` call is what pushes that
+    /// command.
+    ///
+    /// Loads the script, builds a `LuaDirectorHandle` userdata bound
+    /// to the script's command queue, resumes the `main` coroutine
+    /// once. If it yields on `_WAIT_TIME`/`_WAIT_SIGNAL`/`_WAIT_EVENT`,
+    /// parks it in the shared scheduler so `tick()` can resume it
+    /// later. Returns any commands the initial slice pushed (up to
+    /// the first yield or to termination) so the caller can drain
+    /// them through `apply_runtime_lua_commands`.
+    ///
+    /// Quietly errors out on:
+    /// * script not on disk (`directors/<class_name>.lua` missing),
+    /// * no `main` global (some directors only define `init`),
+    /// * Lua runtime error during the initial resume (commands pushed
+    ///   before the error are still returned).
+    pub fn spawn_director_main(
+        &self,
+        script_path: &Path,
+        director: userdata::LuaDirectorHandle,
+    ) -> PartialLuaCallResult {
+        let (lua, queue) = match self.load_script(script_path) {
+            Ok(pair) => pair,
+            Err(e) => {
+                return PartialLuaCallResult {
+                    commands: Vec::new(),
+                    error: Some(e),
+                };
+            }
+        };
+        // Re-point the handle at the freshly-installed queue so
+        // coroutine-emitted commands land where the caller drains.
+        let director = userdata::LuaDirectorHandle {
+            queue: queue.clone(),
+            ..director
+        };
+
+        let globals = lua.globals();
+        let main: mlua::Function = match globals.get("main") {
+            Ok(f) => f,
+            Err(_) => {
+                // No `main` — quiet no-op. Some directors (e.g. simple
+                // content holders) only define `init`.
+                return PartialLuaCallResult {
+                    commands: CommandQueue::drain(&queue),
+                    error: None,
+                };
+            }
+        };
+
+        let director_ud = match lua.create_userdata(director) {
+            Ok(ud) => ud,
+            Err(e) => {
+                return PartialLuaCallResult {
+                    commands: CommandQueue::drain(&queue),
+                    error: Some(anyhow::anyhow!("create_userdata(LuaDirectorHandle): {e}")),
+                };
+            }
+        };
+
+        let thread = match lua.create_thread(main) {
+            Ok(t) => t,
+            Err(e) => {
+                return PartialLuaCallResult {
+                    commands: CommandQueue::drain(&queue),
+                    error: Some(anyhow::anyhow!("create_thread(main): {e}")),
+                };
+            }
+        };
+
+        // First resume — runs until the first yield / return / error.
+        let resume_result = thread.resume::<Value>(director_ud);
+        let commands = CommandQueue::drain(&queue);
+        let (value, error) = match resume_result {
+            Ok(v) => (v, None),
+            Err(e) => (Value::Nil, Some(anyhow::anyhow!("director main: {e}"))),
+        };
+
+        // Park if still alive + parked on a known wait directive.
+        if matches!(
+            thread.status(),
+            mlua::ThreadStatus::Resumable
+        ) {
+            let directive = scheduler::classify_yield(&value);
+            let parked = ParkedCoroutine {
+                lua: lua.clone(),
+                thread,
+                queue,
+            };
+            self.repark(parked, directive);
+        }
+
+        PartialLuaCallResult { commands, error }
+    }
+
     /// Drive the scheduler forward: resume any parked coroutine whose time
     /// has come. Callers invoke this once per game tick.
+    ///
+    /// Returns every `LuaCommand` the resumed coroutines pushed into
+    /// their script-bound queues — the ticker drains the return value
+    /// through `apply_runtime_lua_commands` so scheduler-driven
+    /// `director:EndGuildleve(true)` / `player:AddExp(...)` /
+    /// `quest:SetQuestFlag(...)` calls from inside a parked `main`
+    /// coroutine actually produce the right game-state mutations.
     pub fn tick(&self) -> Vec<LuaCommand> {
         let mut all_commands = Vec::new();
 
@@ -480,20 +586,19 @@ impl LuaEngine {
             .map(|mut s| s.drain_due_time())
             .unwrap_or_default();
         for parked in due {
-            if let Ok(value) = parked.thread.resume::<Value>(()) {
-                // If the coroutine yielded again, re-park it; otherwise its
-                // accumulated commands are already in the shared queue.
+            let queue = parked.queue.clone();
+            let resume = parked.thread.resume::<Value>(());
+            // Drain whatever the resumed slice pushed into the
+            // script's command queue — the directive classification
+            // below doesn't touch the queue, so drain before reparking.
+            all_commands.extend(CommandQueue::drain(&queue));
+            if let Ok(value) = resume {
                 let directive = scheduler::classify_yield(&value);
                 self.repark(parked, directive);
             }
         }
 
-        // Draining per-script queues is the caller's job (via `call`); what
-        // we return here are the side effects produced by *scheduler-driven*
-        // resumes, which write into the cache-shared queues. The cleanest
-        // thing is to return an empty vec and require callers to keep the
-        // queue handles they were given by `call()`. For now, return empty.
-        std::mem::take(&mut all_commands)
+        all_commands
     }
 
     /// Notify the scheduler that `signal` fired. Any coroutine parked on it

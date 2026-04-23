@@ -35,12 +35,19 @@ use std::sync::{Arc, Mutex};
 
 use mlua::{Lua, Thread, Value};
 
-use super::command::LuaCommandArg;
+use super::command::{CommandQueue, LuaCommandArg};
 
 /// One parked coroutine, waiting for a condition.
+///
+/// The `queue` handle is the same `Arc<Mutex<CommandQueue>>` bound to
+/// the script's userdata at spawn time — resumes may push commands
+/// (e.g. `director:EndGuildleve(true)`), and the tick-driven resume
+/// path drains those commands into the game loop's
+/// `apply_runtime_lua_commands` pipeline.
 pub struct ParkedCoroutine {
     pub lua: Arc<Lua>,
     pub thread: Thread,
+    pub queue: Arc<Mutex<CommandQueue>>,
 }
 
 impl std::fmt::Debug for ParkedCoroutine {

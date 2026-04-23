@@ -179,6 +179,29 @@ impl GameTicker {
             };
             self.tick_zone(now_ms, zone_id, &zone_arc).await;
         }
+        // Lua coroutine scheduler — resume every parked-on-time
+        // coroutine whose deadline passed this frame (director
+        // `main` scripts that yielded on `wait(N)`, player-script
+        // coroutines from the same pool). Commands emitted by the
+        // resumed slices drain through the shared runtime pipeline
+        // so a resumed `director:EndGuildleve(true)` fan-out hits
+        // the dispatcher + seal accrual same as a fresh script call.
+        if let Some(lua) = self.lua.as_ref() {
+            let lua = lua.clone();
+            let resumed = tokio::task::spawn_blocking(move || lua.tick())
+                .await
+                .unwrap_or_default();
+            if !resumed.is_empty() {
+                crate::runtime::quest_apply::apply_runtime_lua_commands(
+                    resumed,
+                    &self.registry,
+                    &self.db,
+                    &self.world,
+                    self.lua.as_ref(),
+                )
+                .await;
+            }
+        }
     }
 
     async fn tick_zone(&self, now_ms: u64, zone_id: u32, zone: &Arc<RwLock<Zone>>) {

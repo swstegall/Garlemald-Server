@@ -5671,6 +5671,315 @@ async fn abandon_guildleve_emits_abandon_message_and_grants_no_seals() {
     );
 }
 
+/// End-to-end scheduler test: a director's `main(thisDirector)`
+/// coroutine runs through a `wait(N)` yield and resumes on a later
+/// ticker call. Spawns a synthetic director script whose `main` is
+/// `wait(1); director:EndGuildleve(true)`, kicks it via
+/// `LuaCommand::StartDirectorMain`, confirms nothing happens on the
+/// initial slice, advances the scheduler past the wait deadline via
+/// `engine.tick()` (the ticker's per-frame call), and verifies the
+/// resumed slice's `EndGuildleve` reaches the director + deposits
+/// seals.
+#[tokio::test]
+async fn director_main_coroutine_wait_then_end_guildleve_drains_through_ticker() {
+    use crate::actor::Character;
+    use crate::data::{ClientHandle, Session as MapSession};
+    use crate::lua::{LuaCommandKind as LuaCommand, LuaEngine};
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use crate::zone::navmesh::StubNavmeshLoader;
+    use crate::zone::zone::Zone;
+    use common::db::ConnCallExt;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    // Build a temp-dir script root with a stand-in director script
+    // whose `main` yields on `wait(1)` then calls EndGuildleve. Can't
+    // reuse `PrivateGLBattleSweepNormal.lua` because its total run
+    // time is 20+ seconds — test would timeout waiting for the
+    // scheduler to advance. The synthetic script exercises the same
+    // mechanics in a wait granularity the test can control.
+    let root = std::env::temp_dir().join(format!(
+        "garlemald-director-main-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("directors/Guildleve")).unwrap();
+    // The script needs `wait()` as a global — install it top-level so
+    // the LuaEngine's per-script cache doesn't have to chase a
+    // `require("global")` include (that would try to resolve against
+    // the real `package.path`, which this throwaway root doesn't
+    // populate).
+    std::fs::write(
+        root.join("directors/Guildleve/TestMainScript.lua"),
+        r#"
+            function wait(seconds)
+                return coroutine.yield({"_WAIT_TIME", seconds})
+            end
+
+            function main(thisDirector)
+                wait(0.1)
+                thisDirector:EndGuildleve(true)
+            end
+        "#,
+    )
+    .unwrap();
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    let lua = Arc::new(LuaEngine::new(&root));
+
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (192, 0, 0, 0, 'MainRunner')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    db.set_gc_current(192, crate::actor::gc::GC_MAELSTROM)
+        .await
+        .unwrap();
+    db.set_gc_rank(192, crate::actor::gc::GC_MAELSTROM, 11)
+        .await
+        .unwrap();
+
+    let mut zone = Zone::new(
+        182,
+        "test",
+        1,
+        "/Area/Zone/Test",
+        0, 0, 0,
+        false, false, false, false, false,
+        Some(&StubNavmeshLoader),
+    );
+    let director_actor_id = zone.core.create_guildleve_director(
+        20_027, // guildleve_id
+        1,      // 1-star → 150 seals from the completion table
+        192,
+        20_021,
+        1,
+        300,
+        [1, 0, 0, 0],
+    );
+    // Override the script path so the engine resolves our synthetic
+    // `TestMainScript.lua`. The C# Meteor equivalent sets this at
+    // the script's `init()` return; garlemald's director already
+    // stores `class_path` on construction from `create_guildleve_director`'s
+    // `guildleve_script_for_plate` lookup (which for plate 20021
+    // returns "Guildleve/PrivateGLBattleSweepNormal"). Swap it out
+    // so StartDirectorMain resolves TestMainScript.lua off our
+    // temp root.
+    {
+        let gld = zone
+            .core
+            .guildleve_director_mut(director_actor_id)
+            .expect("director just created");
+        gld.base.class_path = "/Director/Guildleve/TestMainScript".to_string();
+        gld.base.class_name = "Guildleve/TestMainScript".to_string();
+        let mut ob = crate::director::DirectorOutbox::new();
+        gld.base.add_member(192, true, &mut ob);
+        let _ = ob.drain();
+    }
+    world.register_zone(zone).await;
+
+    let mut chara = Character::new(192);
+    chara.chara.gc_current = crate::actor::gc::GC_MAELSTROM;
+    chara.chara.gc_rank_limsa = 11;
+    registry
+        .insert(ActorHandle::new(192, ActorKindTag::Player, 182, 192, chara))
+        .await;
+    world
+        .upsert_session(MapSession {
+            id: 192,
+            current_zone_id: 182,
+            ..MapSession::default()
+        })
+        .await;
+    let (tx, _rx) = mpsc::channel::<Vec<u8>>(16);
+    world.register_client(192, ClientHandle::new(192, tx)).await;
+
+    let processor = crate::processor::PacketProcessor {
+        db: db.clone(),
+        world: world.clone(),
+        registry: registry.clone(),
+        lua: Some(lua.clone()),
+    };
+    let handle = registry.get(192).await.unwrap();
+
+    // Kick the director's main coroutine. First slice runs to
+    // `wait(0.1)` and yields — no commands should have drained yet.
+    processor
+        .apply_login_lua_command(
+            &handle,
+            LuaCommand::StartDirectorMain {
+                director_actor_id,
+                class_path: "/Director/Guildleve/TestMainScript".to_string(),
+                director_name: "Guildleve/TestMainScript".to_string(),
+                spawn_immediate: true,
+            },
+        )
+        .await;
+    assert_eq!(
+        db.get_seals(192, crate::actor::gc::GC_MAELSTROM).await.unwrap(),
+        0,
+        "first slice ends at wait(0.1); seal accrual should still be 0",
+    );
+    // Sanity: a coroutine should actually be parked in the scheduler
+    // — if it isn't, the resume below will have nothing to do.
+    {
+        let sched = lua.scheduler().lock().unwrap();
+        assert_eq!(
+            sched.pending_time_count(),
+            1,
+            "wait(0.1) should have parked exactly one coroutine on time",
+        );
+    }
+
+    // Wait past the wait(0.1) deadline — the scheduler keys on
+    // UNIX-epoch millis so real elapsed time unblocks the coroutine.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    // Drive the scheduler: resume the parked coroutine. The resume
+    // runs the rest of `main`: `thisDirector:EndGuildleve(true)`
+    // pushes a `LuaCommand::EndGuildleve`.
+    let lua_clone = lua.clone();
+    let resumed = tokio::task::spawn_blocking(move || lua_clone.tick())
+        .await
+        .unwrap();
+    assert_eq!(
+        resumed.len(),
+        1,
+        "resumed slice should push exactly one EndGuildleve command; got {resumed:?}",
+    );
+    assert!(matches!(
+        resumed[0],
+        LuaCommand::EndGuildleve {
+            director_actor_id: _,
+            was_completed: true,
+        }
+    ));
+
+    // Drain the resumed commands through the runtime pipeline —
+    // this is what the ticker does on each frame.
+    crate::runtime::quest_apply::apply_runtime_lua_commands(
+        resumed,
+        &registry,
+        &db,
+        &world,
+        Some(&lua),
+    )
+    .await;
+
+    // Seal accrual fired end-to-end — 1★ leve → 150 seals.
+    let balance = db.get_seals(192, crate::actor::gc::GC_MAELSTROM).await.unwrap();
+    assert_eq!(
+        balance, 150,
+        "resumed main coroutine's EndGuildleve(true) should grant 150 seals (1★ table entry)",
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// A main coroutine that completes on its first slice (no `wait`)
+/// still drains commands correctly and doesn't park anything.
+#[tokio::test]
+async fn director_main_coroutine_without_wait_completes_on_first_slice() {
+    use crate::lua::{LuaCommandKind as LuaCommand, LuaEngine};
+    use crate::lua::userdata::LuaDirectorHandle;
+    use crate::lua::command::CommandQueue;
+
+    let root = std::env::temp_dir().join(format!(
+        "garlemald-director-nowait-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("directors")).unwrap();
+    std::fs::write(
+        root.join("directors/InstantDirector.lua"),
+        r#"
+            function main(d)
+                d:EndGuildleve(true)
+            end
+        "#,
+    )
+    .unwrap();
+
+    let lua = LuaEngine::new(&root);
+    let script_path = lua.resolver().director("InstantDirector");
+
+    let handle = LuaDirectorHandle {
+        name: "InstantDirector".to_string(),
+        actor_id: 0x6320_0001,
+        class_path: "/Director/InstantDirector".to_string(),
+        queue: CommandQueue::new(),
+    };
+    let partial = lua.spawn_director_main(&script_path, handle);
+    assert!(partial.error.is_none(), "main ran clean: {:?}", partial.error);
+    assert_eq!(partial.commands.len(), 1);
+    assert!(matches!(
+        partial.commands[0],
+        LuaCommand::EndGuildleve {
+            director_actor_id: 0x6320_0001,
+            was_completed: true,
+        }
+    ));
+    // tick() after a completed (not-parked) coroutine should return
+    // nothing — no parked state.
+    assert!(lua.tick().is_empty());
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// A script with no `main` global is a quiet no-op — matches the
+/// Meteor shape where only some directors define `main` and others
+/// only have `init` / `onEventStarted`.
+#[tokio::test]
+async fn director_main_coroutine_missing_main_is_quiet_noop() {
+    use crate::lua::LuaEngine;
+    use crate::lua::command::CommandQueue;
+    use crate::lua::userdata::LuaDirectorHandle;
+
+    let root = std::env::temp_dir().join(format!(
+        "garlemald-director-nomain-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("directors")).unwrap();
+    std::fs::write(
+        root.join("directors/NoMainDirector.lua"),
+        "function init(d) return \"/Director/NoMainDirector\" end",
+    )
+    .unwrap();
+
+    let lua = LuaEngine::new(&root);
+    let script_path = lua.resolver().director("NoMainDirector");
+    let handle = LuaDirectorHandle {
+        name: "NoMainDirector".to_string(),
+        actor_id: 0x6320_0002,
+        class_path: "/Director/NoMainDirector".to_string(),
+        queue: CommandQueue::new(),
+    };
+    let partial = lua.spawn_director_main(&script_path, handle);
+    assert!(partial.error.is_none());
+    assert!(partial.commands.is_empty());
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// Production drain end-to-end: a Lua script's `director:EndGuildleve(true)`
 /// call should land on the player's session as the victory packet bundle
 /// AND deposit seals via `apply_end_guildleve` → `dispatch_director_event`

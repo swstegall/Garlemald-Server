@@ -1819,7 +1819,33 @@ impl UserData for LuaDirectorHandle {
         // Common methods scripts call on directors. All no-ops at the
         // moment — propagating real director state requires spawning the
         // director as a tracked actor, which is the follow-up.
-        methods.add_method("StartDirector", |_, _this, _: Option<bool>| Ok(()));
+        // `director:StartDirector(spawn_immediate)` — kicks off the
+        // director's `main(thisDirector)` coroutine. Pushed as
+        // `LuaCommand::StartDirectorMain`; the processor's
+        // `apply_start_director_main` resolves the script via
+        // `lua.resolver().director(class_name)`, calls
+        // `LuaEngine::spawn_director_main`, and drains the initial
+        // slice's emitted commands. Yields on `wait(N)` park the
+        // coroutine in the shared scheduler; the ticker's per-tick
+        // `engine.tick()` call resumes them.
+        methods.add_method("StartDirector", |_, this, spawn_immediate: Option<bool>| {
+            let class_name = this
+                .class_path
+                .rsplit('/')
+                .next()
+                .unwrap_or(&this.class_path)
+                .to_string();
+            push(
+                &this.queue,
+                LuaCommand::StartDirectorMain {
+                    director_actor_id: this.actor_id,
+                    class_path: this.class_path.clone(),
+                    director_name: class_name,
+                    spawn_immediate: spawn_immediate.unwrap_or(true),
+                },
+            );
+            Ok(())
+        });
         methods.add_method("EndDirector", |_, _this, _: ()| Ok(()));
         methods.add_method("StartSceneSession", |_, _this, _: Option<Value>| Ok(()));
         methods.add_method("EndSceneSession", |_, _this, _: ()| Ok(()));

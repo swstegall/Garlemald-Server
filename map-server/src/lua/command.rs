@@ -467,6 +467,27 @@ pub enum LuaCommand {
     SyncAllInfo {
         director_actor_id: u32,
     },
+    /// `director:StartDirector(spawn_immediate)` — the script-level
+    /// trigger that kicks off a director's `main(thisDirector)`
+    /// coroutine. Mirrors Meteor's `Director.StartDirector`
+    /// (`Map Server/Actors/Director/Director.cs:118`) which ends with
+    /// `CallLuaScript("main", this, contentGroup)`. Yesterday's
+    /// `EndGuildleve` drain is what such a coroutine eventually
+    /// reaches; this variant is the missing first step that spawns
+    /// the coroutine in the first place.
+    ///
+    /// `class_path` + `director_name` are pulled from the
+    /// `LuaDirectorHandle` at push time so the processor's
+    /// `apply_start_director_main` can resolve the script without a
+    /// zone re-lookup. `spawn_immediate` is currently advisory —
+    /// matches Meteor's arg name; garlemald spawns immediately
+    /// regardless.
+    StartDirectorMain {
+        director_actor_id: u32,
+        class_path: String,
+        director_name: String,
+        spawn_immediate: bool,
+    },
     /// `player:PromoteGC(gc)` — atomic seal-spend + rank-bump.
     /// Mirrors the post-confirm tail of Meteor's
     /// `PopulaceCompanyOfficer.lua` flow: `eventDoRankUp` confirms the
