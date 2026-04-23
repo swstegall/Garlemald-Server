@@ -5955,6 +5955,366 @@ async fn join_gc_sets_chara_state_and_db() {
     assert_eq!(post_rank, 17);
 }
 
+/// `apply_promote_gc` happy path: a Recruit (rank 127) enrolled in
+/// the Maelstrom with the seal balance for a Recruit→Pvt3 hop (100
+/// seals) gets promoted to rank 11, has 100 seals deducted, and
+/// receives a `SetGrandCompanyPacket` (0x0194) on their session.
+#[tokio::test]
+async fn promote_gc_happy_path_spends_seals_and_bumps_rank() {
+    use crate::actor::Character;
+    use crate::data::{ClientHandle, Session as MapSession};
+    use crate::lua::LuaCommandKind as LuaCommand;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use common::db::ConnCallExt;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    let lua = Arc::new(crate::lua::LuaEngine::new("/nonexistent"));
+
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (171, 0, 0, 0, 'PromoteCandidate')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    // Enlist + seed a 500-seal balance (cost is 100 → balance after
+    // promote should be 400).
+    db.set_gc_current(171, crate::actor::gc::GC_MAELSTROM)
+        .await
+        .unwrap();
+    db.set_gc_rank(171, crate::actor::gc::GC_MAELSTROM, crate::actor::gc::RANK_RECRUIT)
+        .await
+        .unwrap();
+    db.add_seals(171, crate::actor::gc::GC_MAELSTROM, 500)
+        .await
+        .unwrap();
+
+    let mut chara = Character::new(171);
+    chara.chara.gc_current = crate::actor::gc::GC_MAELSTROM;
+    chara.chara.gc_rank_limsa = crate::actor::gc::RANK_RECRUIT;
+    registry
+        .insert(ActorHandle::new(171, ActorKindTag::Player, 200, 171, chara))
+        .await;
+    world
+        .upsert_session(MapSession {
+            id: 171,
+            current_zone_id: 200,
+            ..MapSession::default()
+        })
+        .await;
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(8);
+    world.register_client(171, ClientHandle::new(171, tx)).await;
+
+    let processor = crate::processor::PacketProcessor {
+        db: db.clone(),
+        world: world.clone(),
+        registry: registry.clone(),
+        lua: Some(lua),
+    };
+    let handle = registry.get(171).await.unwrap();
+    processor
+        .apply_login_lua_command(
+            &handle,
+            LuaCommand::PromoteGC {
+                player_id: 171,
+                gc: crate::actor::gc::GC_MAELSTROM,
+            },
+        )
+        .await;
+
+    // CharaState reflects the bump.
+    {
+        let c = handle.character.read().await;
+        assert_eq!(c.chara.gc_rank_limsa, 11, "rank bumped Recruit (127) → Private Third Class (11)");
+    }
+    // DB persisted: rank 11, seal balance 400 (500 - 100 cost).
+    let post_rank = db.get_seals(171, crate::actor::gc::GC_MAELSTROM).await.unwrap();
+    assert_eq!(post_rank, 400, "seal balance should be 500 - 100 cost = 400");
+    let stored_rank: i64 = db
+        .conn_for_test()
+        .call_db(|c| {
+            Ok(c.query_row(
+                "SELECT gcLimsaRank FROM characters WHERE id = 171",
+                [],
+                |r| r.get::<_, i64>(0),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(stored_rank, 11);
+    // Some packet hit the session — typically `SetGrandCompanyPacket`.
+    assert!(
+        rx.try_recv().is_ok(),
+        "PromoteGC should emit a SetGrandCompanyPacket to the owner session",
+    );
+}
+
+/// `apply_promote_gc` refusal: insufficient seal balance leaves
+/// rank + balance untouched and emits no packet.
+#[tokio::test]
+async fn promote_gc_refuses_when_seals_below_cost() {
+    use crate::actor::Character;
+    use crate::data::Session as MapSession;
+    use crate::lua::LuaCommandKind as LuaCommand;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use common::db::ConnCallExt;
+    use std::sync::Arc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    let lua = Arc::new(crate::lua::LuaEngine::new("/nonexistent"));
+
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (172, 0, 0, 0, 'BrokeRecruit')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    db.set_gc_current(172, crate::actor::gc::GC_TWIN_ADDER)
+        .await
+        .unwrap();
+    db.set_gc_rank(172, crate::actor::gc::GC_TWIN_ADDER, crate::actor::gc::RANK_RECRUIT)
+        .await
+        .unwrap();
+    db.add_seals(172, crate::actor::gc::GC_TWIN_ADDER, 50)
+        .await
+        .unwrap();
+
+    let mut chara = Character::new(172);
+    chara.chara.gc_current = crate::actor::gc::GC_TWIN_ADDER;
+    chara.chara.gc_rank_gridania = crate::actor::gc::RANK_RECRUIT;
+    registry
+        .insert(ActorHandle::new(172, ActorKindTag::Player, 200, 172, chara))
+        .await;
+    world
+        .upsert_session(MapSession {
+            id: 172,
+            current_zone_id: 200,
+            ..MapSession::default()
+        })
+        .await;
+
+    let processor = crate::processor::PacketProcessor {
+        db: db.clone(),
+        world: world.clone(),
+        registry: registry.clone(),
+        lua: Some(lua),
+    };
+    let handle = registry.get(172).await.unwrap();
+    processor
+        .apply_login_lua_command(
+            &handle,
+            LuaCommand::PromoteGC {
+                player_id: 172,
+                gc: crate::actor::gc::GC_TWIN_ADDER,
+            },
+        )
+        .await;
+
+    // Rank unchanged (still Recruit).
+    {
+        let c = handle.character.read().await;
+        assert_eq!(c.chara.gc_rank_gridania, crate::actor::gc::RANK_RECRUIT);
+    }
+    // Seal balance untouched.
+    let balance = db.get_seals(172, crate::actor::gc::GC_TWIN_ADDER).await.unwrap();
+    assert_eq!(balance, 50, "insufficient-seals refusal must not deduct");
+}
+
+/// `apply_promote_gc` refusal: trying to promote in a GC the player
+/// isn't enlisted in is a no-op even with full balance.
+#[tokio::test]
+async fn promote_gc_refuses_when_not_enlisted_in_target_gc() {
+    use crate::actor::Character;
+    use crate::data::Session as MapSession;
+    use crate::lua::LuaCommandKind as LuaCommand;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use common::db::ConnCallExt;
+    use std::sync::Arc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    let lua = Arc::new(crate::lua::LuaEngine::new("/nonexistent"));
+
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (173, 0, 0, 0, 'StormSailor')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    // Enlisted in Maelstrom (1) but trying to promote in Immortal
+    // Flames (3). Seal balance for Flames is 0 because the player
+    // never earned Flame seals — but even with seeded balance the
+    // enrollment check should still refuse.
+    db.set_gc_current(173, crate::actor::gc::GC_MAELSTROM)
+        .await
+        .unwrap();
+    db.set_gc_rank(173, crate::actor::gc::GC_MAELSTROM, crate::actor::gc::RANK_RECRUIT)
+        .await
+        .unwrap();
+    // Seed 1000 Flame seals to prove the enrollment check fires
+    // before the balance check.
+    db.add_seals(173, crate::actor::gc::GC_IMMORTAL_FLAMES, 1000)
+        .await
+        .unwrap();
+
+    let mut chara = Character::new(173);
+    chara.chara.gc_current = crate::actor::gc::GC_MAELSTROM;
+    chara.chara.gc_rank_limsa = crate::actor::gc::RANK_RECRUIT;
+    chara.chara.gc_rank_uldah = crate::actor::gc::RANK_RECRUIT;
+    registry
+        .insert(ActorHandle::new(173, ActorKindTag::Player, 200, 173, chara))
+        .await;
+    world
+        .upsert_session(MapSession {
+            id: 173,
+            current_zone_id: 200,
+            ..MapSession::default()
+        })
+        .await;
+
+    let processor = crate::processor::PacketProcessor {
+        db: db.clone(),
+        world: world.clone(),
+        registry: registry.clone(),
+        lua: Some(lua),
+    };
+    let handle = registry.get(173).await.unwrap();
+    processor
+        .apply_login_lua_command(
+            &handle,
+            LuaCommand::PromoteGC {
+                player_id: 173,
+                gc: crate::actor::gc::GC_IMMORTAL_FLAMES,
+            },
+        )
+        .await;
+
+    // Uldah rank unchanged.
+    {
+        let c = handle.character.read().await;
+        assert_eq!(c.chara.gc_rank_uldah, crate::actor::gc::RANK_RECRUIT);
+        assert_eq!(c.chara.gc_rank_limsa, crate::actor::gc::RANK_RECRUIT);
+    }
+    // Flame seal balance untouched.
+    let balance = db.get_seals(173, crate::actor::gc::GC_IMMORTAL_FLAMES).await.unwrap();
+    assert_eq!(balance, 1000, "wrong-GC refusal must not deduct");
+}
+
+/// `apply_promote_gc` refusal: at the 1.23b story cap (Second
+/// Lieutenant, rank 31) `next_rank` returns None and the promotion
+/// is refused even with infinite seals.
+#[tokio::test]
+async fn promote_gc_refuses_at_story_rank_cap() {
+    use crate::actor::Character;
+    use crate::data::Session as MapSession;
+    use crate::lua::LuaCommandKind as LuaCommand;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use common::db::ConnCallExt;
+    use std::sync::Arc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    let lua = Arc::new(crate::lua::LuaEngine::new("/nonexistent"));
+
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (174, 0, 0, 0, 'CapVeteran')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    db.set_gc_current(174, crate::actor::gc::GC_IMMORTAL_FLAMES)
+        .await
+        .unwrap();
+    db.set_gc_rank(174, crate::actor::gc::GC_IMMORTAL_FLAMES, 31)
+        .await
+        .unwrap();
+    db.add_seals(174, crate::actor::gc::GC_IMMORTAL_FLAMES, 50_000)
+        .await
+        .unwrap();
+
+    let mut chara = Character::new(174);
+    chara.chara.gc_current = crate::actor::gc::GC_IMMORTAL_FLAMES;
+    chara.chara.gc_rank_uldah = 31;
+    registry
+        .insert(ActorHandle::new(174, ActorKindTag::Player, 200, 174, chara))
+        .await;
+    world
+        .upsert_session(MapSession {
+            id: 174,
+            current_zone_id: 200,
+            ..MapSession::default()
+        })
+        .await;
+
+    let processor = crate::processor::PacketProcessor {
+        db: db.clone(),
+        world: world.clone(),
+        registry: registry.clone(),
+        lua: Some(lua),
+    };
+    let handle = registry.get(174).await.unwrap();
+    processor
+        .apply_login_lua_command(
+            &handle,
+            LuaCommand::PromoteGC {
+                player_id: 174,
+                gc: crate::actor::gc::GC_IMMORTAL_FLAMES,
+            },
+        )
+        .await;
+
+    // Rank still 31; balance untouched.
+    {
+        let c = handle.character.read().await;
+        assert_eq!(c.chara.gc_rank_uldah, 31);
+    }
+    let balance = db.get_seals(174, crate::actor::gc::GC_IMMORTAL_FLAMES).await.unwrap();
+    assert_eq!(balance, 50_000);
+}
+
 /// New `LuaItemPackage:HasItem` / `:GetItemQuantity` + the
 /// `GetGCPromotionCost` / `GetNextGCRank` / `GetGCRankSealCap`
 /// globals must answer correctly from inside a Lua script — the

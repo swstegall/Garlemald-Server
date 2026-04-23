@@ -62,7 +62,13 @@ function onEventStarted(player, npc, triggerName)
                 -- If promotion accepted
                 if choice == 1 then
                     callClientFunction(player, "eventDoRankUp", playerNextRank, playerNextRank);
-                   -- TODO: Table GC info or get it in source/sql.  Handle actual upgrade of GC rank/seal cap/cost/etc.
+                    -- Apply the promotion server-side: spend the seal
+                    -- cost and bump the per-GC rank atomically. The
+                    -- processor re-validates every precondition
+                    -- (enrollment, cap, balance) so a desynced
+                    -- script-side check can't promote past what the
+                    -- player actually qualifies for.
+                    player:PromoteGC(playerGC);
                 end
 
             else

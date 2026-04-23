@@ -1161,6 +1161,9 @@ impl PacketProcessor {
             LC::AddSeals { player_id, gc, amount } => {
                 self.apply_add_seals(player_id, gc, amount).await;
             }
+            LC::PromoteGC { player_id, gc } => {
+                self.apply_promote_gc(player_id, gc).await;
+            }
             other => {
                 tracing::debug!(?other, "login lua cmd (unhandled)");
             }
@@ -1942,6 +1945,136 @@ impl PacketProcessor {
                 "AddSeals: DB persist failed",
             ),
         }
+    }
+
+    /// `player:PromoteGC(gc)` — atomic seal-spend + rank-bump.
+    /// Mirrors the post-`eventDoRankUp` tail of Meteor's
+    /// `PopulaceCompanyOfficer.lua` flow. Refuses (logs at `info` and
+    /// returns without any DB write) when:
+    /// * `gc` isn't a valid GC id (1/2/3),
+    /// * the player isn't in the registry (offline / NPC),
+    /// * the player isn't enlisted in `gc` (`chara.gc_current != gc`),
+    /// * current rank has no `next_rank` (already at/past 1.23b cap of 31),
+    /// * seal balance is below `gc_promotion_cost(current)`.
+    /// On success: spends `cost` seals via `db.add_seals(-cost)`,
+    /// bumps the per-GC rank field on `CharaState` to `next_rank`,
+    /// persists the rank via `db.set_gc_rank`, and emits
+    /// `SetGrandCompanyPacket` so the client sees the new rank.
+    async fn apply_promote_gc(&self, player_id: u32, gc: u8) {
+        if !crate::actor::gc::is_valid_gc(gc) {
+            tracing::debug!(player = player_id, gc, "PromoteGC: invalid gc id");
+            return;
+        }
+        let Some(handle) = self.registry.get(player_id).await else {
+            tracing::debug!(player = player_id, "PromoteGC: player not in registry");
+            return;
+        };
+        // Read current enrollment + rank under a single read lock.
+        let (enrolled_gc, current_rank) = {
+            let c = handle.character.read().await;
+            let rank = match gc {
+                crate::actor::gc::GC_MAELSTROM => c.chara.gc_rank_limsa,
+                crate::actor::gc::GC_TWIN_ADDER => c.chara.gc_rank_gridania,
+                crate::actor::gc::GC_IMMORTAL_FLAMES => c.chara.gc_rank_uldah,
+                _ => 0,
+            };
+            (c.chara.gc_current, rank)
+        };
+        if enrolled_gc != gc {
+            tracing::info!(
+                player = player_id,
+                gc,
+                enrolled = enrolled_gc,
+                "PromoteGC refused: player not enlisted in target GC",
+            );
+            return;
+        }
+        let Some(next_rank) = crate::actor::gc::next_rank(current_rank) else {
+            tracing::info!(
+                player = player_id,
+                gc,
+                current_rank,
+                "PromoteGC refused: already at or past STORY_RANK_CAP",
+            );
+            return;
+        };
+        let cost = crate::actor::gc::gc_promotion_cost(current_rank);
+        if cost <= 0 {
+            tracing::info!(
+                player = player_id,
+                gc,
+                current_rank,
+                "PromoteGC refused: no promotion cost defined for current rank",
+            );
+            return;
+        }
+        let balance = match self.db.get_seals(player_id, gc).await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(
+                    player = player_id,
+                    gc,
+                    err = %e,
+                    "PromoteGC: DB get_seals failed",
+                );
+                return;
+            }
+        };
+        if balance < cost {
+            tracing::info!(
+                player = player_id,
+                gc,
+                current_rank,
+                cost,
+                balance,
+                "PromoteGC refused: insufficient seal balance",
+            );
+            return;
+        }
+        // Spend seals first — `add_seals` clamps the post-deposit
+        // total at 0 so even if we later fail to bump the rank the
+        // player isn't double-charged on retry. The rank-bump path
+        // sticks with our existing AddSeals semantics.
+        if let Err(e) = self.db.add_seals(player_id, gc, -cost).await {
+            tracing::warn!(
+                player = player_id,
+                gc,
+                cost,
+                err = %e,
+                "PromoteGC: DB seal deduction failed",
+            );
+            return;
+        }
+        // Bump CharaState first so the SetGrandCompanyPacket emit
+        // (which reads CharaState) reflects the new rank without
+        // racing the DB write.
+        {
+            let mut c = handle.character.write().await;
+            match gc {
+                crate::actor::gc::GC_MAELSTROM => c.chara.gc_rank_limsa = next_rank,
+                crate::actor::gc::GC_TWIN_ADDER => c.chara.gc_rank_gridania = next_rank,
+                crate::actor::gc::GC_IMMORTAL_FLAMES => c.chara.gc_rank_uldah = next_rank,
+                _ => {}
+            }
+        }
+        if let Err(e) = self.db.set_gc_rank(player_id, gc, next_rank).await {
+            tracing::warn!(
+                player = player_id,
+                gc,
+                next_rank,
+                err = %e,
+                "PromoteGC: DB set_gc_rank failed (CharaState already updated; will reconcile on next login)",
+            );
+        }
+        self.emit_grand_company_packet(&handle).await;
+        tracing::info!(
+            player = player_id,
+            gc,
+            current_rank,
+            next_rank,
+            cost,
+            "PromoteGC applied",
+        );
     }
 
     async fn apply_dismiss_my_retainer(&self, player_id: u32, retainer_id: u32) {

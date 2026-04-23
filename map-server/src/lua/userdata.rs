@@ -749,6 +749,22 @@ impl UserData for LuaPlayer {
             );
             Ok(())
         });
+        // `player:PromoteGC(gc)` — atomic seal-spend + rank-bump.
+        // Called from `PopulaceCompanyOfficer.lua` after the
+        // `eventDoRankUp` confirm fires (choice == 1). The processor
+        // re-validates every precondition (enrollment, rank cap, seal
+        // balance) so a script that pushes this command without
+        // checking can't desync the player's state.
+        methods.add_method("PromoteGC", |_, this, gc: u8| {
+            push(
+                &this.queue,
+                LuaCommand::PromoteGC {
+                    player_id: this.snapshot.actor_id,
+                    gc,
+                },
+            );
+            Ok(())
+        });
         methods.add_method("GetGC", |_, this, _: ()| Ok(this.snapshot.gc_current));
         methods.add_method("GetGCRank", |_, this, gc: u8| {
             Ok(match gc {

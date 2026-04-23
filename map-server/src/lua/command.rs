@@ -396,6 +396,22 @@ pub enum LuaCommand {
         gc: u8,
         amount: i32,
     },
+    /// `player:PromoteGC(gc)` — atomic seal-spend + rank-bump.
+    /// Mirrors the post-confirm tail of Meteor's
+    /// `PopulaceCompanyOfficer.lua` flow: `eventDoRankUp` confirms the
+    /// promotion choice client-side, the script then asks the server
+    /// to actually apply it. Refuses (no DB write, no packet emit)
+    /// unless every precondition holds: player is enlisted in `gc`,
+    /// current rank has a `next_rank` (i.e. not at or past the 1.23b
+    /// `STORY_RANK_CAP = 31`), and the seal balance covers
+    /// `gc_promotion_cost(current)`. On success: spends the seal cost,
+    /// bumps the per-GC rank field, persists both, and emits
+    /// `SetGrandCompanyPacket` so the client sees the new rank
+    /// immediately.
+    PromoteGC {
+        player_id: u32,
+        gc: u8,
+    },
     /// `quest:OnNotice(player)` — cross-script dispatch that fires the
     /// target quest's `onNotice(player, quest, target)` hook. Used by
     /// `AfterQuestWarpDirector` (and any other director that resumes a
