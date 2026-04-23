@@ -1937,21 +1937,22 @@ impl UserData for LuaQuestHandle {
         methods.add_method("HasQuest", |_, this, _: ()| Ok(this.has_quest));
         methods.add_method("GetSequence", |_, this, _: ()| Ok(this.sequence));
 
-        // `quest:OnNotice(player)` — the `AfterQuestWarpDirector`
-        // script calls this out of its `onEventStarted` hook to hand
-        // control back to the quest's scripted `noticeEvent` branch
-        // (C# `Quest.OnNotice()` invokes the script's `onNotice`
-        // hook). Full cross-script invocation rides with the
-        // Meteor-parity "quest-engine dispatcher in Rust" follow-up;
-        // for now this is a logging no-op so the director's script
-        // parses + runs without aborting on a nil-method call.
+        // `quest:OnNotice(player)` — `AfterQuestWarpDirector` (and
+        // any other director that resumes a quest mid-flow) calls this
+        // out of `onEventStarted` to hand control back to the quest's
+        // scripted `onNotice(player, quest, target)` hook. Mirrors C#
+        // `Quest.OnNotice(Player, string)`. We emit a
+        // `QuestOnNotice` command and let `apply_quest_on_notice`
+        // perform the cross-script dispatch — same spawn_blocking +
+        // `apply_runtime_lua_commands` drain path that `onKillBNpc`
+        // uses in `runtime/quest_hook.rs`.
         methods.add_method("OnNotice", |_, this, _player: mlua::AnyUserData| {
             push(
                 &this.queue,
-                LuaCommand::LogError(format!(
-                    "quest:OnNotice({}) (stub — scripted notice hook not yet routed)",
-                    this.quest_id,
-                )),
+                LuaCommand::QuestOnNotice {
+                    player_id: this.player_id,
+                    quest_id: this.quest_id,
+                },
             );
             Ok(())
         });

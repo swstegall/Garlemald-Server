@@ -168,6 +168,10 @@ pub async fn apply_runtime_lua_command(
             apply_add_item(actor_id, item_package, item_id, quantity, db).await;
             true
         }
+        LC::QuestOnNotice { player_id, quest_id } => {
+            apply_quest_on_notice(player_id, quest_id, registry, db, world, lua).await;
+            true
+        }
         _ => false,
     }
 }
@@ -1185,6 +1189,181 @@ async fn find_npc_by_class_id(
 }
 
 // ---------------------------------------------------------------------------
+// Cross-script quest dispatch — `quest:OnNotice(player)` triggered from a
+// director script (`AfterQuestWarpDirector` et al.) routes through this
+// helper so the target quest's `onNotice(player, quest, target)` hook
+// fires with full command-drain support (unlike `fire_quest_hook` which
+// only drains a narrow subset).
+// ---------------------------------------------------------------------------
+
+/// Dispatch a `quest:OnNotice(player)` call: look up the target quest's
+/// script, build a fresh player snapshot + quest handle, invoke
+/// `onNotice(player, quest, target)` via `spawn_blocking`, and drain any
+/// emitted `LuaCommand`s through `apply_runtime_lua_commands` so scripted
+/// side effects (flag flips, sequence starts, ENPC registration) land
+/// after the cross-script hop.
+///
+/// No-ops quietly if:
+/// * the player isn't in the registry,
+/// * the player doesn't actually hold the quest (director may have
+///   fired us after the quest was abandoned mid-zone-change),
+/// * the quest id isn't in the catalog (no className → no script path),
+/// * or the script file is missing on disk.
+///
+/// The `target` arg is fired as `nil` — mirroring how the C# LuaEngine
+/// surfaces an unsupplied `triggerName` when directors call
+/// `quest:OnNotice(player)` with just one arg.
+pub async fn apply_quest_on_notice(
+    player_id: u32,
+    quest_id: u32,
+    registry: &ActorRegistry,
+    db: &Database,
+    world: &WorldManager,
+    lua: Option<&Arc<LuaEngine>>,
+) {
+    let Some(lua) = lua else {
+        tracing::debug!(
+            player = player_id,
+            quest = quest_id,
+            "quest:OnNotice dropped — no LuaEngine handle",
+        );
+        return;
+    };
+    let Some(handle) = registry.get(player_id).await else {
+        tracing::debug!(
+            player = player_id,
+            quest = quest_id,
+            "quest:OnNotice skipped — player not in registry",
+        );
+        return;
+    };
+    if !matches!(handle.kind, ActorKindTag::Player) {
+        return;
+    }
+    let Some(script_name) = lua.catalogs().quest_script_name(quest_id) else {
+        tracing::debug!(
+            player = player_id,
+            quest = quest_id,
+            "quest:OnNotice skipped — quest id not in catalog",
+        );
+        return;
+    };
+    let script_path = lua.resolver().quest(&script_name);
+    if !script_path.exists() {
+        tracing::debug!(
+            player = player_id,
+            quest = quest_id,
+            script = %script_path.display(),
+            "quest:OnNotice skipped — script file missing",
+        );
+        return;
+    }
+
+    let (snapshot, quest_handle) = {
+        let c = handle.character.read().await;
+        if !c.quest_journal.has(quest_id) {
+            tracing::debug!(
+                player = player_id,
+                quest = quest_id,
+                "quest:OnNotice skipped — player no longer holds quest",
+            );
+            return;
+        }
+        let snap = crate::lua::userdata::PlayerSnapshot {
+            actor_id: c.base.actor_id,
+            name: c.base.actor_name.clone(),
+            zone_id: c.base.zone_id,
+            pos: (c.base.position_x, c.base.position_y, c.base.position_z),
+            rotation: c.base.rotation,
+            state: c.base.current_main_state,
+            hp: c.chara.hp,
+            max_hp: c.chara.max_hp,
+            mp: c.chara.mp,
+            max_mp: c.chara.max_mp,
+            tp: c.chara.tp,
+            active_quests: c
+                .quest_journal
+                .slots
+                .iter()
+                .flatten()
+                .map(|q| q.quest_id())
+                .collect(),
+            active_quest_states: c
+                .quest_journal
+                .slots
+                .iter()
+                .flatten()
+                .map(|q| crate::lua::QuestStateSnapshot {
+                    quest_id: q.quest_id(),
+                    sequence: q.get_sequence(),
+                    flags: q.get_flags(),
+                    counters: [q.get_counter(0), q.get_counter(1), q.get_counter(2)],
+                })
+                .collect(),
+            completed_quests: c.quest_journal.iter_completed().collect(),
+            ..Default::default()
+        };
+        let q = c.quest_journal.get(quest_id).expect("quest_journal.has is true");
+        let quest_handle = crate::lua::LuaQuestHandle {
+            player_id: snap.actor_id,
+            quest_id,
+            has_quest: true,
+            sequence: q.get_sequence(),
+            flags: q.get_flags(),
+            counters: [q.get_counter(0), q.get_counter(1), q.get_counter(2)],
+            queue: crate::lua::command::CommandQueue::new(),
+        };
+        (snap, quest_handle)
+    };
+
+    let engine_clone = lua.clone();
+    let script_path_clone = script_path.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        engine_clone.call_quest_hook(
+            &script_path_clone,
+            "onNotice",
+            snapshot,
+            quest_handle,
+            Vec::new(),
+        )
+    })
+    .await;
+
+    let result = match result {
+        Ok(r) => r,
+        Err(join_err) => {
+            tracing::warn!(
+                error = %join_err,
+                quest = quest_id,
+                "quest:OnNotice dispatch panicked",
+            );
+            return;
+        }
+    };
+    if let Some(e) = result.error {
+        tracing::debug!(
+            error = %e,
+            quest = quest_id,
+            "quest:OnNotice errored",
+        );
+    }
+    if !result.commands.is_empty() {
+        // `apply_runtime_lua_commands` → ... → `apply_quest_on_notice`
+        // is a potential recursion cycle (an `onNotice` hook could emit
+        // another `QuestOnNotice`). Box the future so the compiler
+        // doesn't need a statically-known size.
+        Box::pin(apply_runtime_lua_commands(
+            result.commands,
+            registry,
+            db,
+            world,
+            Some(lua),
+        ))
+        .await;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Lua hook firing — mirror of `PacketProcessor::fire_quest_hook` that
 // drains emitted commands back through `apply_runtime_lua_command`.
 // ---------------------------------------------------------------------------
@@ -1319,5 +1498,178 @@ async fn fire_quest_hook(
         // Callers wanting full command drain should use the public
         // `apply_runtime_lua_commands` against the same registry/db/lua.
         let _ = (registry, db); // silence unused in degenerate builds
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::actor::Character;
+    use crate::actor::quest::{Quest, quest_actor_id};
+    use crate::runtime::actor_registry::ActorKindTag;
+
+    fn tmpdir() -> std::path::PathBuf {
+        // Two parallel tests landing on the same nanosecond tick would
+        // share this dir and clobber each other's scripts; the atomic
+        // counter guarantees uniqueness.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("garlemald-onnotice-{nanos}-{seq}"));
+        std::fs::create_dir_all(dir.join("quests/man")).unwrap();
+        dir
+    }
+
+    fn tempdb() -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("garlemald-onnotice-{nanos}-{seq}.db"))
+    }
+
+    /// `apply_quest_on_notice` resolves the script, fires
+    /// `onNotice(player, quest, target)`, and drains any commands the
+    /// hook emits. We have the hook flip a quest flag bit so we can
+    /// assert both halves (hook ran, drain applied) from one side
+    /// effect.
+    #[tokio::test]
+    async fn apply_quest_on_notice_fires_hook_and_drains_commands() {
+        let root = tmpdir();
+        std::fs::write(
+            root.join("quests/man/man0l1.lua"),
+            r#"
+                function onNotice(player, quest, target)
+                    quest:SetQuestFlag(3)
+                end
+            "#,
+        )
+        .unwrap();
+
+        let lua = Arc::new(LuaEngine::new(&root));
+        {
+            let mut quests = std::collections::HashMap::new();
+            quests.insert(
+                110_002u32,
+                crate::gamedata::QuestMeta {
+                    id: 110_002,
+                    quest_name: "Call of the Sea".to_string(),
+                    class_name: "Man0l1".to_string(),
+                    prerequisite: 0,
+                    min_level: 1,
+                },
+            );
+            lua.catalogs().install_quests(quests);
+        }
+
+        let registry = ActorRegistry::new();
+        let mut character = Character::new(13);
+        let mut quest = Quest::new(quest_actor_id(110_002), "Man0l1".to_string());
+        quest.clear_dirty();
+        character.quest_journal.add(quest);
+        let handle = ActorHandle::new(13, ActorKindTag::Player, 100, 42, character);
+        registry.insert(handle.clone()).await;
+        let world = WorldManager::new();
+        let db = crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub");
+
+        apply_quest_on_notice(13, 110_002, &registry, &db, &world, Some(&lua)).await;
+
+        // The onNotice hook's `SetQuestFlag(3)` should have walked the
+        // drain → `apply_quest_mutation` → `Quest::set_flag(3)`, leaving
+        // bit 3 set on the live quest in the registry.
+        let flags = {
+            let c = handle.character.read().await;
+            c.quest_journal.get(110_002).map(|q| q.get_flags()).unwrap_or(0)
+        };
+        assert_eq!(
+            flags & (1 << 3),
+            1 << 3,
+            "onNotice should have set flag bit 3 via drained SetQuestFlag",
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Missing `onNotice` function is a quiet no-op — mirrors how
+    /// `AfterQuestWarpDirector` can fire `quest:OnNotice` on any quest
+    /// in the journal without every script defining the hook.
+    #[tokio::test]
+    async fn apply_quest_on_notice_is_a_quiet_no_op_when_hook_missing() {
+        let root = tmpdir();
+        // Script with no onNotice — just a top-level global assignment
+        // so load_script succeeds.
+        std::fs::write(
+            root.join("quests/man/man0l0.lua"),
+            "_no_notice_defined = true",
+        )
+        .unwrap();
+
+        let lua = Arc::new(LuaEngine::new(&root));
+        {
+            let mut quests = std::collections::HashMap::new();
+            quests.insert(
+                110_001u32,
+                crate::gamedata::QuestMeta {
+                    id: 110_001,
+                    quest_name: "Shapeless Melody".to_string(),
+                    class_name: "Man0l0".to_string(),
+                    prerequisite: 0,
+                    min_level: 1,
+                },
+            );
+            lua.catalogs().install_quests(quests);
+        }
+
+        let registry = ActorRegistry::new();
+        let mut character = Character::new(21);
+        let mut quest = Quest::new(quest_actor_id(110_001), "Man0l0".to_string());
+        quest.clear_dirty();
+        character.quest_journal.add(quest);
+        let handle = ActorHandle::new(21, ActorKindTag::Player, 100, 42, character);
+        registry.insert(handle.clone()).await;
+        let world = WorldManager::new();
+        let db = crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub");
+
+        // Should not panic; should not emit any side effects.
+        apply_quest_on_notice(21, 110_001, &registry, &db, &world, Some(&lua)).await;
+
+        let flags = {
+            let c = handle.character.read().await;
+            c.quest_journal.get(110_001).map(|q| q.get_flags()).unwrap_or(0)
+        };
+        assert_eq!(flags, 0, "missing onNotice leaves flags untouched");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Player-not-in-registry (e.g. the director fired OnNotice after
+    /// a fast logout) is a quiet no-op. Guard the happy path from
+    /// panicking on a stale cross-script reference.
+    #[tokio::test]
+    async fn apply_quest_on_notice_skips_unknown_player() {
+        let root = tmpdir();
+        let lua = Arc::new(LuaEngine::new(&root));
+
+        let registry = ActorRegistry::new();
+        let world = WorldManager::new();
+        let db = crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub");
+
+        apply_quest_on_notice(9999, 110_001, &registry, &db, &world, Some(&lua)).await;
+        // Assertion here is "no panic". The function walks out of the
+        // `registry.get` branch without touching the LuaEngine.
+        let _ = std::fs::remove_dir_all(root);
     }
 }

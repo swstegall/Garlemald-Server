@@ -396,6 +396,19 @@ pub enum LuaCommand {
         gc: u8,
         amount: i32,
     },
+    /// `quest:OnNotice(player)` — cross-script dispatch that fires the
+    /// target quest's `onNotice(player, quest, target)` hook. Used by
+    /// `AfterQuestWarpDirector` (and any other director that resumes a
+    /// quest mid-flow) to hand control back to the quest's scripted
+    /// notice handler. Mirrors Meteor's `Quest.OnNotice(Player, string)`;
+    /// the Lua director never supplies the trigger string so the
+    /// Rust-side dispatcher fires the hook with an empty extra-args list,
+    /// which surfaces as `nil` for `target` in the script — the same
+    /// null-string the C# variant produces when called without a trigger.
+    QuestOnNotice {
+        player_id: u32,
+        quest_id: u32,
+    },
     LogError(String),
 }
 
