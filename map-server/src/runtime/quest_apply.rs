@@ -152,7 +152,7 @@ pub async fn apply_runtime_lua_command(
             true
         }
         LC::AddExp { actor_id, class_id, exp } => {
-            apply_add_exp(actor_id, class_id, exp, registry, db).await;
+            apply_add_exp(actor_id, class_id, exp, registry, db, Some(world)).await;
             true
         }
         LC::AddGil { actor_id, amount } => {
@@ -536,12 +536,34 @@ pub async fn apply_quest_update_enpcs(
 // Rewards
 // ---------------------------------------------------------------------------
 
+/// Apply an XP gain to `actor_id`'s `class_id` skill pool.
+///
+/// Pipeline (Tier 4 #19 refresh):
+///   1. Read `restBonus` (0..=100 percentage from CharaState).
+///   2. Apply rested-XP multiplier via [`consume_rested_xp`] — the
+///      effective gain is `exp + floor(exp * restBonus / 100)`,
+///      and the rested pool decays by roughly `exp / 50` per call
+///      (so ~5000 XP at 100% rested drains the pool).
+///   3. Run the existing level-up rollover via
+///      `battle::save::level_up_if_threshold_crossed`.
+///   4. Persist `skillPoint` / `skillLevel` / `restBonus` to DB.
+///   5. When `world` is available, emit `SetActorProperty` packets
+///      so the client UI refreshes without a full re-login:
+///        - `charaWork.battleSave.skillPoint[class-1]` on every gain,
+///        - `charaWork.battleSave.skillLevel[class-1]` +
+///          `charaWork.parameterSave.state_mainSkillLevel` on level-up,
+///        - `playerWork.restBonusExpRate` when rested decayed.
+///
+/// `world` is optional so existing unit tests that don't wire a
+/// WorldManager keep working; the packet branch silently skips when
+/// `None`.
 pub async fn apply_add_exp(
     actor_id: u32,
     class_id: u8,
     exp: i32,
     registry: &ActorRegistry,
     db: &Database,
+    world: Option<&WorldManager>,
 ) {
     if exp == 0 {
         return;
@@ -553,14 +575,17 @@ pub async fn apply_add_exp(
     // Read-modify-write inside the write lock so a concurrent AddExp
     // doesn't lose a level-up crossing to a race. `new_exp` and
     // `new_level` are the post-rollover values.
-    let Some((new_exp, new_level, levels_gained)) = ({
+    let Some((effective_gain, new_exp, new_level, levels_gained, rested_before, rested_after)) = ({
         let mut c = handle.character.write().await;
         if class_slot >= c.battle_save.skill_point.len() {
             tracing::warn!(class = class_id, "AddExp: class_id out of range");
             None
         } else {
+            let rested_before = c.chara.rest_bonus_exp_rate;
+            let (effective_gain, rested_after) = consume_rested_xp(exp, rested_before);
+            c.chara.rest_bonus_exp_rate = rested_after;
             let prior_sp = c.battle_save.skill_point[class_slot];
-            let combined = prior_sp.saturating_add(exp).max(0);
+            let combined = prior_sp.saturating_add(effective_gain).max(0);
             let prior_level = c
                 .battle_save
                 .skill_level
@@ -583,7 +608,7 @@ pub async fn apply_add_exp(
                     c.chara.level = lvl;
                 }
             }
-            Some((sp, lvl, gained))
+            Some((effective_gain, sp, lvl, gained, rested_before, rested_after))
         }
     }) else {
         return;
@@ -614,14 +639,140 @@ pub async fn apply_add_exp(
             "AddExp: level up",
         );
     }
+    if rested_after != rested_before
+        && let Err(e) = db.set_rest_bonus_exp_rate(actor_id, rested_after).await
+    {
+        tracing::warn!(
+            actor = actor_id,
+            err = %e,
+            "AddExp: restBonus DB persist failed",
+        );
+    }
+
+    // Client-facing property emits — only fire when we have a
+    // WorldManager to reach the session → client handle.
+    if let Some(world) = world {
+        emit_exp_property_updates(
+            actor_id,
+            class_id,
+            new_exp,
+            new_level,
+            levels_gained,
+            rested_before,
+            rested_after,
+            &handle,
+            world,
+        )
+        .await;
+    }
+
     tracing::info!(
         actor = actor_id,
         class = class_id,
         delta = exp,
+        applied = effective_gain,
         skill_point = new_exp,
         level = new_level,
+        rested_before,
+        rested_after,
         "AddExp applied",
     );
+}
+
+/// Apply rested-XP bonus to an incoming gain.
+///
+/// `rested` is the 0..=100 bonus percentage stored on
+/// `CharaState.rest_bonus_exp_rate`. Returns `(total_gain, new_rested)`.
+/// The bonus is `floor(exp * rested_pct / 100)` — a 100%-rested
+/// player gets double XP on their next gain. Decay is `max(1, exp/50)`
+/// per call: ~5000 XP at steady 100% rested drains the pool; smaller
+/// gains sip more slowly. Negative `rested` clamps to 0. Zero / negative
+/// `exp` is a no-op and leaves the pool alone (matches the `exp == 0`
+/// early return in `apply_add_exp`).
+pub fn consume_rested_xp(exp: i32, rested: i32) -> (i32, i32) {
+    if exp <= 0 || rested <= 0 {
+        return (exp, rested.max(0));
+    }
+    let rested_pct = rested.min(100);
+    let bonus = (exp as i64 * rested_pct as i64 / 100) as i32;
+    let total = exp.saturating_add(bonus);
+    // ~1 point decayed per 50 XP of base gain, min 1 so tiny gains
+    // don't freeload.
+    let decay = ((exp + 49) / 50).max(1);
+    let new_rested = (rested - decay).max(0);
+    (total, new_rested)
+}
+
+/// Emit the `SetActorProperty` packets Meteor's `AddExp` sends after
+/// a successful gain. Target strings mirror Meteor's
+/// `ActorPropertyPacketUtil` usage:
+///
+///   - `charaWork/battleStateForSelf` → `skillPoint[class-1]`,
+///     `playerWork.restBonusExpRate` (self-only).
+///   - `charaWork/stateForAll` → `skillLevel[class-1]`,
+///     `state_mainSkillLevel` (broadcast on level-up).
+///
+/// For now the packets are self-emitted only; the broadcast-to-nearby
+/// helper is the follow-up sprint's work on a generalised
+/// broadcast pipeline. The owning client sees the packet immediately.
+#[allow(clippy::too_many_arguments)]
+async fn emit_exp_property_updates(
+    actor_id: u32,
+    class_id: u8,
+    new_exp: i32,
+    new_level: i16,
+    levels_gained: i16,
+    rested_before: i32,
+    rested_after: i32,
+    handle: &ActorHandle,
+    world: &WorldManager,
+) {
+    let session_id = handle.session_id;
+    if session_id == 0 {
+        return;
+    }
+    let Some(client) = world.client(session_id).await else {
+        return;
+    };
+    let class_slot = class_id.saturating_sub(1);
+
+    // Self-only: skillPoint + restBonusExpRate.
+    let mut self_packets = Vec::new();
+    {
+        let mut b = crate::packets::send::actor::ActorPropertyPacketBuilder::new(
+            actor_id,
+            "charaWork/battleStateForSelf",
+        );
+        b.add_int(
+            &format!("charaWork.battleSave.skillPoint[{}]", class_slot),
+            new_exp as u32,
+        );
+        if rested_before != rested_after {
+            b.add_int("playerWork.restBonusExpRate", rested_after as u32);
+        }
+        self_packets.extend(b.done());
+    }
+
+    // Level-up: skillLevel + state_mainSkillLevel (broadcast in
+    // retail, self-only here pending the broadcast helper).
+    if levels_gained > 0 {
+        let mut b = crate::packets::send::actor::ActorPropertyPacketBuilder::new(
+            actor_id,
+            "charaWork/stateForAll",
+        );
+        b.add_short(
+            &format!("charaWork.battleSave.skillLevel[{}]", class_slot),
+            new_level as u16,
+        );
+        b.add_short("charaWork.parameterSave.state_mainSkillLevel", new_level as u16);
+        self_packets.extend(b.done());
+    }
+
+    for sub in self_packets {
+        if let Ok(base) = common::BasePacket::create_from_subpacket(&sub, true, false) {
+            client.send_bytes(base.to_bytes()).await;
+        }
+    }
 }
 
 /// `player:SetQuestComplete(id, flag)` — direct-set the 2048-bit

@@ -988,6 +988,7 @@ impl PacketProcessor {
                     exp,
                     &self.registry,
                     &self.db,
+                    Some(&self.world),
                 )
                 .await;
             }

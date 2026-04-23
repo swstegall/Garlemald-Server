@@ -2427,6 +2427,7 @@ async fn addexp_past_threshold_levels_up_and_persists() {
         1271,
         &registry,
         &db,
+        None,
     )
     .await;
 
@@ -2476,6 +2477,7 @@ async fn addexp_past_threshold_levels_up_and_persists() {
         100,
         &registry,
         &db,
+        None,
     )
     .await;
     let handle = registry.get(7).await.unwrap();
@@ -3718,6 +3720,287 @@ async fn rental_expiry_tick_dismounts() {
     assert_eq!(c.chara.rental_min_left, 0);
     assert_eq!(c.chara.mount_state, 0);
     assert_eq!(c.base.current_main_state, crate::actor::MAIN_STATE_PASSIVE);
+}
+
+// ---------------------------------------------------------------------------
+// Leveling progression polish — Tier 4 #19
+// ---------------------------------------------------------------------------
+
+/// `consume_rested_xp` math — the 1-to-1 exp+bonus formula + decay
+/// semantics.
+#[test]
+fn consume_rested_xp_math_follows_retail_shape() {
+    use crate::runtime::quest_apply::consume_rested_xp;
+
+    // Zero-rested → no bonus, no decay.
+    assert_eq!(consume_rested_xp(100, 0), (100, 0));
+    // Negative rested clamps to 0.
+    assert_eq!(consume_rested_xp(100, -42), (100, 0));
+    // Zero exp → no-op.
+    assert_eq!(consume_rested_xp(0, 50), (0, 50));
+    // Negative exp → no-op (clamped return).
+    assert_eq!(consume_rested_xp(-1, 50), (-1, 50));
+
+    // Full rested doubles the gain; decay = max(1, (exp+49)/50) = 2.
+    let (total, new_rested) = consume_rested_xp(100, 100);
+    assert_eq!(total, 200);
+    assert_eq!(new_rested, 98, "100 XP → decay 2 ((100+49)/50)");
+
+    // Half-rested gives +50% bonus.
+    let (total_half, _) = consume_rested_xp(100, 50);
+    assert_eq!(total_half, 150);
+
+    // Tiny gains still decay by at least 1.
+    let (_, rested_after_small) = consume_rested_xp(1, 100);
+    assert_eq!(rested_after_small, 99);
+
+    // Rested clamps at 100 (over-seeded values don't balloon the bonus).
+    let (total_clamped, _) = consume_rested_xp(100, 200);
+    assert_eq!(total_clamped, 200, "rested past 100 still caps at +100%");
+}
+
+/// `apply_add_exp` consumes rested bonus: effective SP gain includes
+/// the 0..=100% multiplier, and `rest_bonus_exp_rate` ticks down
+/// (both in CharaState and DB).
+#[tokio::test]
+async fn apply_add_exp_consumes_rested_pool() {
+    use crate::actor::Character;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use common::db::ConnCallExt;
+    use std::sync::Arc;
+
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name, restBonus)
+                  VALUES (33, 0, 0, 0, 'Well Rested', 50)",
+                [],
+            )?;
+            c.execute(
+                r"INSERT INTO characters_class_levels (characterId) VALUES (33)",
+                [],
+            )?;
+            c.execute(
+                r"INSERT INTO characters_class_exp (characterId) VALUES (33)",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let mut chara = Character::new(33);
+    // Seed CharaState from "DB" — 50% rested, level-1 GLA.
+    chara.chara.rest_bonus_exp_rate = 50;
+    chara.chara.class = crate::gamedata::CLASSID_GLA as i16;
+    chara.chara.level = 1;
+    chara.battle_save.skill_level[crate::gamedata::CLASSID_GLA as usize] = 1;
+    registry
+        .insert(ActorHandle::new(33, ActorKindTag::Player, 200, 33, chara))
+        .await;
+
+    // 100 base XP at 50% rested → 150 effective gain.
+    crate::runtime::quest_apply::apply_add_exp(
+        33,
+        crate::gamedata::CLASSID_GLA,
+        100,
+        &registry,
+        &db,
+        None,
+    )
+    .await;
+
+    let c = registry.get(33).await.unwrap().character.read().await.clone();
+    assert_eq!(
+        c.battle_save.skill_point[crate::gamedata::CLASSID_GLA as usize],
+        150,
+        "100 base + 50% rested bonus = 150 effective SP",
+    );
+    // 100/50 = 2 decay.
+    assert_eq!(
+        c.chara.rest_bonus_exp_rate, 48,
+        "rested drops by 2 on 100 XP gain",
+    );
+
+    // DB persisted both.
+    let (sp, rested): (i32, i32) = db
+        .conn_for_test()
+        .call_db(|c| {
+            let sp: i32 = c.query_row(
+                "SELECT gla FROM characters_class_exp WHERE characterId = 33",
+                [],
+                |r| r.get(0),
+            )?;
+            let r: i32 = c.query_row(
+                "SELECT restBonus FROM characters WHERE id = 33",
+                [],
+                |r| r.get(0),
+            )?;
+            Ok((sp, r))
+        })
+        .await
+        .unwrap();
+    assert_eq!(sp, 150);
+    assert_eq!(rested, 48);
+}
+
+/// `apply_add_exp` with a WorldManager + registered ClientHandle emits
+/// the `SetActorProperty` packets on a plain (no-level-up) gain.
+#[tokio::test]
+async fn apply_add_exp_emits_property_packets_to_client() {
+    use crate::actor::Character;
+    use crate::data::ClientHandle;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use tokio::sync::mpsc;
+    use std::sync::Arc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    // Insert a character row + class rows.
+    use common::db::ConnCallExt;
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name, restBonus)
+                  VALUES (44, 0, 0, 0, 'PacketHearer', 0)",
+                [],
+            )?;
+            c.execute(
+                r"INSERT INTO characters_class_levels (characterId) VALUES (44)",
+                [],
+            )?;
+            c.execute(
+                r"INSERT INTO characters_class_exp (characterId) VALUES (44)",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(16);
+    world.register_client(44, ClientHandle::new(44, tx)).await;
+    let mut chara = Character::new(44);
+    chara.chara.class = crate::gamedata::CLASSID_GLA as i16;
+    chara.chara.level = 1;
+    chara.battle_save.skill_level[crate::gamedata::CLASSID_GLA as usize] = 1;
+    registry
+        .insert(ActorHandle::new(44, ActorKindTag::Player, 200, 44, chara))
+        .await;
+
+    // Small gain — no level up, no rested.
+    crate::runtime::quest_apply::apply_add_exp(
+        44,
+        crate::gamedata::CLASSID_GLA,
+        10,
+        &registry,
+        &db,
+        Some(&world),
+    )
+    .await;
+
+    // Expect at least one SetActorProperty packet bytes frame.
+    let frame = rx
+        .try_recv()
+        .expect("client should have received a property packet");
+    assert!(!frame.is_empty(), "packet bytes should be non-empty");
+    // Packet opcode 0x0137 lives at bytes 2..4 of the subpacket header,
+    // which lives inside the base packet body (offset 0x10 from the
+    // start of the serialized frame). A quick smoke check is that the
+    // opcode bytes appear somewhere in the frame.
+    let op = 0x0137u16.to_le_bytes();
+    assert!(
+        frame.windows(2).any(|w| w == op),
+        "frame should contain OP_SET_ACTOR_PROPERTY (0x0137) — {:?}",
+        &frame[..16.min(frame.len())],
+    );
+}
+
+/// Level-up emits the extra `stateForAll` bundle (skillLevel +
+/// state_mainSkillLevel properties) on top of the
+/// `battleStateForSelf` skillPoint update — ≥2 subpacket frames.
+#[tokio::test]
+async fn apply_add_exp_level_up_emits_extra_state_for_all_bundle() {
+    use crate::actor::Character;
+    use crate::data::ClientHandle;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use tokio::sync::mpsc;
+    use std::sync::Arc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    use common::db::ConnCallExt;
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name, restBonus)
+                  VALUES (77, 0, 0, 0, 'LevelUpper', 0)",
+                [],
+            )?;
+            c.execute(
+                r"INSERT INTO characters_class_levels (characterId) VALUES (77)",
+                [],
+            )?;
+            c.execute(
+                r"INSERT INTO characters_class_exp (characterId) VALUES (77)",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(16);
+    world.register_client(77, ClientHandle::new(77, tx)).await;
+    let mut chara = Character::new(77);
+    chara.chara.class = crate::gamedata::CLASSID_GLA as i16;
+    chara.chara.level = 1;
+    chara.battle_save.skill_level[crate::gamedata::CLASSID_GLA as usize] = 1;
+    registry
+        .insert(ActorHandle::new(77, ActorKindTag::Player, 200, 77, chara))
+        .await;
+
+    // LEVEL_THRESHOLDS[0] = 570 — gain 600 to roll level 1 → 2.
+    crate::runtime::quest_apply::apply_add_exp(
+        77,
+        crate::gamedata::CLASSID_GLA,
+        600,
+        &registry,
+        &db,
+        Some(&world),
+    )
+    .await;
+
+    let mut frames = 0;
+    while rx.try_recv().is_ok() {
+        frames += 1;
+    }
+    assert!(
+        frames >= 2,
+        "level-up should emit ≥2 frames (battleStateForSelf + stateForAll); got {frames}",
+    );
+
+    // State reflects the level up.
+    let c = registry.get(77).await.unwrap().character.read().await.clone();
+    assert_eq!(c.chara.level, 2);
+    assert_eq!(
+        c.battle_save.skill_level[crate::gamedata::CLASSID_GLA as usize],
+        2,
+    );
 }
 
 // ---------------------------------------------------------------------------
