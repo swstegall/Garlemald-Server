@@ -442,6 +442,13 @@ impl PacketProcessor {
                 crate::managers::LinkshellManager::RANK_MEMBER,
             )
             .await?;
+        // Refresh from cache after the add so the member list we
+        // notify against includes the joiner. `OnPlayerJoin` text
+        // ids 25157 (to joiner: "You join %s") + 25284 (to others:
+        // "%s has joined %s"). Mirrors `Linkshell.OnPlayerJoin` in
+        // `World Server/DataObjects/Group/Linkshell.cs`.
+        self.notify_linkshell_join(ls.db_id, p.actor_id, &p.ls_name).await;
+        let _ = sub;
         Ok(())
     }
 
@@ -471,6 +478,18 @@ impl PacketProcessor {
         } else {
             sub.header.source_id
         };
+        // Snapshot the member list BEFORE the remove so we can fan
+        // the kick/leave message to everyone (including the
+        // departing member). For self-leave, only the leaver hears
+        // 25162 ("You leave %s"); for kick, kicked hears 25184
+        // ("You have been exiled from %s") and the rest hear 25280
+        // ("%s has been exiled from %s").
+        if p.is_kicked {
+            self.notify_linkshell_kick(ls.db_id, target, &p.kicked_name, &p.ls_name)
+                .await;
+        } else {
+            self.notify_linkshell_self_leave(target, &p.ls_name).await;
+        }
         self.world
             .linkshell_manager
             .remove_member(&self.db, ls.db_id, target)
@@ -496,7 +515,158 @@ impl PacketProcessor {
             .linkshell_manager
             .change_rank(&self.db, ls.db_id, target_id, p.rank)
             .await?;
+        // 25277 ("…has been promoted to rank…") — Meteor encodes the
+        // rank in the textId arg as `100000 + rank`.
+        self.notify_linkshell_rank_change(target_id, p.rank, &p.ls_name)
+            .await;
         let _ = sub;
         Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Linkshell notification helpers (Tier 1 #5 follow-up — Meteor
+    // `WorldServer/DataObjects/Group/Linkshell.cs::OnPlayerJoin/etc.`).
+    // -----------------------------------------------------------------------
+
+    /// Best-effort send of one game-message subpacket to a single
+    /// session, identified by character id (which == session id for
+    /// players in this server). No-op if the session isn't online.
+    async fn send_game_message_to(
+        &self,
+        recipient_chara_id: u32,
+        text_id: u16,
+        lua_params: Vec<common::luaparam::LuaParam>,
+    ) {
+        let Some(session) = self
+            .sessions
+            .get(crate::data::SessionChannel::Zone, recipient_chara_id)
+            .await
+        else {
+            return;
+        };
+        let pkt = tx::build_game_message(
+            recipient_chara_id,
+            tx::GameMessageOptions {
+                sender_actor_id: 0,
+                receiver_actor_id: recipient_chara_id,
+                text_id,
+                log: 0x20,
+                display_id: None,
+                custom_sender: None,
+                lua_params,
+            },
+        );
+        session.client.send_bytes(pkt.to_bytes()).await;
+    }
+
+    async fn notify_linkshell_join(&self, ls_id: u64, joiner_id: u32, ls_name: &str) {
+        let Some(ls) = self.world.linkshell_manager.get_cached_by_id(ls_id).await else {
+            return;
+        };
+        let joiner_name = self
+            .session_character_name(joiner_id)
+            .await
+            .unwrap_or_default();
+        for member in &ls.members {
+            if member.character_id == joiner_id {
+                self.send_game_message_to(
+                    joiner_id,
+                    25157,
+                    vec![
+                        common::luaparam::LuaParam::Int32(0),
+                        common::luaparam::LuaParam::Actor(joiner_id),
+                        common::luaparam::LuaParam::String(ls_name.to_string()),
+                    ],
+                )
+                .await;
+            } else {
+                self.send_game_message_to(
+                    member.character_id,
+                    25284,
+                    vec![
+                        common::luaparam::LuaParam::Int32(0),
+                        common::luaparam::LuaParam::String(joiner_name.clone()),
+                        common::luaparam::LuaParam::String(ls_name.to_string()),
+                    ],
+                )
+                .await;
+            }
+        }
+    }
+
+    async fn notify_linkshell_self_leave(&self, leaver_id: u32, ls_name: &str) {
+        // Only the leaver hears 25162; remaining members aren't
+        // notified per Meteor's `LeaveRequest` flow (members
+        // discover via the next group sync).
+        self.send_game_message_to(
+            leaver_id,
+            25162,
+            vec![
+                common::luaparam::LuaParam::Int32(1),
+                common::luaparam::LuaParam::String(ls_name.to_string()),
+            ],
+        )
+        .await;
+    }
+
+    async fn notify_linkshell_kick(
+        &self,
+        ls_id: u64,
+        kicked_id: u32,
+        kicked_name: &str,
+        ls_name: &str,
+    ) {
+        let Some(ls) = self.world.linkshell_manager.get_cached_by_id(ls_id).await else {
+            return;
+        };
+        for member in &ls.members {
+            if member.character_id == kicked_id {
+                self.send_game_message_to(
+                    kicked_id,
+                    25184,
+                    vec![
+                        common::luaparam::LuaParam::Int32(1),
+                        common::luaparam::LuaParam::String(ls_name.to_string()),
+                    ],
+                )
+                .await;
+            } else {
+                self.send_game_message_to(
+                    member.character_id,
+                    25280,
+                    vec![
+                        common::luaparam::LuaParam::Int32(1),
+                        common::luaparam::LuaParam::String(kicked_name.to_string()),
+                        common::luaparam::LuaParam::String(ls_name.to_string()),
+                    ],
+                )
+                .await;
+            }
+        }
+    }
+
+    async fn notify_linkshell_rank_change(&self, target_id: u32, rank: u8, ls_name: &str) {
+        // Meteor passes `(100000 + rank)` as the int-arg slot to
+        // index into the textId table for the new rank label.
+        self.send_game_message_to(
+            target_id,
+            25277,
+            vec![
+                common::luaparam::LuaParam::Int32(100_000 + rank as i32),
+                common::luaparam::LuaParam::String(ls_name.to_string()),
+            ],
+        )
+        .await;
+    }
+
+    /// Look up a character's display name through their live session.
+    /// Returns `None` for offline characters; the caller falls back
+    /// to whatever string the client supplied (kicked-target name).
+    async fn session_character_name(&self, chara_id: u32) -> Option<String> {
+        let session = self
+            .sessions
+            .get(crate::data::SessionChannel::Zone, chara_id)
+            .await?;
+        Some(session.state.lock().await.character_name.clone())
     }
 }

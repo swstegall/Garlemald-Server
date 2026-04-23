@@ -206,6 +206,14 @@ impl LinkshellManager {
         Ok(Some(ls))
     }
 
+    /// Cheap clone of the cached `Linkshell` by id, for callers that
+    /// need the member list (notification fan-out) without hitting
+    /// the DB. Returns `None` if the id isn't in the cache —
+    /// `get_or_load_linkshell(name)` is the warm-up path.
+    pub async fn get_cached_by_id(&self, ls_id: u64) -> Option<Linkshell> {
+        self.cache.lock().await.get(&ls_id).cloned()
+    }
+
     pub async fn add_member(
         &self,
         db: &Database,
@@ -435,6 +443,40 @@ mod tests {
                 .iter()
                 .all(|m| m.character_id != 2),
         );
+    }
+
+    /// `get_cached_by_id` mirrors the by-name cache lookup. Returns
+    /// the same `Linkshell` clone the by-name lookup yields; returns
+    /// `None` for a never-loaded id without falling through to the DB.
+    #[tokio::test]
+    async fn get_cached_by_id_round_trips_after_create() {
+        let db = Database::open(tempdb()).await.unwrap();
+        seed_character(&db, 1, "Master").await;
+        seed_character(&db, 2, "Recruit").await;
+        let mgr = LinkshellManager::new();
+
+        // Cold cache → None.
+        assert!(mgr.get_cached_by_id(0xDEADBEEF).await.is_none());
+
+        let ls = mgr
+            .create_linkshell(&db, "ShellById", 0x4242, 1)
+            .await
+            .unwrap()
+            .unwrap();
+        mgr.add_member(&db, ls.db_id, 2, LinkshellManager::RANK_MEMBER)
+            .await
+            .unwrap();
+
+        let by_id = mgr
+            .get_cached_by_id(ls.db_id)
+            .await
+            .expect("just-created LS should be cached by id");
+        assert_eq!(by_id.name, "ShellById");
+        assert_eq!(by_id.members.len(), 2);
+
+        let by_name = mgr.get_linkshell("ShellById").await.unwrap();
+        assert_eq!(by_id.db_id, by_name.db_id);
+        assert_eq!(by_id.members.len(), by_name.members.len());
     }
 
     #[tokio::test]

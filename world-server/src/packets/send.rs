@@ -266,4 +266,71 @@ mod tests {
         let sub = build_error(7, 0xBADF00D);
         assert_eq!(sub.data, 0xBADF00Du32.to_le_bytes().to_vec());
     }
+
+    /// `build_game_message` carries the linkshell-join textId 25157
+    /// (Meteor `Linkshell.OnPlayerJoin`'s "You join %s" branch) at
+    /// the right body offset, with a non-empty luaparam tail so the
+    /// notification helper's call shape doesn't silently degrade.
+    #[test]
+    fn linkshell_join_game_message_carries_text_id_25157() {
+        use common::luaparam::LuaParam;
+
+        let sub = build_game_message(
+            42,
+            GameMessageOptions {
+                sender_actor_id: 0,
+                receiver_actor_id: 42,
+                text_id: 25157,
+                log: 0x20,
+                display_id: None,
+                custom_sender: None,
+                lua_params: vec![
+                    LuaParam::Int32(0),
+                    LuaParam::Actor(42),
+                    LuaParam::String("ShellTest".into()),
+                ],
+            },
+        );
+        // Body: u32 receiver, u32 sender, u16 text_id, u8 log, u8 pad, …
+        assert_eq!(&sub.data[..4], 42u32.to_le_bytes().as_slice());
+        assert_eq!(&sub.data[4..8], 0u32.to_le_bytes().as_slice());
+        assert_eq!(&sub.data[8..10], 25157u16.to_le_bytes().as_slice());
+        assert_eq!(sub.data[10], 0x20);
+        // Lua params start after the 12-byte header (no displayId/sender):
+        // first byte should be the Int32 type tag (0x0).
+        assert_eq!(sub.data[12], 0x0);
+        // The body must be longer than just the header — proves the
+        // luaparam encoder ran.
+        assert!(sub.data.len() > 12 + 5);
+    }
+
+    /// Same shape for the kick textId 25280 (Meteor's "X has been
+    /// exiled from %s" branch), with two strings (kicked name + ls
+    /// name) tail-packed.
+    #[test]
+    fn linkshell_kick_game_message_carries_text_id_25280() {
+        use common::luaparam::LuaParam;
+
+        let sub = build_game_message(
+            7,
+            GameMessageOptions {
+                sender_actor_id: 0,
+                receiver_actor_id: 7,
+                text_id: 25280,
+                log: 0x20,
+                display_id: None,
+                custom_sender: None,
+                lua_params: vec![
+                    LuaParam::Int32(1),
+                    LuaParam::String("Kicked".into()),
+                    LuaParam::String("ShellTest".into()),
+                ],
+            },
+        );
+        assert_eq!(&sub.data[8..10], 25280u16.to_le_bytes().as_slice());
+        // Two strings → body should contain the ASCII bytes of both
+        // somewhere past the header.
+        assert!(sub.data.windows(6).any(|w| w == b"Kicked"));
+        assert!(sub.data.windows(9).any(|w| w == b"ShellTest"));
+    }
 }
