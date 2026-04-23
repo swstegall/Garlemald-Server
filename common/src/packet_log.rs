@@ -47,10 +47,16 @@ pub enum Direction {
 }
 
 impl Direction {
-    fn arrow(&self) -> &'static str {
+    /// Five-char direction tag that appears as a literal prefix on
+    /// each log line. Matches `project-meteor-mirror` commit
+    /// `2d2541c9`'s `[IN ]` / `[OUT]` convention so garlemald and
+    /// Meteor runs can be side-by-side diffed with `grep '\[IN \]'`
+    /// / `grep '\[OUT\]'`. The trailing space on `IN` keeps both
+    /// tags 5 chars wide for column alignment.
+    fn tag(&self) -> &'static str {
         match self {
-            Direction::Inbound => "<-",
-            Direction::Outbound => "->",
+            Direction::Inbound => "[IN ]",
+            Direction::Outbound => "[OUT]",
         }
     }
 }
@@ -137,7 +143,7 @@ fn log(direction: Direction, peer: PeerRepr<'_>, bytes: &[u8]) {
     }
     let mut buf = String::with_capacity(bytes.len() * 4 + 96);
     let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ");
-    let arrow = direction.arrow();
+    let dir_tag = direction.tag();
     match peer {
         PeerRepr::Addr(addr) => {
             let _ = writeln!(
@@ -145,7 +151,7 @@ fn log(direction: Direction, peer: PeerRepr<'_>, bytes: &[u8]) {
                 "{} {} {} {} ({} bytes)",
                 logger.tag,
                 ts,
-                arrow,
+                dir_tag,
                 addr,
                 bytes.len()
             );
@@ -156,7 +162,7 @@ fn log(direction: Direction, peer: PeerRepr<'_>, bytes: &[u8]) {
                 "{} {} {} {} ({} bytes)",
                 logger.tag,
                 ts,
-                arrow,
+                dir_tag,
                 name,
                 bytes.len()
             );
@@ -236,5 +242,16 @@ mod tests {
         assert_eq!(slug("[LOBBY]"), "lobby");
         assert_eq!(slug("[MAP]  "), "map");
         assert_eq!(slug("[WORLD]"), "world");
+    }
+
+    /// Direction tag matches the `project-meteor-mirror` commit
+    /// `2d2541c9` wire format — `[IN ]` vs `[OUT]`, both 5 chars so
+    /// grep-based side-by-side diffs land cleanly.
+    #[test]
+    fn direction_tag_matches_mirror_fork_convention() {
+        assert_eq!(Direction::Inbound.tag(), "[IN ]");
+        assert_eq!(Direction::Outbound.tag(), "[OUT]");
+        assert_eq!(Direction::Inbound.tag().len(), 5);
+        assert_eq!(Direction::Outbound.tag().len(), 5);
     }
 }
