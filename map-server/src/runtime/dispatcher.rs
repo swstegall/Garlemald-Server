@@ -1320,7 +1320,7 @@ async fn apply_recalc_stats(
 /// is a BattleNpc and the attacker is a Player, fire the hook once per
 /// quest in the attacker's journal (Meteor's convention — scripts
 /// filter by `bnpc_class_id` themselves).
-async fn die_if_defender_fell(
+pub(crate) async fn die_if_defender_fell(
     defender_actor_id: u32,
     attacker_actor_id: Option<u32>,
     registry: &ActorRegistry,
@@ -1346,11 +1346,11 @@ async fn die_if_defender_fell(
         handle.kind,
         crate::runtime::actor_registry::ActorKindTag::BattleNpc,
     );
-    let bnpc_class_id = if is_bnpc {
+    let (bnpc_class_id, mob_level) = if is_bnpc {
         let c = handle.character.read().await;
-        c.chara.actor_class_id
+        (c.chara.actor_class_id, c.chara.level.max(1))
     } else {
-        0
+        (0, 1)
     };
 
     apply_die(defender_actor_id, registry, world, zone).await;
@@ -1359,9 +1359,6 @@ async fn die_if_defender_fell(
         return;
     }
     let Some(attacker_id) = attacker_actor_id else {
-        return;
-    };
-    let Some(lua) = lua else {
         return;
     };
     let Some(attacker_handle) = registry.get(attacker_id).await else {
@@ -1379,6 +1376,21 @@ async fn die_if_defender_fell(
         // hook rather than emitting packets without persistence.
         return;
     };
+
+    // Grand Company seal reward — port of Meteor's "kill grants
+    // seals" payout. Hook fires before the quest-hook chain so a
+    // quest that consumes the kill (e.g. "kill 10 hectaeyes for
+    // the Maelstrom") sees the post-reward seal balance if it
+    // queries it. Approximation of retail's per-rank/per-dlvl
+    // curve: `seals = mob_level` (clamped to [1, 100]); promotion
+    // through the rank-cap table eventually reduces returns once
+    // the player exceeds the mob level. The richer curve from
+    // `BattleUtils.cs:GetEXPReward` is the follow-up.
+    award_grand_company_seals(&attacker_handle, mob_level, db_arc).await;
+
+    let Some(lua) = lua else {
+        return;
+    };
     crate::runtime::quest_hook::fire_on_kill_bnpc(
         &attacker_handle,
         lua,
@@ -1388,6 +1400,66 @@ async fn die_if_defender_fell(
         world,
     )
     .await;
+}
+
+/// Award GC seals to `attacker_handle` for killing a mob of the given
+/// level. No-ops when the attacker isn't enlisted. Cap is the per-rank
+/// seal cap (matches `gcseals.lua::AddGCSeals` — refusing the deposit
+/// over-cap), implemented at the DB layer in `add_seals`'s
+/// transactional upsert. Failure to persist is logged but not fatal.
+async fn award_grand_company_seals(
+    attacker_handle: &crate::runtime::actor_registry::ActorHandle,
+    mob_level: i16,
+    db: &Arc<crate::database::Database>,
+) {
+    let (gc, gc_rank) = {
+        let c = attacker_handle.character.read().await;
+        let gc = c.chara.gc_current;
+        if gc == 0 {
+            return;
+        }
+        let rank = match gc {
+            crate::actor::gc::GC_MAELSTROM => c.chara.gc_rank_limsa,
+            crate::actor::gc::GC_TWIN_ADDER => c.chara.gc_rank_gridania,
+            crate::actor::gc::GC_IMMORTAL_FLAMES => c.chara.gc_rank_uldah,
+            _ => return,
+        };
+        (gc, rank)
+    };
+    let base_reward = (mob_level as i32).clamp(1, 100);
+    let cap = crate::actor::gc::rank_seal_cap(gc_rank);
+    if cap == 0 {
+        // Rank-0 (no enlistment), or post-cap rank like Chief Admiral
+        // (111) — the Lua helper returns INV_ERROR_FULL there too.
+        return;
+    }
+    let current = db
+        .get_seals(attacker_handle.actor_id, gc)
+        .await
+        .unwrap_or(0);
+    if current >= cap {
+        return;
+    }
+    let grant = base_reward.min(cap - current);
+    if grant <= 0 {
+        return;
+    }
+    if let Err(e) = db.add_seals(attacker_handle.actor_id, gc, grant).await {
+        tracing::warn!(
+            attacker = attacker_handle.actor_id,
+            gc,
+            err = %e,
+            "GC seal reward DB persist failed",
+        );
+    } else {
+        tracing::info!(
+            attacker = attacker_handle.actor_id,
+            gc,
+            mob_level,
+            grant,
+            "GC seal reward applied",
+        );
+    }
 }
 
 /// Port of Meteor's `DeathState.OnStart` tail: disengage the AI, flip

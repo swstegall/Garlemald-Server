@@ -174,6 +174,14 @@ pub struct CharaState {
     pub birthday_month: u8,
     pub initial_town: u8,
     pub rest_bonus_exp_rate: i32,
+    /// UNIX timestamp (seconds) of the last `rest_bonus_exp_rate`
+    /// increment from the inn auto-accrual tick. `0` means "no
+    /// accrual window open" — the next inn-zone tick will set this
+    /// without granting points; subsequent ticks measure elapsed
+    /// time from here. Reset to `0` whenever the player leaves an
+    /// `is_inn` zone so a fresh entry restarts the accrual clock
+    /// instead of back-dating rested points.
+    pub last_rest_accrual_utc: u32,
     // Mount / chocobo state — the runtime-mutable slice of
     // `PlayerState.has_chocobo` / `chocobo_appearance` /
     // `chocobo_name` / `mount_state` / `rental_expire_time` /
@@ -259,6 +267,7 @@ impl Default for CharaState {
             birthday_month: 0,
             initial_town: 0,
             rest_bonus_exp_rate: 0,
+            last_rest_accrual_utc: 0,
             has_chocobo: false,
             mount_state: 0,
             chocobo_appearance: 0,

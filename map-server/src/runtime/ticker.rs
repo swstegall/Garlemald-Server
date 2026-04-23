@@ -58,6 +58,16 @@ use crate::zone::zone::Zone;
 use super::actor_registry::ActorRegistry;
 use super::dispatcher::{dispatch_area_event, dispatch_battle_event, dispatch_status_event};
 
+/// Inn rested-XP accrual rate: 1 percentage point per N seconds while
+/// the player is parked in an `is_inn` zone. 60s gives a +100% rested
+/// bonus across a full inn-night sleep without being so fast that an
+/// AFK lunch break maxes the bar.
+pub const INN_REST_INTERVAL_SECS: u32 = 60;
+/// Cap for the rested-bonus pool — 100% is retail's effective max
+/// (matches the `accruerest` GM-command clamp + `consume_rested_xp`'s
+/// `rested_pct.min(100)` ceiling).
+pub const INN_REST_BONUS_CAP: i32 = 100;
+
 #[derive(Debug, Clone, Copy)]
 pub struct TickerConfig {
     /// Tick period. Retail runs the zone thread ~every 333 ms, but 100 ms
@@ -151,6 +161,9 @@ impl GameTicker {
 
     async fn tick_zone(&self, now_ms: u64, zone_id: u32, zone: &Arc<RwLock<Zone>>) {
         let actors = self.registry.actors_in_zone(zone_id).await;
+        // Hoist the zone's `is_inn` flag once per tick so the per-actor
+        // rest-bonus loop doesn't have to re-acquire the read lock.
+        let zone_is_inn = { zone.read().await.core.is_inn };
 
         for handle in actors {
             let mut status_outbox = StatusOutbox::new();
@@ -177,6 +190,19 @@ impl GameTicker {
             // whose expire timestamp has elapsed, dismount and
             // restore the zone's BGM; otherwise tick down the
             // UI-visible minutes-remaining counter.
+            //
+            // Inn auto-accrual — Tier 4 #17 follow-up. While the
+            // player is in an `is_inn` zone, accumulate `restBonus`
+            // toward the +100% cap. Tracked alongside the chocobo
+            // tick because both touch CharaState under the same write
+            // lock; sharing the lock keeps the per-tick cost flat.
+            //
+            // Accrual rate: 1% per `INN_REST_INTERVAL_SECS` (default
+            // 60s) — coarse enough that long inn stays visibly fill
+            // the bar without a cliff. Persistence is deferred to the
+            // logout / explicit-flush path so each tick stays a
+            // single in-memory increment; `Database::set_rest_bonus_exp_rate`
+            // already exists when we choose to flush.
             {
                 let tick_utc = (now_ms / 1000) as u32;
                 let mut chara = handle.character.write().await;
@@ -192,6 +218,36 @@ impl GameTicker {
                             (((chara.chara.rental_expire_time - tick_utc) / 60) as u8)
                                 .min(255);
                     }
+                }
+
+                if zone_is_inn && chara.chara.rest_bonus_exp_rate < INN_REST_BONUS_CAP {
+                    if chara.chara.last_rest_accrual_utc == 0 {
+                        // Fresh entry — anchor the accrual window
+                        // without granting points. Subsequent ticks
+                        // measure elapsed time from here.
+                        chara.chara.last_rest_accrual_utc = tick_utc;
+                    } else {
+                        let elapsed_since_last = tick_utc
+                            .saturating_sub(chara.chara.last_rest_accrual_utc);
+                        let earned = (elapsed_since_last / INN_REST_INTERVAL_SECS) as i32;
+                        if earned > 0 {
+                            chara.chara.rest_bonus_exp_rate =
+                                (chara.chara.rest_bonus_exp_rate + earned).min(INN_REST_BONUS_CAP);
+                            // Advance the anchor by exactly the
+                            // earned amount * interval so any
+                            // sub-interval remainder carries to the
+                            // next tick instead of being lost.
+                            chara.chara.last_rest_accrual_utc = chara
+                                .chara
+                                .last_rest_accrual_utc
+                                .saturating_add(earned as u32 * INN_REST_INTERVAL_SECS);
+                        }
+                    }
+                } else if !zone_is_inn {
+                    // Player left the inn (or this is a non-inn
+                    // tick) — reset the anchor so a future inn entry
+                    // starts a fresh accrual window.
+                    chara.chara.last_rest_accrual_utc = 0;
                 }
             }
 

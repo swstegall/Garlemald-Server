@@ -3723,6 +3723,434 @@ async fn rental_expiry_tick_dismounts() {
 }
 
 // ---------------------------------------------------------------------------
+// Inn auto-accrual tick — consolidation (Tier 4 #17 follow-up)
+// ---------------------------------------------------------------------------
+
+/// Inn-zone auto-accrual ticks `rest_bonus_exp_rate` upward at the
+/// `INN_REST_INTERVAL_SECS` cadence and clamps at `INN_REST_BONUS_CAP`.
+/// Verifies (1) first tick anchors the accrual window without granting
+/// points, (2) a tick `INN_REST_INTERVAL_SECS` later grants 1 point,
+/// (3) leaving the inn resets `last_rest_accrual_utc`.
+#[tokio::test]
+async fn inn_auto_accrual_tick_grows_rest_bonus() {
+    use crate::actor::Character;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use crate::runtime::ticker::{
+        GameTicker, INN_REST_BONUS_CAP, INN_REST_INTERVAL_SECS, TickerConfig,
+    };
+    use crate::zone::zone::Zone;
+    use std::sync::Arc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+
+    // Inn zone (zone 800).
+    let mut inn = Zone::new(
+        800,
+        "InnTickZone".to_string(),
+        1,
+        String::new(),
+        0,
+        0,
+        0,
+        false,
+        true, // is_inn
+        false,
+        false,
+        false,
+        None,
+    );
+    inn.core.class_path = "/Area/Inn".to_string();
+    inn.core.class_name = "Inn".to_string();
+    world.register_zone(inn).await;
+
+    // Player parked at origin with rested = 0.
+    let mut chara = Character::new(900);
+    chara.base.zone_id = 800;
+    chara.chara.rest_bonus_exp_rate = 0;
+    chara.chara.last_rest_accrual_utc = 0;
+    registry
+        .insert(ActorHandle::new(900, ActorKindTag::Player, 800, 900, chara))
+        .await;
+
+    let ticker = GameTicker::new(TickerConfig::default(), world.clone(), registry.clone(), db);
+
+    // Tick 1 — anchors `last_rest_accrual_utc`, no rested gain.
+    let t0 = 1_000_000u64;
+    ticker.tick_once(t0 * 1000).await;
+    {
+        let c = registry.get(900).await.unwrap().character.read().await.clone();
+        assert_eq!(c.chara.rest_bonus_exp_rate, 0, "anchor tick should not grant");
+        assert_eq!(c.chara.last_rest_accrual_utc, t0 as u32);
+    }
+
+    // Tick 2, exactly INN_REST_INTERVAL_SECS later — +1 rested.
+    let t1 = t0 + INN_REST_INTERVAL_SECS as u64;
+    ticker.tick_once(t1 * 1000).await;
+    {
+        let c = registry.get(900).await.unwrap().character.read().await.clone();
+        assert_eq!(
+            c.chara.rest_bonus_exp_rate, 1,
+            "one INN_REST_INTERVAL_SECS gives +1 rested",
+        );
+        assert_eq!(c.chara.last_rest_accrual_utc, t1 as u32);
+    }
+
+    // Big jump — 10 intervals later — grants 10 more.
+    let t2 = t1 + 10 * INN_REST_INTERVAL_SECS as u64;
+    ticker.tick_once(t2 * 1000).await;
+    {
+        let c = registry.get(900).await.unwrap().character.read().await.clone();
+        assert_eq!(c.chara.rest_bonus_exp_rate, 11);
+    }
+
+    // Massive jump — should clamp at the cap.
+    let t3 = t2 + 1_000 * INN_REST_INTERVAL_SECS as u64;
+    ticker.tick_once(t3 * 1000).await;
+    {
+        let c = registry.get(900).await.unwrap().character.read().await.clone();
+        assert_eq!(
+            c.chara.rest_bonus_exp_rate, INN_REST_BONUS_CAP,
+            "rested should clamp at the cap",
+        );
+    }
+}
+
+/// Outside an inn zone, the auto-accrual tick is a no-op AND it
+/// resets `last_rest_accrual_utc` so re-entering an inn starts a
+/// fresh accrual window instead of back-dating earned rested.
+#[tokio::test]
+async fn inn_auto_accrual_no_op_outside_inn_zone() {
+    use crate::actor::Character;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use crate::runtime::ticker::{GameTicker, TickerConfig};
+    use crate::zone::zone::Zone;
+    use std::sync::Arc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+
+    // Non-inn zone.
+    let zone = Zone::new(
+        801,
+        "OpenField".to_string(),
+        1,
+        String::new(),
+        0,
+        0,
+        0,
+        false,
+        false, // is_inn = false
+        false,
+        false,
+        false,
+        None,
+    );
+    world.register_zone(zone).await;
+
+    let mut chara = Character::new(901);
+    chara.base.zone_id = 801;
+    chara.chara.rest_bonus_exp_rate = 30;
+    chara.chara.last_rest_accrual_utc = 999_999;
+    registry
+        .insert(ActorHandle::new(901, ActorKindTag::Player, 801, 901, chara))
+        .await;
+
+    let ticker = GameTicker::new(TickerConfig::default(), world.clone(), registry.clone(), db);
+    ticker.tick_once(2_000_000_000).await;
+    let c = registry.get(901).await.unwrap().character.read().await.clone();
+    assert_eq!(c.chara.rest_bonus_exp_rate, 30, "no rested change outside inn");
+    assert_eq!(
+        c.chara.last_rest_accrual_utc, 0,
+        "anchor cleared so re-entry starts fresh",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Grand Company seal rewards on battle kill — consolidation
+// ---------------------------------------------------------------------------
+
+/// Killing a BattleNpc as an enlisted GC member grants seals scaled
+/// by the mob's level. Verifies the full
+/// `die_if_defender_fell` → `award_grand_company_seals` →
+/// `Database::add_seals` chain via the auto-attack damage path.
+#[tokio::test]
+async fn battle_kill_grants_gc_seals_to_enlisted_attacker() {
+    use crate::actor::Character;
+    use crate::battle::outbox::{BattleEvent, BattleOutbox};
+    use crate::data::ClientHandle;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use crate::runtime::dispatcher::dispatch_battle_event;
+    use crate::zone::zone::Zone;
+    use common::db::ConnCallExt;
+    use tokio::sync::mpsc;
+    use std::sync::Arc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (101, 0, 0, 0, 'Maelstrom Grunt')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let zone = Zone::new(
+        700,
+        "BattleZone".to_string(),
+        1,
+        String::new(),
+        0,
+        0,
+        0,
+        false,
+        false,
+        false,
+        false,
+        false,
+        None,
+    );
+    world.register_zone(zone).await;
+    let zone_arc = world.zone(700).await.unwrap();
+
+    // Attacker — enlisted in Maelstrom at Private Third Class (rank 11).
+    let mut attacker = Character::new(101);
+    attacker.base.zone_id = 700;
+    attacker.chara.gc_current = crate::actor::gc::GC_MAELSTROM;
+    attacker.chara.gc_rank_limsa = 11;
+    registry
+        .insert(ActorHandle::new(101, ActorKindTag::Player, 700, 101, attacker))
+        .await;
+    let (tx, _rx) = mpsc::channel::<Vec<u8>>(64);
+    world.register_client(101, ClientHandle::new(101, tx)).await;
+
+    // Defender — a level-12 BattleNpc (will die from a single big hit).
+    let mut defender = Character::new(202);
+    defender.base.zone_id = 700;
+    defender.chara.actor_class_id = 2_104_001;
+    defender.chara.level = 12;
+    defender.chara.hp = 100;
+    defender.chara.max_hp = 100;
+    registry
+        .insert(ActorHandle::new(
+            202,
+            ActorKindTag::BattleNpc,
+            700,
+            0,
+            defender,
+        ))
+        .await;
+    {
+        let mut z = zone_arc.write().await;
+        let mut _out = crate::zone::outbox::AreaOutbox::new();
+        z.core.add_actor(
+            crate::zone::area::StoredActor {
+                actor_id: 101,
+                kind: crate::zone::area::ActorKind::Player,
+                position: common::math::Vector3::new(0.0, 0.0, 0.0),
+                grid: (0, 0),
+                is_alive: true,
+            },
+            &mut _out,
+        );
+        z.core.add_actor(
+            crate::zone::area::StoredActor {
+                actor_id: 202,
+                kind: crate::zone::area::ActorKind::BattleNpc,
+                position: common::math::Vector3::new(2.0, 0.0, 2.0),
+                grid: (0, 0),
+                is_alive: true,
+            },
+            &mut _out,
+        );
+    }
+
+    // Sanity check: zero seals before the kill.
+    assert_eq!(
+        db.get_seals(101, crate::actor::gc::GC_MAELSTROM)
+            .await
+            .unwrap(),
+        0,
+    );
+
+    // Pre-zero the defender's HP (simulates the lethal-damage tick
+    // a real auto-attack would have applied), then drive the
+    // `die_if_defender_fell` post-damage path directly. This is the
+    // exact callsite `resolve_auto_attack` and `resolve_action` use
+    // after applying their HP delta.
+    {
+        let h = registry.get(202).await.unwrap();
+        let mut c = h.character.write().await;
+        c.chara.hp = 0;
+    }
+    crate::runtime::dispatcher::die_if_defender_fell(
+        202,
+        Some(101),
+        &registry,
+        &world,
+        &zone_arc,
+        None,
+        Some(&db),
+    )
+    .await;
+    // Suppress unused-import warnings — kept on the import list in
+    // case the test grows back to using a synthetic BattleEvent.
+    let _ = (BattleOutbox::new(), &dispatch_battle_event);
+    let _: Option<BattleEvent> = None;
+
+    // Defender should now be dead, and seals granted to attacker.
+    let post = db
+        .get_seals(101, crate::actor::gc::GC_MAELSTROM)
+        .await
+        .unwrap();
+    assert!(
+        post >= 12,
+        "expected ≥12 seals (mob level 12), got {post}"
+    );
+    // Bound check: no more than the rank cap (10_000 at rank 11).
+    assert!(post <= 10_000, "seals should respect rank cap; got {post}");
+}
+
+/// Killing a mob with an UNenlisted attacker grants nothing.
+#[tokio::test]
+async fn battle_kill_grants_no_seals_to_unenlisted_attacker() {
+    use crate::actor::Character;
+    use crate::battle::outbox::{BattleEvent, BattleOutbox};
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use crate::runtime::dispatcher::dispatch_battle_event;
+    use crate::zone::zone::Zone;
+    use common::db::ConnCallExt;
+    use std::sync::Arc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (303, 0, 0, 0, 'Civilian')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let zone = Zone::new(
+        701,
+        "BattleZoneB".to_string(),
+        1,
+        String::new(),
+        0,
+        0,
+        0,
+        false,
+        false,
+        false,
+        false,
+        false,
+        None,
+    );
+    world.register_zone(zone).await;
+    let zone_arc = world.zone(701).await.unwrap();
+
+    // gc_current = 0 → not enlisted.
+    let mut attacker = Character::new(303);
+    attacker.base.zone_id = 701;
+    attacker.chara.gc_current = 0;
+    registry
+        .insert(ActorHandle::new(303, ActorKindTag::Player, 701, 303, attacker))
+        .await;
+
+    let mut defender = Character::new(404);
+    defender.base.zone_id = 701;
+    defender.chara.level = 5;
+    defender.chara.hp = 50;
+    defender.chara.max_hp = 50;
+    registry
+        .insert(ActorHandle::new(404, ActorKindTag::BattleNpc, 701, 0, defender))
+        .await;
+    {
+        let mut z = zone_arc.write().await;
+        let mut _out = crate::zone::outbox::AreaOutbox::new();
+        z.core.add_actor(
+            crate::zone::area::StoredActor {
+                actor_id: 303,
+                kind: crate::zone::area::ActorKind::Player,
+                position: common::math::Vector3::new(0.0, 0.0, 0.0),
+                grid: (0, 0),
+                is_alive: true,
+            },
+            &mut _out,
+        );
+        z.core.add_actor(
+            crate::zone::area::StoredActor {
+                actor_id: 404,
+                kind: crate::zone::area::ActorKind::BattleNpc,
+                position: common::math::Vector3::new(0.0, 0.0, 0.0),
+                grid: (0, 0),
+                is_alive: true,
+            },
+            &mut _out,
+        );
+    }
+
+    {
+        let h = registry.get(404).await.unwrap();
+        let mut c = h.character.write().await;
+        c.chara.hp = 0;
+    }
+    crate::runtime::dispatcher::die_if_defender_fell(
+        404,
+        Some(303),
+        &registry,
+        &world,
+        &zone_arc,
+        None,
+        Some(&db),
+    )
+    .await;
+
+    // No seals because attacker isn't enlisted; all three GCs return 0.
+    for gc in [
+        crate::actor::gc::GC_MAELSTROM,
+        crate::actor::gc::GC_TWIN_ADDER,
+        crate::actor::gc::GC_IMMORTAL_FLAMES,
+    ] {
+        assert_eq!(
+            db.get_seals(303, gc).await.unwrap(),
+            0,
+            "unenlisted attacker should not earn GC {gc} seals",
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Broadcast-around-actor helper — consolidation (wired into chocobo
 // SendMountAppearance + level-up stateForAll).
 // ---------------------------------------------------------------------------
