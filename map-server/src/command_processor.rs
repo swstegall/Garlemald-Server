@@ -96,6 +96,7 @@ impl CommandProcessor {
             "joingc" => self.handle_join_gc(&args).await,
             "setgcrank" => self.handle_set_gc_rank(&args).await,
             "addgcseals" => self.handle_add_gc_seals(&args).await,
+            "warp" => self.handle_warp(&args).await,
             other => format!("unknown command: {other} (args={:?})", args.rest()),
         };
         Ok(response)
@@ -113,7 +114,8 @@ impl CommandProcessor {
          issuechocobo <appearance> <chocobo_name> <player_name>, \
          rentchocobo <minutes> <name>, dismount <name>, \
          joingc <gc> <name>, setgcrank <gc> <rank> <name>, \
-         addgcseals <gc> <amount> <name>"
+         addgcseals <gc> <amount> <name>, \
+         warp <zone> <x> <y> <z> <name>"
             .into()
     }
 
@@ -446,6 +448,65 @@ impl CommandProcessor {
         format!("dismounted {name}")
     }
 
+    /// `warp <zone> <x> <y> <z> <name>` — instant zone-change for
+    /// headless testing. Mirrors Meteor's `!warp` GM command
+    /// (`Data/scripts/commands/gm/warp.lua`) but without a director
+    /// chain: we just mutate the session's destination + current
+    /// zone and ship a `DoZoneChange` LuaCommand-style payload. For
+    /// the `AfterQuestWarpDirector` flow this works as a standalone
+    /// warp without the director piggyback (quest scripts can still
+    /// create the director separately).
+    async fn handle_warp(&self, args: &Args<'_>) -> String {
+        let zone_id = match args.parse_u32(0) {
+            Ok(z) => z,
+            Err(e) => return format!("usage: warp <zone> <x> <y> <z> <name> — {e}"),
+        };
+        let x = match args.parse_f32(1) {
+            Ok(v) => v,
+            Err(e) => return format!("usage: warp <zone> <x> <y> <z> <name> — {e}"),
+        };
+        let y = match args.parse_f32(2) {
+            Ok(v) => v,
+            Err(e) => return format!("usage: warp <zone> <x> <y> <z> <name> — {e}"),
+        };
+        let z = match args.parse_f32(3) {
+            Ok(v) => v,
+            Err(e) => return format!("usage: warp <zone> <x> <y> <z> <name> — {e}"),
+        };
+        let Some(name) = args.rest_joined(4) else {
+            return "usage: warp <zone> <x> <y> <z> <name>".into();
+        };
+        let Some(chara_id) = self.lookup_character_id(&name).await else {
+            return format!("unknown character: {name}");
+        };
+        let Some(handle) = self.registry.get(chara_id).await else {
+            return format!("{name} is not online");
+        };
+        // Persist destination + base position on CharaState so the
+        // next zone-in bundle reads them. Full DoZoneChange packet
+        // emission requires the session + client handles; this GM
+        // stub stops at mutating server-side state so tests can
+        // round-trip.
+        {
+            let mut c = handle.character.write().await;
+            c.base.zone_id = zone_id;
+            c.base.position_x = x;
+            c.base.position_y = y;
+            c.base.position_z = z;
+        }
+        if let Some(mut session) = self.world.session(handle.session_id).await {
+            session.destination_zone_id = zone_id;
+            session.destination_x = x;
+            session.destination_y = y;
+            session.destination_z = z;
+            session.destination_spawn_type = 2; // retail "warp by gm" code
+            self.world.upsert_session(session).await;
+        }
+        format!(
+            "warped {name} to zone {zone_id} at ({x:.2}, {y:.2}, {z:.2})"
+        )
+    }
+
     async fn handle_join_gc(&self, args: &Args<'_>) -> String {
         let gc = match args.parse_u8(0) {
             Ok(g) => g,
@@ -649,6 +710,22 @@ impl<'a> Args<'a> {
         };
         raw.parse::<u8>()
             .map_err(|_| format!("arg {idx} '{raw}' is not a byte"))
+    }
+
+    fn parse_f32(&self, idx: usize) -> std::result::Result<f32, String> {
+        let Some(raw) = self.tokens.get(idx) else {
+            return Err(format!("missing arg {idx}"));
+        };
+        raw.parse::<f32>()
+            .map_err(|_| format!("arg {idx} '{raw}' is not a float"))
+    }
+
+    fn parse_u32(&self, idx: usize) -> std::result::Result<u32, String> {
+        let Some(raw) = self.tokens.get(idx) else {
+            return Err(format!("missing arg {idx}"));
+        };
+        raw.parse::<u32>()
+            .map_err(|_| format!("arg {idx} '{raw}' is not an unsigned int"))
     }
 
     /// Single token at position `idx`, or `None` if out of range.

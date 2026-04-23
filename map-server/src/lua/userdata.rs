@@ -1679,6 +1679,34 @@ impl UserData for LuaWorldManager {
         methods.add_method("GetPCInWorld", |_, _, _name: String| {
             Ok(Value::Nil) // TODO: resolve to LuaPlayer once player registry is live
         });
+
+        // `GetWorldManager():GetArea(zoneId)` — retail returns the
+        // `Zone` actor for the requested id; in-Lua callers (e.g.
+        // `quests/man/man0l1.lua::seq000_onTalk`) chain
+        // `:CreateDirector("AfterQuestWarpDirector", false)` on it to
+        // stage a director in a foreign zone the player is about to
+        // warp into. Returns a `LuaZone` userdata that shares this
+        // WorldManager's command queue, with the snapshot pointed at
+        // the requested zone id. The actual zone-registration lookup
+        // is deferred — the LuaZone's only role here is to thread the
+        // zone id into the resulting `LuaCommand::CreateDirector`
+        // payload (which already carries `zone_actor_id` in its body)
+        // so `send_zone_in_bundle` on the destination zone can emit
+        // the director's 7-packet spawn sequence for the next
+        // zone-in.
+        methods.add_method("GetArea", |lua, this, zone_id: u32| {
+            let zone = LuaZone {
+                snapshot: ZoneSnapshot {
+                    zone_id,
+                    zone_name: String::new(),
+                    player_ids: Vec::new(),
+                    npc_ids: Vec::new(),
+                    monster_ids: Vec::new(),
+                },
+                queue: this.queue.clone(),
+            };
+            lua.create_userdata(zone)
+        });
     }
 }
 
@@ -1908,6 +1936,25 @@ impl UserData for LuaQuestHandle {
         methods.add_method("GetQuestId", |_, this, _: ()| Ok(this.quest_id));
         methods.add_method("HasQuest", |_, this, _: ()| Ok(this.has_quest));
         methods.add_method("GetSequence", |_, this, _: ()| Ok(this.sequence));
+
+        // `quest:OnNotice(player)` — the `AfterQuestWarpDirector`
+        // script calls this out of its `onEventStarted` hook to hand
+        // control back to the quest's scripted `noticeEvent` branch
+        // (C# `Quest.OnNotice()` invokes the script's `onNotice`
+        // hook). Full cross-script invocation rides with the
+        // Meteor-parity "quest-engine dispatcher in Rust" follow-up;
+        // for now this is a logging no-op so the director's script
+        // parses + runs without aborting on a nil-method call.
+        methods.add_method("OnNotice", |_, this, _player: mlua::AnyUserData| {
+            push(
+                &this.queue,
+                LuaCommand::LogError(format!(
+                    "quest:OnNotice({}) (stub — scripted notice hook not yet routed)",
+                    this.quest_id,
+                )),
+            );
+            Ok(())
+        });
 
         // --- Mutations queued as LuaCommand::Quest* --------------------
         methods.add_method("ClearQuestData", |_, this, _: ()| {
