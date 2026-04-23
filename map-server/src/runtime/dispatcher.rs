@@ -1462,6 +1462,92 @@ async fn award_grand_company_seals(
     }
 }
 
+/// Per-difficulty base seal payout for a completed guildleve. Retail's
+/// canonical formula isn't preserved in any of the local archive
+/// dumps, so this uses a sensible escalation pinned at the dialogue-
+/// anchored Recruit→Pvt3 cost (100 seals, the cheapest hop in
+/// `gc_promotion_cost`). A 1-star leve grants 150 seals — enough to
+/// cover the first promotion plus a small buffer; a 5-star leve grants
+/// 550. Calibrated so a player completing two 3-star leves can afford
+/// the Recruit→Private Third Class hop with seals to spare, and a
+/// streak of higher-difficulty leves keeps pace with the escalating
+/// promotion-cost curve. Returns 0 for unknown difficulty values so
+/// the caller cleanly skips the deposit.
+pub fn leve_completion_seal_reward(difficulty: u8) -> i32 {
+    match difficulty {
+        1 => 150,
+        2 => 250,
+        3 => 350,
+        4 => 450,
+        5 => 550,
+        _ => 0,
+    }
+}
+
+/// Award GC seals to `member_handle` for completing a guildleve at
+/// the given star difficulty. Mirrors `award_grand_company_seals` but
+/// keyed on leve difficulty rather than mob level, called from
+/// `director::dispatcher` on `GuildleveEnded { was_completed: true }`.
+/// No-op when the player isn't enlisted, when the difficulty isn't in
+/// the reward table (`leve_completion_seal_reward` returns 0), or when
+/// the player's seal balance is already at their rank's cap.
+pub async fn award_leve_completion_seals(
+    member_handle: &crate::runtime::actor_registry::ActorHandle,
+    difficulty: u8,
+    db: &Arc<crate::database::Database>,
+) {
+    let (gc, gc_rank) = {
+        let c = member_handle.character.read().await;
+        let gc = c.chara.gc_current;
+        if gc == 0 {
+            return;
+        }
+        let rank = match gc {
+            crate::actor::gc::GC_MAELSTROM => c.chara.gc_rank_limsa,
+            crate::actor::gc::GC_TWIN_ADDER => c.chara.gc_rank_gridania,
+            crate::actor::gc::GC_IMMORTAL_FLAMES => c.chara.gc_rank_uldah,
+            _ => return,
+        };
+        (gc, rank)
+    };
+    let base_reward = leve_completion_seal_reward(difficulty);
+    if base_reward <= 0 {
+        return;
+    }
+    let cap = crate::actor::gc::rank_seal_cap(gc_rank);
+    if cap == 0 {
+        return;
+    }
+    let current = db
+        .get_seals(member_handle.actor_id, gc)
+        .await
+        .unwrap_or(0);
+    if current >= cap {
+        return;
+    }
+    let grant = base_reward.min(cap - current);
+    if grant <= 0 {
+        return;
+    }
+    if let Err(e) = db.add_seals(member_handle.actor_id, gc, grant).await {
+        tracing::warn!(
+            member = member_handle.actor_id,
+            gc,
+            difficulty,
+            err = %e,
+            "leve-completion seal reward DB persist failed",
+        );
+    } else {
+        tracing::info!(
+            member = member_handle.actor_id,
+            gc,
+            difficulty,
+            grant,
+            "leve-completion seal reward applied",
+        );
+    }
+}
+
 /// Port of Meteor's `DeathState.OnStart` tail: disengage the AI, flip
 /// `current_main_state` to DEAD, broadcast `SetActorState` around the
 /// owner. Status-effect cleanup (`LoseOnDeath` flag) is deferred — the

@@ -81,6 +81,10 @@ pub enum DirectorEvent {
         guildleve_id: u32,
         was_completed: bool,
         completion_time_seconds: u32,
+        /// Star-rating difficulty of the leve (1..=5). Threaded onto
+        /// the event so the dispatcher can size the GC seal reward
+        /// without re-reading the director state.
+        difficulty: u8,
     },
     GuildleveAbandoned {
         director_id: u32,

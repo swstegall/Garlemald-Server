@@ -192,6 +192,7 @@ impl GuildleveDirector {
             guildleve_id: self.guildleve_id,
             was_completed,
             completion_time_seconds: self.completion_time_seconds,
+            difficulty: self.difficulty,
         });
     }
 

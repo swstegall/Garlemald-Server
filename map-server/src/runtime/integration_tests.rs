@@ -4966,6 +4966,255 @@ async fn battle_kill_grants_no_seals_to_unenlisted_attacker() {
 }
 
 // ---------------------------------------------------------------------------
+// Grand Company seal rewards on guildleve completion — Tier 4 #16
+// follow-up. Mirrors the battle-kill seal accrual structure but
+// keyed on leve difficulty rather than mob level.
+// ---------------------------------------------------------------------------
+
+/// Per-difficulty payout table — the canonical retail formula isn't
+/// preserved in any local archive, so the values escalate from the
+/// dialogue-anchored Recruit→Pvt3 cost (100 seals) to keep the curve
+/// roughly proportional to the per-rank promotion cost ladder.
+#[test]
+fn leve_completion_seal_reward_matches_difficulty_table() {
+    use crate::runtime::dispatcher::leve_completion_seal_reward;
+    assert_eq!(leve_completion_seal_reward(1), 150);
+    assert_eq!(leve_completion_seal_reward(2), 250);
+    assert_eq!(leve_completion_seal_reward(3), 350);
+    assert_eq!(leve_completion_seal_reward(4), 450);
+    assert_eq!(leve_completion_seal_reward(5), 550);
+    // Out-of-range difficulty values surface as 0 — caller cleanly
+    // skips the deposit, no panic.
+    assert_eq!(leve_completion_seal_reward(0), 0);
+    assert_eq!(leve_completion_seal_reward(6), 0);
+    assert_eq!(leve_completion_seal_reward(255), 0);
+}
+
+/// Happy-path leve-completion seal accrual — enlisted Maelstrom
+/// member completes a 3-star leve, the table-anchored 350 seals land
+/// in their currency bag.
+#[tokio::test]
+async fn leve_completion_grants_seals_to_enlisted_member() {
+    use crate::actor::Character;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use crate::runtime::dispatcher::award_leve_completion_seals;
+    use common::db::ConnCallExt;
+    use std::sync::Arc;
+
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (181, 0, 0, 0, 'Leve Sergeant')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let mut chara = Character::new(181);
+    chara.chara.gc_current = crate::actor::gc::GC_MAELSTROM;
+    chara.chara.gc_rank_limsa = 21; // Sergeant Third Class — well above Recruit
+    registry
+        .insert(ActorHandle::new(181, ActorKindTag::Player, 200, 181, chara))
+        .await;
+    let handle = registry.get(181).await.unwrap();
+
+    award_leve_completion_seals(&handle, 3, &db).await;
+
+    let balance = db.get_seals(181, crate::actor::gc::GC_MAELSTROM).await.unwrap();
+    assert_eq!(
+        balance, 350,
+        "3-star leve should grant 350 seals from the difficulty table",
+    );
+}
+
+/// Unenlisted player (gc_current = 0) earns nothing.
+#[tokio::test]
+async fn leve_completion_grants_nothing_to_unenlisted_player() {
+    use crate::actor::Character;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use crate::runtime::dispatcher::award_leve_completion_seals;
+    use common::db::ConnCallExt;
+    use std::sync::Arc;
+
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (182, 0, 0, 0, 'Civilian Leve Doer')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let chara = Character::new(182); // gc_current = 0 by default
+    registry
+        .insert(ActorHandle::new(182, ActorKindTag::Player, 200, 182, chara))
+        .await;
+    let handle = registry.get(182).await.unwrap();
+
+    award_leve_completion_seals(&handle, 5, &db).await;
+
+    for gc in [
+        crate::actor::gc::GC_MAELSTROM,
+        crate::actor::gc::GC_TWIN_ADDER,
+        crate::actor::gc::GC_IMMORTAL_FLAMES,
+    ] {
+        assert_eq!(
+            db.get_seals(182, gc).await.unwrap(),
+            0,
+            "unenlisted player should not earn GC {gc} seals from any leve completion",
+        );
+    }
+}
+
+/// Player at the rank seal cap can't deposit more — the helper bails
+/// out before calling `add_seals` so the post-call balance equals the
+/// cap exactly (not cap + reward, not cap + something).
+#[tokio::test]
+async fn leve_completion_respects_rank_seal_cap() {
+    use crate::actor::Character;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use crate::runtime::dispatcher::award_leve_completion_seals;
+    use common::db::ConnCallExt;
+    use std::sync::Arc;
+
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (183, 0, 0, 0, 'Capped Veteran')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    // Pvt3 (rank 11) caps at 10_000 seals — pre-fill exactly that.
+    db.set_gc_current(183, crate::actor::gc::GC_TWIN_ADDER)
+        .await
+        .unwrap();
+    db.set_gc_rank(183, crate::actor::gc::GC_TWIN_ADDER, 11)
+        .await
+        .unwrap();
+    db.add_seals(183, crate::actor::gc::GC_TWIN_ADDER, 10_000)
+        .await
+        .unwrap();
+
+    let mut chara = Character::new(183);
+    chara.chara.gc_current = crate::actor::gc::GC_TWIN_ADDER;
+    chara.chara.gc_rank_gridania = 11;
+    registry
+        .insert(ActorHandle::new(183, ActorKindTag::Player, 200, 183, chara))
+        .await;
+    let handle = registry.get(183).await.unwrap();
+
+    award_leve_completion_seals(&handle, 5, &db).await;
+
+    let balance = db.get_seals(183, crate::actor::gc::GC_TWIN_ADDER).await.unwrap();
+    assert_eq!(
+        balance, 10_000,
+        "post-cap deposit must be refused (capped at the rank seal ceiling)",
+    );
+}
+
+/// Dispatcher-side: a `GuildleveEnded { was_completed: true }` event
+/// run through `dispatch_director_event` with a DB handle wired in
+/// triggers the seal accrual for every enlisted player member.
+/// `was_completed: false` (timeout) grants nothing.
+#[tokio::test]
+async fn dispatch_guildleve_ended_awards_seals_only_on_completion() {
+    use crate::actor::Character;
+    use crate::data::ClientHandle;
+    use crate::director::dispatcher::dispatch_director_event;
+    use crate::director::outbox::DirectorEvent;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use common::db::ConnCallExt;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (184, 0, 0, 0, 'Leve Veteran')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let mut chara = Character::new(184);
+    chara.chara.gc_current = crate::actor::gc::GC_IMMORTAL_FLAMES;
+    chara.chara.gc_rank_uldah = 17;
+    registry
+        .insert(ActorHandle::new(184, ActorKindTag::Player, 200, 184, chara))
+        .await;
+    let (tx, _rx) = mpsc::channel::<Vec<u8>>(8);
+    world.register_client(184, ClientHandle::new(184, tx)).await;
+
+    // First: an abandoned/timed-out leve grants nothing.
+    let abandoned = DirectorEvent::GuildleveEnded {
+        director_id: 0x6000_0001,
+        guildleve_id: 10801,
+        was_completed: false,
+        completion_time_seconds: 600,
+        difficulty: 4,
+    };
+    dispatch_director_event(&abandoned, &[184], &registry, &world, Some(&db)).await;
+    assert_eq!(
+        db.get_seals(184, crate::actor::gc::GC_IMMORTAL_FLAMES).await.unwrap(),
+        0,
+        "abandoned leve must not grant seals",
+    );
+
+    // Now: a completed 4-star leve grants 450 seals from the table.
+    let completed = DirectorEvent::GuildleveEnded {
+        director_id: 0x6000_0002,
+        guildleve_id: 10802,
+        was_completed: true,
+        completion_time_seconds: 300,
+        difficulty: 4,
+    };
+    dispatch_director_event(&completed, &[184], &registry, &world, Some(&db)).await;
+    assert_eq!(
+        db.get_seals(184, crate::actor::gc::GC_IMMORTAL_FLAMES).await.unwrap(),
+        450,
+        "completed 4-star leve should grant 450 seals",
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Broadcast-around-actor helper — consolidation (wired into chocobo
 // SendMountAppearance + level-up stateForAll).
 // ---------------------------------------------------------------------------

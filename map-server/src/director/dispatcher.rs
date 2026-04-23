@@ -28,6 +28,9 @@
 
 #![allow(dead_code)]
 
+use std::sync::Arc;
+
+use crate::database::Database;
 use crate::packets::send as tx;
 use crate::runtime::actor_registry::ActorRegistry;
 use crate::world_manager::WorldManager;
@@ -39,11 +42,16 @@ use super::outbox::DirectorEvent;
 /// `dispatch_director_event` along with the director's current player
 /// roster (which lives on the `Director::player_members` set on the
 /// in-memory struct — see `zone::area::AreaCore::director_mut`).
+///
+/// `db` is required by the GC seal-reward branch on `GuildleveEnded` —
+/// `Option`-wrapped so test harnesses (and any future caller that's
+/// purely packet-side) can pass `None` without standing up a database.
 pub async fn dispatch_director_event(
     event: &DirectorEvent,
     player_members: &[u32],
     registry: &ActorRegistry,
     world: &WorldManager,
+    db: Option<&Arc<Database>>,
 ) {
     match event {
         DirectorEvent::DirectorStarted {
@@ -155,6 +163,7 @@ pub async fn dispatch_director_event(
             guildleve_id,
             was_completed,
             completion_time_seconds: _,
+            difficulty,
         } => {
             for actor_id in player_members {
                 let Some(handle) = registry.get(*actor_id).await else {
@@ -185,6 +194,19 @@ pub async fn dispatch_director_event(
                         },
                     );
                     client.send_bytes(msg.to_bytes()).await;
+                    // GC seal accrual — every enlisted member of the
+                    // leve earns a per-difficulty seal payout. No-op
+                    // for unenlisted players, capped at the rank seal
+                    // ceiling, and silently skipped when no DB handle
+                    // is wired in (test harnesses).
+                    if let Some(db) = db {
+                        crate::runtime::dispatcher::award_leve_completion_seals(
+                            &handle,
+                            *difficulty,
+                            db,
+                        )
+                        .await;
+                    }
                 }
                 let _ = director_id;
             }
@@ -290,7 +312,7 @@ mod tests {
             time_limit_seconds: 600,
             start_time_unix: 0,
         };
-        dispatch_director_event(&event, &[1], &registry, &world).await;
+        dispatch_director_event(&event, &[1], &registry, &world, None).await;
         // Music + start msg + time-limit msg = 3 packets.
         for _ in 0..3 {
             let got = rx.recv().await.expect("guildleve start packet");
@@ -313,8 +335,9 @@ mod tests {
             guildleve_id: 10801,
             was_completed: true,
             completion_time_seconds: 300,
+            difficulty: 3,
         };
-        dispatch_director_event(&event, &[1], &registry, &world).await;
+        dispatch_director_event(&event, &[1], &registry, &world, None).await;
         for _ in 0..2 {
             let got = rx.recv().await.expect("guildleve end packet");
             assert!(!got.is_empty());
@@ -335,7 +358,7 @@ mod tests {
             director_id: 0x6000_0001,
             zone_id: 100,
         };
-        dispatch_director_event(&event, &[1], &registry, &world).await;
+        dispatch_director_event(&event, &[1], &registry, &world, None).await;
         let got = rx.recv().await.expect("remove-actor packet");
         assert!(!got.is_empty());
     }
