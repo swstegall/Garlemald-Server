@@ -272,6 +272,11 @@ impl PacketProcessor {
         character.chara.gc_rank_limsa = loaded.gc_limsa_rank;
         character.chara.gc_rank_gridania = loaded.gc_gridania_rank;
         character.chara.gc_rank_uldah = loaded.gc_uldah_rank;
+        // Home-point hydration — same registry-reachability motivation
+        // as the GC fields above; the home-point-revive dispatcher
+        // reads this without a DB round-trip.
+        character.chara.homepoint = loaded.homepoint;
+        character.chara.homepoint_inn = loaded.homepoint_inn;
         character.chara.tp = 0;
 
         // Hydrate the quest journal from the DB. `loaded.quest_scenario`
@@ -1082,11 +1087,7 @@ impl PacketProcessor {
                 player_id,
                 homepoint,
             } => {
-                tracing::debug!(
-                    player = player_id,
-                    homepoint,
-                    "SetHomePoint (stub)"
-                );
+                self.apply_set_home_point(player_id, homepoint).await;
             }
             LC::SpawnMyRetainer {
                 player_id,
@@ -1690,6 +1691,60 @@ impl PacketProcessor {
         }
         self.emit_grand_company_packet(&handle).await;
         tracing::info!(player = player_id, gc, rank, "SetGCRank applied");
+    }
+
+    /// `player:SetHomePoint(aetheryteId)` — `AetheryteChild.lua` calls
+    /// this after the player picks a new home aetheryte. Mirrors C#
+    /// `Player.SetHomePoint` (`Map Server/Actors/Chara/Player/Player.cs:1336`):
+    /// updates the in-memory state and persists via
+    /// `Database::save_player_home_points`. Mirrors into CharaState so
+    /// `runtime::dispatcher::apply_home_point_revive` reads the new
+    /// value without a DB round-trip.
+    async fn apply_set_home_point(&self, player_id: u32, homepoint: u32) {
+        if let Some(handle) = self.registry.get(player_id).await {
+            let homepoint_inn = {
+                let mut c = handle.character.write().await;
+                c.chara.homepoint = homepoint;
+                c.chara.homepoint_inn
+            };
+            if let Err(e) = self
+                .db
+                .save_player_home_points(player_id, homepoint, homepoint_inn)
+                .await
+            {
+                tracing::warn!(
+                    player = player_id,
+                    homepoint,
+                    err = %e,
+                    "SetHomePoint: DB persist failed",
+                );
+                return;
+            }
+        } else {
+            // Offline persist path — Lua can't realistically hit this
+            // (the player runs the script), but keep the DB write as a
+            // safety net so a stray `SetHomePoint` from a non-player
+            // hook doesn't silently drop. Inn id stays at whatever the
+            // DB already holds.
+            let inn = match self.db.load_player_character(player_id).await {
+                Ok(Some(p)) => p.homepoint_inn,
+                _ => 0,
+            };
+            if let Err(e) = self
+                .db
+                .save_player_home_points(player_id, homepoint, inn)
+                .await
+            {
+                tracing::warn!(
+                    player = player_id,
+                    homepoint,
+                    err = %e,
+                    "SetHomePoint (offline): DB persist failed",
+                );
+                return;
+            }
+        }
+        tracing::info!(player = player_id, homepoint, "SetHomePoint applied");
     }
 
     async fn apply_add_seals(&self, player_id: u32, gc: u8, amount: i32) {

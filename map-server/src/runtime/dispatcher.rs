@@ -1544,6 +1544,97 @@ pub(crate) async fn apply_revive(
     broadcast_around_actor(world, registry, zone, owner_actor_id, bytes).await;
 }
 
+/// Outcome of [`apply_home_point_revive`] — surfaced for callers that
+/// need to render a different message depending on whether the warp
+/// actually happened.
+#[derive(Debug, Clone, Copy)]
+pub enum HomePointReviveOutcome {
+    /// HP/state restored AND the player was warped to their home-point
+    /// aetheryte. Carries the destination zone id + xyz so the caller
+    /// can echo / verify.
+    Warped {
+        homepoint: u32,
+        zone_id: u32,
+        x: f32,
+        y: f32,
+        z: f32,
+    },
+    /// HP/state restored but the player wasn't warped — either they
+    /// have no homepoint set (`homepoint == 0`) or the homepoint id
+    /// isn't in the [`crate::actor::aetheryte::AETHERYTE_SPAWNS`]
+    /// table. Mirrors the safe fallback `apply_revive` already
+    /// provides for the in-place case.
+    InPlace,
+    /// Player not in the registry — nothing happened.
+    UnknownPlayer,
+}
+
+/// Home-point revive flow: restore HP/MP/state via [`apply_revive`],
+/// then warp the player to the coords for their stored
+/// `chara.homepoint` (if any). Mutates `BaseActor` position +
+/// `Session.destination_*` so the next zone-in bundle (or any in-
+/// flight position broadcast) lands at the new spot. The packet-side
+/// `DoZoneChange` emission is left for the caller — `runtime` doesn't
+/// own the session/client glue and the GM-command path is satisfied
+/// by the server-state mutation alone.
+///
+/// Mirrors the "bandaid fix for returning while dead" branch in
+/// `scripts/lua/commands/TeleportCommand.lua`: `SetHP(maxHP) +
+/// ChangeState(0) + DoZoneChange`. Wrapping it server-side means GM
+/// `home <name>` and any future `player:HomePointRevive()` Lua
+/// binding use the same path.
+pub async fn apply_home_point_revive(
+    player_id: u32,
+    registry: &ActorRegistry,
+    world: &WorldManager,
+    zone: &Arc<RwLock<Zone>>,
+) -> HomePointReviveOutcome {
+    let Some(handle) = registry.get(player_id).await else {
+        return HomePointReviveOutcome::UnknownPlayer;
+    };
+    apply_revive(player_id, registry, world, zone).await;
+    let homepoint = {
+        let c = handle.character.read().await;
+        c.chara.homepoint
+    };
+    if homepoint == 0 {
+        return HomePointReviveOutcome::InPlace;
+    }
+    let Some(spawn) = crate::actor::aetheryte::lookup(homepoint) else {
+        tracing::debug!(
+            player = player_id,
+            homepoint,
+            "home-point revive: aetheryte id not in coords table; in-place revive only",
+        );
+        return HomePointReviveOutcome::InPlace;
+    };
+    {
+        let mut c = handle.character.write().await;
+        c.base.zone_id = spawn.zone_id;
+        c.base.position_x = spawn.x;
+        c.base.position_y = spawn.y;
+        c.base.position_z = spawn.z;
+    }
+    if let Some(mut session) = world.session(handle.session_id).await {
+        session.destination_zone_id = spawn.zone_id;
+        session.destination_x = spawn.x;
+        session.destination_y = spawn.y;
+        session.destination_z = spawn.z;
+        // Spawn type 2 = retail "warp by gm" / aetheryte-teleport code,
+        // matching the value `TeleportCommand.lua` uses in its
+        // `DoZoneChange(player, zone, nil, 0, 2, ...)` call.
+        session.destination_spawn_type = 2;
+        world.upsert_session(session).await;
+    }
+    HomePointReviveOutcome::Warped {
+        homepoint,
+        zone_id: spawn.zone_id,
+        x: spawn.x,
+        y: spawn.y,
+        z: spawn.z,
+    }
+}
+
 /// The zone broadcaster excludes the source actor, so Players who die or
 /// revive wouldn't otherwise see their own state-change packet. Send it
 /// directly to their session.
@@ -1561,5 +1652,218 @@ async fn send_to_self_if_player(
     }
     if let Some(client) = world.client(handle.session_id).await {
         client.send_bytes(bytes).await;
+    }
+}
+
+#[cfg(test)]
+mod home_point_revive_tests {
+    use super::*;
+    use crate::actor::Character;
+    use crate::data::Session;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use crate::zone::navmesh::StubNavmeshLoader;
+
+    fn make_zone(zone_id: u32) -> Zone {
+        Zone::new(
+            zone_id,
+            "test",
+            1,
+            "/Area/Zone/Test",
+            0,
+            0,
+            0,
+            false,
+            false,
+            false,
+            false,
+            false,
+            Some(&StubNavmeshLoader),
+        )
+    }
+
+    /// Happy path: dead player with a Limsa-CAP homepoint set →
+    /// `Warped` outcome, HP restored, base position + session
+    /// destination updated to the aetheryte coords.
+    #[tokio::test]
+    async fn warps_dead_player_to_homepoint_aetheryte() {
+        let world = Arc::new(WorldManager::new());
+        let registry = Arc::new(ActorRegistry::new());
+
+        let source_zone = 100u32;
+        let zone = make_zone(source_zone);
+        world.register_zone(zone).await;
+
+        let mut character = Character::new(7);
+        character.chara.max_hp = 1000;
+        character.chara.max_mp = 500;
+        character.chara.hp = 0;
+        character.chara.mp = 0;
+        character.base.current_main_state = crate::actor::MAIN_STATE_DEAD;
+        character.base.zone_id = source_zone;
+        character.base.position_x = 1.0;
+        character.base.position_y = 2.0;
+        character.base.position_z = 3.0;
+        character.chara.homepoint = 1_280_001; // Limsa Lominsa CAP → zone 230.
+        let handle = ActorHandle::new(7, ActorKindTag::Player, source_zone, 42, character);
+        registry.insert(handle.clone()).await;
+
+        // Pre-seat a session so destination_* can be updated.
+        let mut session = Session::default();
+        session.id = 42;
+        session.current_zone_id = source_zone;
+        world.upsert_session(session).await;
+
+        let zone_arc = world.zone(source_zone).await.expect("zone registered");
+        let outcome = apply_home_point_revive(7, &registry, &world, &zone_arc).await;
+
+        match outcome {
+            HomePointReviveOutcome::Warped {
+                homepoint,
+                zone_id,
+                ..
+            } => {
+                assert_eq!(homepoint, 1_280_001);
+                assert_eq!(zone_id, 230);
+            }
+            other => panic!("expected Warped, got {other:?}"),
+        }
+
+        let c = handle.character.read().await;
+        assert_eq!(c.chara.hp, c.chara.max_hp, "HP restored");
+        assert_eq!(c.chara.mp, c.chara.max_mp, "MP restored");
+        assert_eq!(
+            c.base.current_main_state,
+            crate::actor::MAIN_STATE_PASSIVE,
+            "no longer dead",
+        );
+        assert_eq!(c.base.zone_id, 230, "warped to Limsa CAP zone");
+        assert_eq!(c.base.position_x, -407.0);
+        assert!((c.base.position_y - 42.5).abs() < 1e-3);
+        assert_eq!(c.base.position_z, 337.0);
+
+        let session = world.session(42).await.expect("session present");
+        assert_eq!(session.destination_zone_id, 230);
+        assert_eq!(session.destination_x, -407.0);
+        assert_eq!(session.destination_spawn_type, 2);
+    }
+
+    /// Player with `homepoint == 0` (never attuned to an aetheryte)
+    /// falls back to in-place revive. HP/state restored, position
+    /// unchanged.
+    #[tokio::test]
+    async fn revives_in_place_when_homepoint_unset() {
+        let world = Arc::new(WorldManager::new());
+        let registry = Arc::new(ActorRegistry::new());
+        let source_zone = 100u32;
+        let zone = make_zone(source_zone);
+        world.register_zone(zone).await;
+
+        let mut character = Character::new(8);
+        character.chara.max_hp = 500;
+        character.chara.hp = 0;
+        character.base.current_main_state = crate::actor::MAIN_STATE_DEAD;
+        character.base.zone_id = source_zone;
+        character.base.position_x = 50.0;
+        character.base.position_y = 0.0;
+        character.base.position_z = 50.0;
+        character.chara.homepoint = 0;
+        let handle = ActorHandle::new(8, ActorKindTag::Player, source_zone, 0, character);
+        registry.insert(handle.clone()).await;
+
+        let zone_arc = world.zone(source_zone).await.expect("zone registered");
+        let outcome = apply_home_point_revive(8, &registry, &world, &zone_arc).await;
+
+        assert!(
+            matches!(outcome, HomePointReviveOutcome::InPlace),
+            "expected InPlace, got {outcome:?}",
+        );
+
+        let c = handle.character.read().await;
+        assert_eq!(c.chara.hp, c.chara.max_hp);
+        assert_eq!(c.base.zone_id, source_zone, "still in source zone");
+        assert_eq!(c.base.position_x, 50.0, "position unchanged");
+    }
+
+    /// Unknown aetheryte id (something outside the
+    /// `1_280_001..=1_280_125` range, or a missing-from-table id)
+    /// also falls back to in-place revive.
+    #[tokio::test]
+    async fn unknown_aetheryte_id_falls_back_to_in_place() {
+        let world = Arc::new(WorldManager::new());
+        let registry = Arc::new(ActorRegistry::new());
+        let source_zone = 100u32;
+        let zone = make_zone(source_zone);
+        world.register_zone(zone).await;
+
+        let mut character = Character::new(9);
+        character.chara.max_hp = 200;
+        character.chara.hp = 0;
+        character.base.current_main_state = crate::actor::MAIN_STATE_DEAD;
+        character.base.zone_id = source_zone;
+        character.chara.homepoint = 9_999_999; // Definitely not in the table.
+        let handle = ActorHandle::new(9, ActorKindTag::Player, source_zone, 0, character);
+        registry.insert(handle.clone()).await;
+
+        let zone_arc = world.zone(source_zone).await.expect("zone registered");
+        let outcome = apply_home_point_revive(9, &registry, &world, &zone_arc).await;
+
+        assert!(
+            matches!(outcome, HomePointReviveOutcome::InPlace),
+            "expected InPlace, got {outcome:?}",
+        );
+        let c = handle.character.read().await;
+        assert_eq!(c.base.zone_id, source_zone);
+    }
+
+    /// Player not in the registry → `UnknownPlayer` outcome, no
+    /// panic, no state mutated.
+    #[tokio::test]
+    async fn missing_player_returns_unknown_outcome() {
+        let world = Arc::new(WorldManager::new());
+        let registry = Arc::new(ActorRegistry::new());
+        let source_zone = 100u32;
+        let zone = make_zone(source_zone);
+        world.register_zone(zone).await;
+
+        let zone_arc = world.zone(source_zone).await.expect("zone registered");
+        let outcome = apply_home_point_revive(404, &registry, &world, &zone_arc).await;
+        assert!(matches!(outcome, HomePointReviveOutcome::UnknownPlayer));
+    }
+
+    /// Alive player calling home-point revive still warps — the
+    /// underlying `apply_revive` no-ops (state isn't DEAD), but the
+    /// warp half of the operation still runs. Mirrors how `/return`
+    /// behaves at retail when a live player invokes it.
+    #[tokio::test]
+    async fn alive_player_still_warps_to_homepoint() {
+        let world = Arc::new(WorldManager::new());
+        let registry = Arc::new(ActorRegistry::new());
+        let source_zone = 100u32;
+        let zone = make_zone(source_zone);
+        world.register_zone(zone).await;
+
+        let mut character = Character::new(11);
+        character.chara.max_hp = 300;
+        character.chara.hp = 250; // alive
+        character.base.current_main_state = crate::actor::MAIN_STATE_PASSIVE;
+        character.base.zone_id = source_zone;
+        character.chara.homepoint = 1_280_031; // Ul'dah CAP → zone 175.
+        let handle = ActorHandle::new(11, ActorKindTag::Player, source_zone, 0, character);
+        registry.insert(handle.clone()).await;
+
+        let zone_arc = world.zone(source_zone).await.expect("zone registered");
+        let outcome = apply_home_point_revive(11, &registry, &world, &zone_arc).await;
+
+        match outcome {
+            HomePointReviveOutcome::Warped { zone_id, .. } => assert_eq!(zone_id, 175),
+            other => panic!("expected Warped, got {other:?}"),
+        }
+        let c = handle.character.read().await;
+        // HP unchanged because apply_revive's MAIN_STATE_DEAD guard
+        // skipped the restore branch — the warp still happened, but
+        // the HP path is short-circuited (matches retail: a live
+        // `/return` doesn't burst-heal).
+        assert_eq!(c.chara.hp, 250);
+        assert_eq!(c.base.zone_id, 175, "warped despite being alive");
     }
 }

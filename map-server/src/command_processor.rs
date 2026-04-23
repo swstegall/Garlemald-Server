@@ -80,6 +80,8 @@ impl CommandProcessor {
                 format!("reloaded: {n} lua script(s) dropped from cache")
             }
             "revive" => self.handle_revive(&args).await,
+            "home" => self.handle_home(&args).await,
+            "sethome" => self.handle_set_home(&args).await,
             "die" => self.handle_die(&args).await,
             "givegil" => self.handle_givegil(&args).await,
             "giveexp" => self.handle_giveexp(&args).await,
@@ -104,7 +106,8 @@ impl CommandProcessor {
 
     fn help() -> String {
         "commands: help, who, version, reload, \
-         revive <name>, die <name>, givegil <qty> <name>, \
+         revive <name>, home <name>, sethome <aetheryte_id> <name>, \
+         die <name>, givegil <qty> <name>, \
          giveexp <qty> <class_id> <name>, \
          hireretainer <retainer_id> <name>, \
          dismissretainer <retainer_id> <name>, \
@@ -136,6 +139,92 @@ impl CommandProcessor {
             }
             TargetLookup::Err(e) => e,
         }
+    }
+
+    /// `home <name>` — server-driven home-point revive. Restores HP/MP
+    /// + state via `apply_revive`, then warps the player to their
+    /// stored homepoint aetheryte. Mirrors the "bandaid fix for
+    /// returning while dead" branch in `TeleportCommand.lua` so we
+    /// can verify the death/revive flow without standing up the
+    /// client's death-overlay menu network.
+    async fn handle_home(&self, args: &Args<'_>) -> String {
+        let Some(name) = args.rest_joined(0) else {
+            return "usage: home <name>".into();
+        };
+        match self.resolve_live_target(&name).await {
+            TargetLookup::Ok { actor_id, zone } => {
+                let outcome = crate::runtime::dispatcher::apply_home_point_revive(
+                    actor_id,
+                    &self.registry,
+                    &self.world,
+                    &zone,
+                )
+                .await;
+                match outcome {
+                    crate::runtime::dispatcher::HomePointReviveOutcome::Warped {
+                        homepoint,
+                        zone_id,
+                        x,
+                        y,
+                        z,
+                    } => format!(
+                        "home-point revived {name} (actor {actor_id}) to aetheryte {homepoint} \
+                         → zone {zone_id} ({x:.2}, {y:.2}, {z:.2})"
+                    ),
+                    crate::runtime::dispatcher::HomePointReviveOutcome::InPlace => format!(
+                        "revived {name} in place — no usable homepoint set (was 0 or unknown id)"
+                    ),
+                    crate::runtime::dispatcher::HomePointReviveOutcome::UnknownPlayer => {
+                        format!("{name} dropped from registry mid-call")
+                    }
+                }
+            }
+            TargetLookup::Err(e) => e,
+        }
+    }
+
+    /// `sethome <aetheryte_id> <name>` — admin shortcut to set a
+    /// player's homepoint without walking them through the
+    /// `AetheryteChild.lua` menu. Persists via the same DB path the
+    /// in-game flow uses (`Database::save_player_home_points`) and
+    /// mirrors into CharaState if the character is online.
+    async fn handle_set_home(&self, args: &Args<'_>) -> String {
+        let homepoint = match args.parse_u32(0) {
+            Ok(id) => id,
+            Err(e) => return format!("usage: sethome <aetheryte_id> <name> — {e}"),
+        };
+        let Some(name) = args.rest_joined(1) else {
+            return "usage: sethome <aetheryte_id> <name>".into();
+        };
+        let Some(chara_id) = self.lookup_character_id(&name).await else {
+            return format!("unknown character: {name}");
+        };
+        // Read the existing inn id so we don't clobber it on the
+        // homepoint write (the two share a DB row but represent
+        // independent player choices).
+        let inn = self
+            .db
+            .load_player_character(chara_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|p| p.homepoint_inn)
+            .unwrap_or(0);
+        if let Err(e) = self
+            .db
+            .save_player_home_points(chara_id, homepoint, inn)
+            .await
+        {
+            return format!("sethome failed: {e}");
+        }
+        if let Some(handle) = self.registry.get(chara_id).await {
+            let mut c = handle.character.write().await;
+            c.chara.homepoint = homepoint;
+        }
+        let resolved = crate::actor::aetheryte::lookup(homepoint)
+            .map(|s| format!("zone {} at ({:.2}, {:.2}, {:.2})", s.zone_id, s.x, s.y, s.z))
+            .unwrap_or_else(|| "(unknown aetheryte id; warp will in-place revive)".into());
+        format!("set {name}'s homepoint to {homepoint} — {resolved}")
     }
 
     async fn handle_die(&self, args: &Args<'_>) -> String {
@@ -1040,5 +1129,66 @@ mod tests {
         assert!(dismissed.contains("dismissed"), "got {dismissed}");
         let again = cmd.run("dismissretainer 1001 Retainer Hirer").await.unwrap();
         assert!(again.contains("does not own"), "got {again}");
+    }
+
+    /// `sethome` persists to DB even when the player is offline. The
+    /// follow-up `home` command short-circuits at "not online" — but
+    /// that's all we can prove without standing up a Zone + ActorHandle
+    /// in a CommandProcessor fixture (the rest of the dispatcher is
+    /// covered by `home_point_revive_tests` directly against
+    /// `apply_home_point_revive`).
+    #[tokio::test]
+    async fn sethome_persists_aetheryte_id_for_offline_character() {
+        let (cmd, db) = fixture().await;
+        db.conn_for_test()
+            .call_db(|c| {
+                c.execute(
+                    r"INSERT INTO characters (id, userId, slot, serverId, name)
+                      VALUES (12, 0, 0, 0, 'Limsa Resident')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        // Set homepoint to Limsa CAP (1280001).
+        let out = cmd.run("sethome 1280001 Limsa Resident").await.unwrap();
+        assert!(out.contains("homepoint to 1280001"), "got {out}");
+        // Coords resolved from the Rust-side aetheryte table.
+        assert!(out.contains("zone 230"), "got {out}");
+
+        // DB row updated.
+        let stored: u32 = db
+            .conn_for_test()
+            .call_db(|c| {
+                Ok(c.query_row(
+                    "SELECT homepoint FROM characters WHERE id = 12",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(stored, 1_280_001);
+
+        // Unknown aetheryte id still persists but the response notes it.
+        let out2 = cmd.run("sethome 999999 Limsa Resident").await.unwrap();
+        assert!(out2.contains("homepoint to 999999"), "got {out2}");
+        assert!(out2.contains("unknown aetheryte"), "got {out2}");
+    }
+
+    #[tokio::test]
+    async fn home_without_name_reports_usage() {
+        let (cmd, _db) = fixture().await;
+        let out = cmd.run("home").await.unwrap();
+        assert_eq!(out, "usage: home <name>");
+    }
+
+    #[tokio::test]
+    async fn home_unknown_player_reports_unknown() {
+        let (cmd, _db) = fixture().await;
+        let out = cmd.run("home Phantom").await.unwrap();
+        assert!(out.contains("unknown character"), "got {out}");
     }
 }

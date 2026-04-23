@@ -27,6 +27,7 @@
 
 #![allow(dead_code)]
 
+pub mod aetheryte;
 pub mod chara;
 pub mod event_conditions;
 pub mod gc;
@@ -217,6 +218,22 @@ pub struct CharaState {
     pub gc_rank_limsa: u8,
     pub gc_rank_gridania: u8,
     pub gc_rank_uldah: u8,
+    // Home-point + inn-room — runtime-mutable slice of
+    // `PlayerState.homepoint` / `homepoint_inn`. Same CharaState ↔
+    // PlayerState split as the chocobo + GC fields above (see comment
+    // on `gc_current`): CharaState for processor mutation via the
+    // registry (read by the home-point-revive dispatcher,
+    // mutated by `LuaCommand::SetHomePoint`), PlayerState for the
+    // login DTO shape.
+    //
+    // `homepoint`: aetheryte id (1280001..=1280125; the city CAPs and
+    // their child outposts). 0 = "no home set" — `apply_home_point_revive`
+    // refuses to warp in that state. `homepoint_inn`: 0 = no inn set,
+    // 1 = Limsa, 2 = Gridania, 3 = Ul'dah, used by the `/return`
+    // confirm dialog to choose between the homepoint aetheryte and the
+    // city inn room.
+    pub homepoint: u32,
+    pub homepoint_inn: u8,
     /// Set when `player.lua:onBeginLogin` invokes `player:SetLoginDirector(...)`.
     /// Non-zero → the ScriptBind LuaParam layout switches to the
     /// "tutorial with init director" variant C# `Player.CreateScriptBindPacket`
@@ -284,6 +301,8 @@ impl Default for CharaState {
             gc_rank_limsa: 127,
             gc_rank_gridania: 127,
             gc_rank_uldah: 127,
+            homepoint: 0,
+            homepoint_inn: 0,
             login_director_actor_id: 0,
             animation_id: 0,
             current_target: 0,
