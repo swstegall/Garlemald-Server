@@ -409,6 +409,26 @@ pub enum LuaCommand {
         player_id: u32,
         quest_id: u32,
     },
+    /// `player:Logout()` — soft logout. Mirrors C# `Player.Logout`
+    /// (`Map Server/Actors/Chara/Player/Player.cs:861`): emits
+    /// `LogoutPacket` (opcode `0x000E`) to the owning session so the
+    /// client returns to character select. Called from `ObjectBed.lua`
+    /// (bed menu choice 3 = "Sleep — Stay logged in") and
+    /// `LogoutCommand.lua` (chat menu choice 2). Sibling to
+    /// [`QuitGame`] which flips the client all the way back to
+    /// the launcher instead of character select.
+    Logout {
+        player_id: u32,
+    },
+    /// `player:QuitGame()` — hard exit to title. Mirrors C#
+    /// `Player.QuitGame` (`Map Server/Actors/Chara/Player/Player.cs:869`):
+    /// emits `QuitPacket` (opcode `0x0011`) to the owning session,
+    /// which closes the client process. Called from `ObjectBed.lua`
+    /// (bed menu choice 2 = "Sleep — Quit") and `LogoutCommand.lua`
+    /// (chat menu choice 1).
+    QuitGame {
+        player_id: u32,
+    },
     LogError(String),
 }
 

@@ -782,6 +782,32 @@ impl UserData for LuaPlayer {
             );
             Ok(())
         });
+        // `player:Logout()` — soft logout (returns to character
+        // select). Called from `ObjectBed.lua` (sleep-and-stay-logged-
+        // in choice) and `LogoutCommand.lua`. Drains to
+        // `LuaCommand::Logout` → processor emits LogoutPacket
+        // (0x000E) to the owning session.
+        methods.add_method("Logout", |_, this, _: ()| {
+            push(
+                &this.queue,
+                LuaCommand::Logout {
+                    player_id: this.snapshot.actor_id,
+                },
+            );
+            Ok(())
+        });
+        // `player:QuitGame()` — hard exit (closes the client). Same
+        // call sites as `Logout`; drains to `LuaCommand::QuitGame` →
+        // processor emits QuitPacket (0x0011) to the owning session.
+        methods.add_method("QuitGame", |_, this, _: ()| {
+            push(
+                &this.queue,
+                LuaCommand::QuitGame {
+                    player_id: this.snapshot.actor_id,
+                },
+            );
+            Ok(())
+        });
         // Hildibrand `etc5*` quest scripts drive dream cutscenes via
         // these. `dreamId` is the visual-effect id (retail 1.x
         // known codes: 0x16 for the standard inn fade).
@@ -1405,13 +1431,18 @@ impl UserData for LuaPlayer {
             Ok(())
         });
 
-        // --- Retainer -------------------------------------------------------
-        methods.add_method("DespawnMyRetainer", |_, _this, _: ()| Ok(()));
-
         // --- Session control ------------------------------------------------
+        // `Disengage` is currently a no-op surface stub — the
+        // dispatch-side equivalent runs in the battle-state machine
+        // (`die_if_defender_fell`'s engaged-flag clear). The real
+        // bindings for `DespawnMyRetainer` / `Logout` / `QuitGame`
+        // live earlier in this `add_methods` body and emit
+        // `LuaCommand::DespawnMyRetainer` / `Logout` / `QuitGame`
+        // respectively; do NOT re-register no-op stubs for them
+        // here because mlua's `add_method` overwrites earlier
+        // registrations of the same name and the stub would
+        // silently drop the script's drain.
         methods.add_method("Disengage", |_, _this, _: ()| Ok(()));
-        methods.add_method("Logout", |_, _this, _: ()| Ok(()));
-        methods.add_method("QuitGame", |_, _this, _: ()| Ok(()));
 
         // --- Party ----------------------------------------------------------
         methods.add_method("PartyLeave", |_, _this, _: ()| Ok(()));

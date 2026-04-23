@@ -1127,6 +1127,12 @@ impl PacketProcessor {
             LC::EndDream { player_id } => {
                 self.apply_end_dream(player_id).await;
             }
+            LC::Logout { player_id } => {
+                self.apply_logout(player_id).await;
+            }
+            LC::QuitGame { player_id } => {
+                self.apply_quit_game(player_id).await;
+            }
             LC::IssueChocobo {
                 player_id,
                 appearance_id,
@@ -1494,6 +1500,70 @@ impl PacketProcessor {
             }
         }
         tracing::info!(player = player_id, dream_id, inn_code, "StartDream applied");
+    }
+
+    /// `player:Logout()` — emit `LogoutPacket` (0x000E) to the owner's
+    /// session. The client responds by closing the world connection
+    /// and returning to character select. Mirrors C# `Player.Logout`
+    /// (`Map Server/Actors/Chara/Player/Player.cs:861`); the
+    /// `RemoveStatusEffectsByFlags(LoseOnLogout)` + `CleanupAndSave()`
+    /// tail it does is deferred — the same status-cleanup gap is
+    /// already noted in the post-roadmap follow-ups list, and persistent
+    /// player save is currently driven by the regular DB upsert path
+    /// rather than a logout-specific flush.
+    async fn apply_logout(&self, player_id: u32) {
+        let Some(handle) = self.registry.get(player_id).await else {
+            tracing::debug!(player = player_id, "Logout: player not in registry");
+            return;
+        };
+        let session_id = handle.session_id;
+        if session_id == 0 {
+            tracing::debug!(player = player_id, "Logout: no session (NPC?)");
+            return;
+        }
+        let Some(client) = self.world.client(session_id).await else {
+            tracing::debug!(
+                player = player_id,
+                session = session_id,
+                "Logout: no client handle (already disconnected)",
+            );
+            return;
+        };
+        let pkt = tx::handshake::build_logout(handle.actor_id);
+        if let Ok(base) = common::BasePacket::create_from_subpacket(&pkt, true, false) {
+            client.send_bytes(base.to_bytes()).await;
+        }
+        tracing::info!(player = player_id, session = session_id, "Logout applied");
+    }
+
+    /// `player:QuitGame()` — emit `QuitPacket` (0x0011) to the owner's
+    /// session. The client responds by terminating its process (back
+    /// to launcher / desktop). Mirrors C# `Player.QuitGame`
+    /// (`Map Server/Actors/Chara/Player/Player.cs:869`); same status-
+    /// cleanup deferral as [`apply_logout`].
+    async fn apply_quit_game(&self, player_id: u32) {
+        let Some(handle) = self.registry.get(player_id).await else {
+            tracing::debug!(player = player_id, "QuitGame: player not in registry");
+            return;
+        };
+        let session_id = handle.session_id;
+        if session_id == 0 {
+            tracing::debug!(player = player_id, "QuitGame: no session (NPC?)");
+            return;
+        }
+        let Some(client) = self.world.client(session_id).await else {
+            tracing::debug!(
+                player = player_id,
+                session = session_id,
+                "QuitGame: no client handle (already disconnected)",
+            );
+            return;
+        };
+        let pkt = tx::handshake::build_quit(handle.actor_id);
+        if let Ok(base) = common::BasePacket::create_from_subpacket(&pkt, true, false) {
+            client.send_bytes(base.to_bytes()).await;
+        }
+        tracing::info!(player = player_id, session = session_id, "QuitGame applied");
     }
 
     async fn apply_end_dream(&self, player_id: u32) {

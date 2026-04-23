@@ -3368,6 +3368,36 @@ async fn ported_retainer_scripts_parse() {
     }
 }
 
+/// Parse-all smoke for the two scripts that drive `player:Logout()` /
+/// `player:QuitGame()` — `LogoutCommand.lua` (chat-prefix `/logout`)
+/// and `ObjectBed.lua` (inn-bed click). Catches any future
+/// LuaPlayer-binding change that would break the soft-logout / hard-
+/// exit call sites the same way the no-op stubs at userdata.rs:1438
+/// silently broke them before 2026-04-23.
+#[tokio::test]
+async fn ported_logout_scripts_parse() {
+    use crate::lua::LuaEngine;
+
+    let script_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .join("scripts/lua");
+    let engine = LuaEngine::new(&script_root);
+
+    for rel in [
+        "commands/LogoutCommand.lua",
+        "base/chara/npc/object/ObjectBed.lua",
+    ] {
+        let script = script_root.join(rel);
+        if !script.exists() {
+            continue;
+        }
+        engine.load_script(&script).unwrap_or_else(|e| {
+            panic!("{rel} should parse: {e}");
+        });
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Inn / dream — Tier 4 #17
 // ---------------------------------------------------------------------------
@@ -3644,6 +3674,198 @@ async fn start_dream_sets_session_id_then_end_clears_it() {
         .apply_login_lua_command(&handle, LuaCommand::EndDream { player_id: 13 })
         .await;
     assert!(world.session(13).await.unwrap().current_dream_id.is_none());
+}
+
+/// `player:Logout()` drains to `LuaCommand::Logout` → processor emits
+/// `LogoutPacket` (opcode 0x000E) addressed to the owner's session.
+/// Mirrors the `ObjectBed.lua` / `LogoutCommand.lua` "soft logout"
+/// branch.
+#[tokio::test]
+async fn logout_command_emits_logout_packet_to_owner_session() {
+    use crate::actor::Character;
+    use crate::data::{ClientHandle, Session as MapSession};
+    use crate::lua::LuaCommandKind as LuaCommand;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    let lua = Arc::new(crate::lua::LuaEngine::new("/nonexistent"));
+
+    let chara = Character::new(33);
+    registry
+        .insert(ActorHandle::new(33, ActorKindTag::Player, 200, 33, chara))
+        .await;
+    world
+        .upsert_session(MapSession {
+            id: 33,
+            current_zone_id: 200,
+            ..MapSession::default()
+        })
+        .await;
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(8);
+    world.register_client(33, ClientHandle::new(33, tx)).await;
+
+    let processor = crate::processor::PacketProcessor {
+        db,
+        world: world.clone(),
+        registry: registry.clone(),
+        lua: Some(lua),
+    };
+    let handle = registry.get(33).await.unwrap();
+
+    processor
+        .apply_login_lua_command(&handle, LuaCommand::Logout { player_id: 33 })
+        .await;
+
+    let bytes = rx.try_recv().expect("Logout should send one packet");
+    let mut offset = 0;
+    let base =
+        common::BasePacket::from_buffer(&bytes, &mut offset).expect("parse base packet");
+    let subs = base.get_subpackets().expect("parse subpackets");
+    assert_eq!(subs.len(), 1, "Logout sends one subpacket");
+    // Logout/Quit are non-game-message subpackets, so the opcode lives
+    // on `header.r#type` (see `SubPacket::new_with_flag`).
+    assert_eq!(
+        subs[0].header.r#type,
+        crate::packets::opcodes::OP_LOGOUT,
+        "subpacket type should be OP_LOGOUT (0x000E)",
+    );
+}
+
+/// `player:QuitGame()` drains to `LuaCommand::QuitGame` → processor
+/// emits `QuitPacket` (opcode 0x0011). Sibling to the Logout test;
+/// covers the `ObjectBed.lua` / `LogoutCommand.lua` "hard exit"
+/// branch the bed menu's option 2 takes.
+#[tokio::test]
+async fn quitgame_command_emits_quit_packet_to_owner_session() {
+    use crate::actor::Character;
+    use crate::data::{ClientHandle, Session as MapSession};
+    use crate::lua::LuaCommandKind as LuaCommand;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    let lua = Arc::new(crate::lua::LuaEngine::new("/nonexistent"));
+
+    let chara = Character::new(34);
+    registry
+        .insert(ActorHandle::new(34, ActorKindTag::Player, 200, 34, chara))
+        .await;
+    world
+        .upsert_session(MapSession {
+            id: 34,
+            current_zone_id: 200,
+            ..MapSession::default()
+        })
+        .await;
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(8);
+    world.register_client(34, ClientHandle::new(34, tx)).await;
+
+    let processor = crate::processor::PacketProcessor {
+        db,
+        world: world.clone(),
+        registry: registry.clone(),
+        lua: Some(lua),
+    };
+    let handle = registry.get(34).await.unwrap();
+
+    processor
+        .apply_login_lua_command(&handle, LuaCommand::QuitGame { player_id: 34 })
+        .await;
+
+    let bytes = rx.try_recv().expect("QuitGame should send one packet");
+    let mut offset = 0;
+    let base =
+        common::BasePacket::from_buffer(&bytes, &mut offset).expect("parse base packet");
+    let subs = base.get_subpackets().expect("parse subpackets");
+    assert_eq!(subs.len(), 1, "QuitGame sends one subpacket");
+    assert_eq!(
+        subs[0].header.r#type,
+        crate::packets::opcodes::OP_QUIT,
+        "subpacket type should be OP_QUIT (0x0011)",
+    );
+}
+
+/// Drive `LogoutCommand.lua`'s `onEventStarted` against a real
+/// LuaEngine. The script flow is `delegateCommand → choice == 1 →
+/// player:QuitGame()`; we can't run the `delegateCommand` round-trip
+/// (it parks a coroutine on `_WAIT_EVENT`), so synthesise the
+/// post-choice path by invoking `player:QuitGame()` directly through
+/// the `npc::TestableScript` shape — but easier: just lock down the
+/// binding presence via a parse-then-call mini-script that proves
+/// the `:QuitGame()` / `:Logout()` methods exist on `LuaPlayer`.
+#[tokio::test]
+async fn logout_and_quitgame_bindings_emit_lua_commands() {
+    use crate::lua::LuaEngine;
+    use crate::lua::command::CommandQueue;
+    use crate::lua::userdata::{LuaPlayer, PlayerSnapshot};
+
+    let root = std::env::temp_dir().join(format!(
+        "garlemald-logout-bindings-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("test.lua"),
+        r#"
+            function fire(player)
+                player:Logout()
+                player:QuitGame()
+            end
+        "#,
+    )
+    .unwrap();
+
+    let lua = LuaEngine::new(&root);
+    let (vm, queue) = lua.load_script(&root.join("test.lua")).expect("load");
+
+    let snapshot = PlayerSnapshot {
+        actor_id: 77,
+        ..Default::default()
+    };
+    let player_ud = vm
+        .create_userdata(LuaPlayer {
+            snapshot,
+            queue: queue.clone(),
+        })
+        .unwrap();
+    let f: mlua::Function = vm.globals().get("fire").unwrap();
+    f.call::<()>(player_ud)
+        .unwrap_or_else(|e| panic!("fire() should not error: {e}"));
+
+    let cmds = CommandQueue::drain(&queue);
+    assert_eq!(
+        cmds.len(),
+        2,
+        "expected Logout + QuitGame commands; drained: {cmds:?}",
+    );
+    assert!(matches!(
+        cmds[0],
+        crate::lua::LuaCommandKind::Logout { player_id: 77 }
+    ));
+    assert!(matches!(
+        cmds[1],
+        crate::lua::LuaCommandKind::QuitGame { player_id: 77 }
+    ));
+
+    let _ = std::fs::remove_dir_all(root);
 }
 
 // ---------------------------------------------------------------------------
