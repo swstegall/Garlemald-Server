@@ -63,6 +63,7 @@ pub async fn dispatch_event_event(
             dispatch_event_started(
                 registry,
                 world,
+                db,
                 lua,
                 *player_actor_id,
                 *owner_actor_id,
@@ -204,6 +205,7 @@ pub async fn dispatch_event_event(
 async fn dispatch_event_started(
     registry: &ActorRegistry,
     world: &WorldManager,
+    db: &Database,
     lua: Option<&Arc<LuaEngine>>,
     player_actor_id: u32,
     owner_actor_id: u32,
@@ -222,6 +224,30 @@ async fn dispatch_event_started(
         );
         return;
     };
+
+    // Director actor ids carry the `6` kind nibble in the high 4 bits
+    // (`(6 << 28) | (zone << 19) | local`). Directors live on
+    // `Zone::core.directors`, not in the actor registry — route them
+    // through a dedicated dispatcher so the script gets a real
+    // `LuaPlayer` + `LuaDirectorHandle` userdata pair instead of the
+    // raw-integer arg list the NPC fallback below uses, and so any
+    // emitted `LuaCommand`s actually drain (most importantly
+    // `quest:OnNotice` from `AfterQuestWarpDirector`).
+    if owner_actor_id >> 28 == 6 {
+        dispatch_director_event_started(
+            registry,
+            world,
+            db,
+            lua,
+            player_actor_id,
+            owner_actor_id,
+            event_name,
+            event_type,
+            lua_params,
+        )
+        .await;
+        return;
+    }
 
     let Some(owner_handle) = registry.get(owner_actor_id).await else {
         tracing::debug!(owner = owner_actor_id, "event: owner actor missing");
@@ -285,6 +311,248 @@ async fn dispatch_event_started(
         Err(join) => {
             tracing::warn!(error = %join, "event: Lua dispatch task panicked");
         }
+    }
+}
+
+/// Director-flavoured `onEventStarted` dispatch.
+///
+/// Mirrors Meteor's `Director.OnEventStart` (`origin/develop:Map
+/// Server/Actors/Director/Director.cs:325`): build `args = [player,
+/// director, eventName, ...lparams]` and resume the script's
+/// `onEventStarted` global. Unlike the NPC fallback above, this path
+/// goes through `LuaEngine::call_quest_hook`-style snapshot construction
+/// so the script sees real `LuaPlayer` + `LuaDirectorHandle` userdata —
+/// without that, the script's `player:HasQuest(110002)` /
+/// `quest:OnNotice(player)` chain would error on a method-on-integer
+/// the moment `AfterQuestWarpDirector.lua` runs.
+///
+/// Lookup walks the actor-id encoding (`(6 << 28) | (zone << 19) |
+/// local`) to find the director on its zone's `AreaCore`. Quietly
+/// no-ops on:
+/// * unknown zone (zone never loaded),
+/// * unknown director (already ended / never spawned),
+/// * missing script (`directors/<class_name>.lua` not on disk),
+/// * missing player snapshot (player left mid-event-start).
+///
+/// Hook-emitted commands drain through `apply_runtime_lua_commands`
+/// against the same registry / db / world / lua refs the dispatcher
+/// already holds, so `quest:OnNotice` → `QuestOnNotice` →
+/// `apply_quest_on_notice` → target quest's `onNotice` flow lands
+/// without further plumbing.
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_director_event_started(
+    registry: &ActorRegistry,
+    world: &WorldManager,
+    db: &Database,
+    lua: &Arc<LuaEngine>,
+    player_actor_id: u32,
+    director_actor_id: u32,
+    event_name: &str,
+    event_type: u8,
+    lua_params: &[LuaParam],
+) {
+    // Decode the zone id and look the director up on the zone's
+    // AreaCore. Director ids are zone-scoped; if the zone doesn't have
+    // it, the director's been ended or never created.
+    let zone_id = (director_actor_id >> 19) & 0x1FF;
+    let Some(zone_arc) = world.zone(zone_id).await else {
+        tracing::debug!(
+            director = director_actor_id,
+            zone = zone_id,
+            "director onEventStarted skipped — zone not loaded",
+        );
+        return;
+    };
+    let (class_path, class_name, actor_name) = {
+        let zone = zone_arc.read().await;
+        let Some(d) = zone.core.director(director_actor_id) else {
+            tracing::debug!(
+                director = director_actor_id,
+                zone = zone_id,
+                "director onEventStarted skipped — director not on zone",
+            );
+            return;
+        };
+        (d.class_path.clone(), d.class_name.clone(), d.actor_name.clone())
+    };
+    let script_path = lua.resolver().director(&class_name);
+    if !script_path.exists() {
+        tracing::debug!(
+            director = director_actor_id,
+            class = %class_name,
+            script = %script_path.display(),
+            "director onEventStarted skipped — script not on disk",
+        );
+        return;
+    }
+
+    // Snapshot the player so the LuaPlayer userdata sees a coherent
+    // view (HasQuest / GetQuest / GetItemPackage all read out of the
+    // snapshot). Quietly no-op if the player's already gone.
+    let Some(player_handle) = registry.get(player_actor_id).await else {
+        tracing::debug!(
+            player = player_actor_id,
+            director = director_actor_id,
+            "director onEventStarted skipped — player not in registry",
+        );
+        return;
+    };
+    let snapshot = {
+        let c = player_handle.character.read().await;
+        crate::lua::userdata::PlayerSnapshot {
+            actor_id: c.base.actor_id,
+            name: c.base.actor_name.clone(),
+            zone_id: c.base.zone_id,
+            pos: (c.base.position_x, c.base.position_y, c.base.position_z),
+            rotation: c.base.rotation,
+            state: c.base.current_main_state,
+            hp: c.chara.hp,
+            max_hp: c.chara.max_hp,
+            mp: c.chara.mp,
+            max_mp: c.chara.max_mp,
+            tp: c.chara.tp,
+            active_quests: c
+                .quest_journal
+                .slots
+                .iter()
+                .flatten()
+                .map(|q| q.quest_id())
+                .collect(),
+            active_quest_states: c
+                .quest_journal
+                .slots
+                .iter()
+                .flatten()
+                .map(|q| crate::lua::QuestStateSnapshot {
+                    quest_id: q.quest_id(),
+                    sequence: q.get_sequence(),
+                    flags: q.get_flags(),
+                    counters: [q.get_counter(0), q.get_counter(1), q.get_counter(2)],
+                })
+                .collect(),
+            completed_quests: c.quest_journal.iter_completed().collect(),
+            ..Default::default()
+        }
+    };
+
+    // Owned bundle for the spawn_blocking closure. Args mirror Meteor's
+    // `Director.OnEventStart`: `(player, director, eventName, ...lparams)`.
+    let lua_clone = Arc::clone(lua);
+    let event_name_owned = event_name.to_string();
+    let class_path_owned = class_path.clone();
+    let actor_name_owned = actor_name.clone();
+    let script_path_clone = script_path.clone();
+    let lua_params_owned: Vec<LuaParam> = lua_params.to_vec();
+    let _ = event_type; // event_type is captured by the EventStartPacket but Meteor's dispatch ignores it for onEventStarted — the director branches on eventName.
+
+    let result = tokio::task::spawn_blocking(move || {
+        let (lua_vm, queue) = match lua_clone.load_script(&script_path_clone) {
+            Ok(pair) => pair,
+            Err(e) => {
+                return Err(format!("load_script failed: {e}"));
+            }
+        };
+        let globals = lua_vm.globals();
+        let Some(f): Option<mlua::Function> = globals.get("onEventStarted").ok() else {
+            // Quiet no-op when the director has no `onEventStarted` —
+            // mirrors Meteor's behaviour for directors that only run
+            // `main()`.
+            return Ok((Vec::new(), None));
+        };
+
+        let player = crate::lua::userdata::LuaPlayer {
+            snapshot,
+            queue: queue.clone(),
+        };
+        let player_ud = lua_vm
+            .create_userdata(player)
+            .map_err(|e| format!("create_userdata(LuaPlayer): {e}"))?;
+        let director = crate::lua::userdata::LuaDirectorHandle {
+            name: actor_name_owned,
+            actor_id: director_actor_id,
+            class_path: class_path_owned,
+            queue: queue.clone(),
+        };
+        let director_ud = lua_vm
+            .create_userdata(director)
+            .map_err(|e| format!("create_userdata(LuaDirectorHandle): {e}"))?;
+
+        let mut mv = MultiValue::new();
+        mv.push_back(Value::UserData(player_ud));
+        mv.push_back(Value::UserData(director_ud));
+        // Meteor inserts `eventName` ahead of the original lparams (see
+        // `LuaEngine.EventStarted` `lparams.Insert(0, ...)`). That's
+        // what surfaces as the third script arg — `triggerName` /
+        // `eventName` depending on the script writer.
+        mv.push_back(Value::String(
+            lua_vm
+                .create_string(&event_name_owned)
+                .map_err(|e| format!("create_string(eventName): {e}"))?,
+        ));
+        for p in &lua_params_owned {
+            let v = match p {
+                LuaParam::Int32(i) => Value::Integer(*i as mlua::Integer),
+                LuaParam::UInt32(u) => Value::Integer(*u as mlua::Integer),
+                LuaParam::String(s) => Value::String(
+                    lua_vm
+                        .create_string(s)
+                        .map_err(|e| format!("create_string(lparam): {e}"))?,
+                ),
+                LuaParam::True => Value::Boolean(true),
+                LuaParam::False => Value::Boolean(false),
+                LuaParam::Nil => Value::Nil,
+                LuaParam::Actor(id) => Value::Integer(*id as mlua::Integer),
+                LuaParam::Type7 { actor_id, .. } => Value::Integer(*actor_id as mlua::Integer),
+                LuaParam::Type9 { item1, .. } => Value::Integer(*item1 as mlua::Integer),
+                LuaParam::Byte(b) => Value::Integer(*b as mlua::Integer),
+                LuaParam::Short(s) => Value::Integer(*s as mlua::Integer),
+            };
+            mv.push_back(v);
+        }
+
+        let call_err = f.call::<Value>(mv).err().map(|e| format!("{e}"));
+        let commands = crate::lua::command::CommandQueue::drain(&queue);
+        Ok((commands, call_err))
+    })
+    .await;
+
+    let (commands, hook_err) = match result {
+        Ok(Ok((cmds, err))) => (cmds, err),
+        Ok(Err(setup_err)) => {
+            tracing::debug!(
+                error = %setup_err,
+                director = director_actor_id,
+                event = %event_name,
+                "director onEventStarted setup failed",
+            );
+            return;
+        }
+        Err(join_err) => {
+            tracing::warn!(
+                error = %join_err,
+                director = director_actor_id,
+                "director onEventStarted dispatch panicked",
+            );
+            return;
+        }
+    };
+    if let Some(e) = hook_err {
+        tracing::debug!(
+            error = %e,
+            director = director_actor_id,
+            event = %event_name,
+            "director onEventStarted errored",
+        );
+    }
+    if !commands.is_empty() {
+        crate::runtime::quest_apply::apply_runtime_lua_commands(
+            commands,
+            registry,
+            db,
+            world,
+            Some(lua),
+        )
+        .await;
     }
 }
 
@@ -482,11 +750,19 @@ mod tests {
     use crate::event::outbox::EventOutbox;
 
     fn tmpdir() -> std::path::PathBuf {
+        // Atomic counter so two parallel tests landing on the same
+        // nanosecond don't share a tmpdir (would corrupt the
+        // assertions that read script-globals back from a cached VM
+        // because both tests' LuaEngines would resolve the same
+        // on-disk path).
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("garlemald-event-dispatch-{nanos}"));
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("garlemald-event-dispatch-{nanos}-{seq}"));
         std::fs::create_dir_all(dir.join("quests/man")).unwrap();
         dir
     }
@@ -673,5 +949,174 @@ mod tests {
         for e in ob.drain() {
             dispatch_event_event(&e, &registry, &world, &db, None).await;
         }
+    }
+
+    /// End-to-end coverage of the director-script → quest-script chain
+    /// `AfterQuestWarpDirector` was written to drive: a director's
+    /// `onEventStarted` runs with real `LuaPlayer`/`LuaDirectorHandle`
+    /// userdata, calls `quest:OnNotice(player)` on a quest the player
+    /// holds, the resulting `QuestOnNotice` LuaCommand drains through
+    /// `apply_quest_on_notice`, and the target quest's `onNotice` hook
+    /// flips a flag bit on the live quest.
+    #[tokio::test]
+    async fn director_event_started_chains_into_quest_on_notice() {
+        use crate::actor::Character;
+        use crate::actor::quest::{Quest, quest_actor_id};
+        use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+        use crate::zone::navmesh::StubNavmeshLoader;
+        use crate::zone::zone::Zone;
+
+        let root = tmpdir();
+        std::fs::create_dir_all(root.join("directors")).unwrap();
+        // Director hook — the same shape as
+        // `scripts/lua/directors/AfterQuestWarpDirector.lua` but
+        // collapsed onto the test's quest id (110_077).
+        std::fs::write(
+            root.join("directors/TestNoticeDirector.lua"),
+            r#"
+                function init() return "/Director/TestNoticeDirector" end
+                function onEventStarted(player, director, eventName)
+                    if (player:HasQuest(110077) == true) then
+                        local quest = player:GetQuest(110077)
+                        quest:OnNotice(player)
+                    end
+                end
+            "#,
+        )
+        .unwrap();
+        // Target quest script — flips bit 5 inside onNotice. The
+        // assertion below reads this back off the live registry quest
+        // to prove the cross-script chain executed all the way through.
+        std::fs::write(
+            root.join("quests/man/man0l1.lua"),
+            r#"
+                function onNotice(player, quest, target)
+                    quest:SetQuestFlag(5)
+                end
+            "#,
+        )
+        .unwrap();
+
+        let lua = Arc::new(LuaEngine::new(&root));
+        {
+            let mut quests = std::collections::HashMap::new();
+            quests.insert(
+                110_077u32,
+                crate::gamedata::QuestMeta {
+                    id: 110_077,
+                    quest_name: "Test Notice Quest".to_string(),
+                    class_name: "Man0l1".to_string(),
+                    prerequisite: 0,
+                    min_level: 1,
+                },
+            );
+            lua.catalogs().install_quests(quests);
+        }
+
+        let registry = ActorRegistry::new();
+        let world = WorldManager::new();
+        let db = Database::open(tempdb()).await.expect("db stub");
+
+        // Register zone 100 + spawn a director on it; capture the
+        // composite director actor id for the EventStarted event.
+        let mut zone = Zone::new(
+            100,
+            "test",
+            1,
+            "/Area/Zone/Test",
+            0,
+            0,
+            0,
+            false,
+            false,
+            false,
+            false,
+            false,
+            Some(&StubNavmeshLoader),
+        );
+        let director_actor_id = zone
+            .core
+            .create_director("/Director/TestNoticeDirector", false);
+        world.register_zone(zone).await;
+
+        // Player 13 holds quest 110_077; clear the dirty flag so the
+        // first SetQuestFlag(5) we observe is the one the hook fired,
+        // not residual setup state.
+        let mut character = Character::new(13);
+        let mut quest = Quest::new(quest_actor_id(110_077), "Man0l1".to_string());
+        quest.clear_dirty();
+        character.quest_journal.add(quest);
+        let handle = ActorHandle::new(13, ActorKindTag::Player, 100, 42, character);
+        registry.insert(handle.clone()).await;
+
+        let event = EventEvent::EventStarted {
+            player_actor_id: 13,
+            owner_actor_id: director_actor_id,
+            event_name: "noticeEvent".to_string(),
+            event_type: 0,
+            lua_params: vec![],
+        };
+        dispatch_event_event(&event, &registry, &world, &db, Some(&lua)).await;
+
+        let flags = {
+            let c = handle.character.read().await;
+            c.quest_journal.get(110_077).map(|q| q.get_flags()).unwrap_or(0)
+        };
+        assert_eq!(
+            flags & (1 << 5),
+            1 << 5,
+            "director onEventStarted -> quest:OnNotice -> onNotice should set flag bit 5",
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Sanity-check the "no script on disk" branch — a director with a
+    /// missing `directors/<class>.lua` should be a quiet no-op rather
+    /// than panic. Critical because the production path will try every
+    /// EventStart against the director branch the moment the actor id
+    /// has the `6` prefix.
+    #[tokio::test]
+    async fn director_event_started_quietly_skips_missing_script() {
+        use crate::zone::navmesh::StubNavmeshLoader;
+        use crate::zone::zone::Zone;
+
+        let root = tmpdir();
+        // No `directors/` dir — script lookup will miss.
+        let lua = Arc::new(LuaEngine::new(&root));
+        let registry = ActorRegistry::new();
+        let world = WorldManager::new();
+        let db = Database::open(tempdb()).await.expect("db stub");
+
+        let mut zone = Zone::new(
+            100,
+            "test",
+            1,
+            "/Area/Zone/Test",
+            0,
+            0,
+            0,
+            false,
+            false,
+            false,
+            false,
+            false,
+            Some(&StubNavmeshLoader),
+        );
+        let director_actor_id = zone.core.create_director("/Director/Missing", false);
+        world.register_zone(zone).await;
+
+        let event = EventEvent::EventStarted {
+            player_actor_id: 1,
+            owner_actor_id: director_actor_id,
+            event_name: "anything".to_string(),
+            event_type: 0,
+            lua_params: vec![],
+        };
+        // Assertion is "no panic"; the missing-script branch logs at
+        // debug and returns.
+        dispatch_event_event(&event, &registry, &world, &db, Some(&lua)).await;
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }
