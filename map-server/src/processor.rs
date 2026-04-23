@@ -2067,6 +2067,48 @@ impl PacketProcessor {
             );
         }
         self.emit_grand_company_packet(&handle).await;
+        // Rank-up animation broadcast — `eventDoRankUp` plays the
+        // promotion fanfare on the promoting client itself, but
+        // nearby players never hear / see it because `callClientFunction`
+        // only targets the issuing player. Emit a server-side
+        // `PlayAnimationOnActor` (0x00DA) carrying the canonical
+        // teleport-fanfare animation id (`0x4000FFB`, used by
+        // `TeleportCommand.lua` for the teleport-in flourish — the
+        // closest documented "scene transition" effect we have, and a
+        // plausible salute placeholder until a dedicated GC-salute id
+        // is sourced) so neighbours witness the rank-up moment too.
+        // Wraps both the self-send and the nearby-player fan-out
+        // through the shared `broadcast_around_actor` helper, matching
+        // the chocobo `SendMountAppearance` pattern at
+        // `apply_send_mount_appearance:1719-1745`.
+        const RANKUP_ANIMATION_ID: u32 = 0x4000_FFB;
+        let sub = tx::actor::build_play_animation_on_actor(
+            handle.actor_id,
+            RANKUP_ANIMATION_ID,
+        );
+        if let Ok(base) = common::BasePacket::create_from_subpacket(&sub, true, false) {
+            let bytes = base.to_bytes();
+            // Self-emit so the promoting player sees the salute
+            // regardless of how far from any neighbour they are.
+            if let Some(client) = self.world.client(handle.session_id).await {
+                client.send_bytes(bytes.clone()).await;
+            }
+            if let Some(zone) = self.world.zone(handle.zone_id).await {
+                let sent = crate::runtime::broadcast::broadcast_around_actor(
+                    &self.world,
+                    &self.registry,
+                    &zone,
+                    handle.actor_id,
+                    bytes,
+                )
+                .await;
+                tracing::debug!(
+                    player = player_id,
+                    nearby = sent,
+                    "PromoteGC: rank-up animation broadcast fan-out",
+                );
+            }
+        }
         tracing::info!(
             player = player_id,
             gc,

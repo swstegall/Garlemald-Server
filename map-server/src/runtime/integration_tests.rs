@@ -6054,11 +6054,195 @@ async fn promote_gc_happy_path_spends_seals_and_bumps_rank() {
         .await
         .unwrap();
     assert_eq!(stored_rank, 11);
-    // Some packet hit the session — typically `SetGrandCompanyPacket`.
+    // PromoteGC's success path emits two packets to the owner session:
+    // (1) `SetGrandCompanyPacket` (0x0194, game-message — the new rank
+    //     widget the client renders top-right),
+    // (2) `PlayAnimationOnActor` (0x00DA, raw subpacket — the salute
+    //     fanfare neighbours also see via the broadcast helper).
+    let mut opcodes = Vec::new();
+    while let Ok(bytes) = rx.try_recv() {
+        let mut offset = 0;
+        let base = common::BasePacket::from_buffer(&bytes, &mut offset).expect("parse");
+        for sub in base.get_subpackets().expect("subs") {
+            // Game-message subs carry their opcode in `game_message.opcode`;
+            // raw subs carry it in `header.r#type`. Capture both so the
+            // assertion below is wire-layout-agnostic.
+            opcodes.push(sub.game_message.opcode);
+            opcodes.push(sub.header.r#type);
+        }
+    }
     assert!(
-        rx.try_recv().is_ok(),
-        "PromoteGC should emit a SetGrandCompanyPacket to the owner session",
+        opcodes.contains(&crate::packets::opcodes::OP_PLAY_ANIMATION_ON_ACTOR),
+        "PromoteGC should emit OP_PLAY_ANIMATION_ON_ACTOR (salute) to the owner; saw opcodes {opcodes:?}",
     );
+}
+
+/// PromoteGC's salute also reaches a nearby Player via
+/// `broadcast_around_actor`. Set up two players in the same zone
+/// within the broadcast radius, promote one, assert the other's
+/// session receives the `PlayAnimationOnActor` packet.
+#[tokio::test]
+async fn promote_gc_salute_broadcasts_to_nearby_player() {
+    use crate::actor::Character;
+    use crate::data::{ClientHandle, Session as MapSession};
+    use crate::lua::LuaCommandKind as LuaCommand;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use crate::zone::area::{ActorKind, StoredActor};
+    use crate::zone::navmesh::StubNavmeshLoader;
+    use crate::zone::outbox::AreaOutbox;
+    use crate::zone::zone::Zone;
+    use common::Vector3;
+    use common::db::ConnCallExt;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    let lua = Arc::new(crate::lua::LuaEngine::new("/nonexistent"));
+
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (175, 0, 0, 0, 'Promotee'),
+                         (176, 0, 0, 0, 'Witness')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    db.set_gc_current(175, crate::actor::gc::GC_MAELSTROM)
+        .await
+        .unwrap();
+    db.set_gc_rank(175, crate::actor::gc::GC_MAELSTROM, crate::actor::gc::RANK_RECRUIT)
+        .await
+        .unwrap();
+    db.add_seals(175, crate::actor::gc::GC_MAELSTROM, 200)
+        .await
+        .unwrap();
+
+    // Build a zone + register both players in the spatial grid so
+    // `actors_around` finds them.
+    let mut zone = Zone::new(
+        300,
+        "test",
+        1,
+        "/Area/Zone/Test",
+        0,
+        0,
+        0,
+        false,
+        false,
+        false,
+        false,
+        false,
+        Some(&StubNavmeshLoader),
+    );
+    let mut ob = AreaOutbox::new();
+    zone.core.add_actor(
+        StoredActor {
+            actor_id: 175,
+            kind: ActorKind::Player,
+            position: Vector3::ZERO,
+            grid: (0, 0),
+            is_alive: true,
+        },
+        &mut ob,
+    );
+    zone.core.add_actor(
+        StoredActor {
+            actor_id: 176,
+            kind: ActorKind::Player,
+            position: Vector3::new(3.0, 0.0, 3.0), // well inside broadcast radius
+            grid: (0, 0),
+            is_alive: true,
+        },
+        &mut ob,
+    );
+    world.register_zone(zone).await;
+
+    let mut promotee = Character::new(175);
+    promotee.chara.gc_current = crate::actor::gc::GC_MAELSTROM;
+    promotee.chara.gc_rank_limsa = crate::actor::gc::RANK_RECRUIT;
+    registry
+        .insert(ActorHandle::new(175, ActorKindTag::Player, 300, 175, promotee))
+        .await;
+    let witness = Character::new(176);
+    registry
+        .insert(ActorHandle::new(176, ActorKindTag::Player, 300, 176, witness))
+        .await;
+
+    world
+        .upsert_session(MapSession {
+            id: 175,
+            current_zone_id: 300,
+            ..MapSession::default()
+        })
+        .await;
+    world
+        .upsert_session(MapSession {
+            id: 176,
+            current_zone_id: 300,
+            ..MapSession::default()
+        })
+        .await;
+
+    let (tx_promotee, mut rx_promotee) = mpsc::channel::<Vec<u8>>(8);
+    world
+        .register_client(175, ClientHandle::new(175, tx_promotee))
+        .await;
+    let (tx_witness, mut rx_witness) = mpsc::channel::<Vec<u8>>(8);
+    world
+        .register_client(176, ClientHandle::new(176, tx_witness))
+        .await;
+
+    let processor = crate::processor::PacketProcessor {
+        db: db.clone(),
+        world: world.clone(),
+        registry: registry.clone(),
+        lua: Some(lua),
+    };
+    let handle = registry.get(175).await.unwrap();
+    processor
+        .apply_login_lua_command(
+            &handle,
+            LuaCommand::PromoteGC {
+                player_id: 175,
+                gc: crate::actor::gc::GC_MAELSTROM,
+            },
+        )
+        .await;
+
+    // Witness should have received at least one `PlayAnimationOnActor`
+    // packet for the promotee's actor id. The exact frame count
+    // varies — broadcast may also include the SetGrandCompanyPacket
+    // at present (it currently fans through the same broadcast for
+    // some upstream code paths) — but the salute opcode must be
+    // there.
+    let mut witness_opcodes = Vec::new();
+    while let Ok(bytes) = rx_witness.try_recv() {
+        let mut offset = 0;
+        let base = common::BasePacket::from_buffer(&bytes, &mut offset).expect("parse");
+        for sub in base.get_subpackets().expect("subs") {
+            witness_opcodes.push(sub.header.r#type);
+            witness_opcodes.push(sub.game_message.opcode);
+        }
+    }
+    assert!(
+        witness_opcodes.contains(&crate::packets::opcodes::OP_PLAY_ANIMATION_ON_ACTOR),
+        "nearby player should witness the salute; opcodes received: {witness_opcodes:?}",
+    );
+
+    // Drain promotee channel for cleanliness — the per-test mpsc
+    // receivers don't share state, but draining keeps the test
+    // self-contained.
+    while rx_promotee.try_recv().is_ok() {}
 }
 
 /// `apply_promote_gc` refusal: insufficient seal balance leaves
