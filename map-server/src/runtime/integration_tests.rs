@@ -2428,6 +2428,7 @@ async fn addexp_past_threshold_levels_up_and_persists() {
         &registry,
         &db,
         None,
+        None,
     )
     .await;
 
@@ -2477,6 +2478,7 @@ async fn addexp_past_threshold_levels_up_and_persists() {
         100,
         &registry,
         &db,
+        None,
         None,
     )
     .await;
@@ -3723,6 +3725,204 @@ async fn rental_expiry_tick_dismounts() {
 }
 
 // ---------------------------------------------------------------------------
+// Leveling polish consolidation — Tier 4 #19 follow-ups
+//   * skillLevelCap enforcement (already in level_up_if_threshold_crossed
+//     — this test anchors the behaviour)
+//   * Ability unlocks on level-up (Meteor's `EquipAbilitiesAtLevel`)
+// ---------------------------------------------------------------------------
+
+/// Applying XP past MAX_LEVEL (50) on an already-capped character
+/// leaves them at 50 with `skill_point` pinned at 0 — no undefined
+/// rollover, no ghost level-ups. Matches Meteor's behaviour where
+/// post-cap SP is treated as 0.
+#[tokio::test]
+async fn add_exp_at_level_50_does_not_roll_past_cap() {
+    use crate::actor::Character;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use common::db::ConnCallExt;
+    use std::sync::Arc;
+
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (555, 0, 0, 0, 'Capped')",
+                [],
+            )?;
+            c.execute(
+                r"INSERT INTO characters_class_levels (characterId) VALUES (555)",
+                [],
+            )?;
+            c.execute(
+                r"INSERT INTO characters_class_exp (characterId) VALUES (555)",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let mut chara = Character::new(555);
+    chara.chara.class = crate::gamedata::CLASSID_GLA as i16;
+    chara.chara.level = 50;
+    chara.battle_save.skill_level[crate::gamedata::CLASSID_GLA as usize] = 50;
+    registry
+        .insert(ActorHandle::new(555, ActorKindTag::Player, 200, 555, chara))
+        .await;
+
+    // Big grant — would be enough to roll past 50 without the cap.
+    crate::runtime::quest_apply::apply_add_exp(
+        555,
+        crate::gamedata::CLASSID_GLA,
+        1_000_000,
+        &registry,
+        &db,
+        None,
+        None,
+    )
+    .await;
+
+    let c = registry.get(555).await.unwrap().character.read().await.clone();
+    assert_eq!(c.chara.level, 50, "level should not exceed MAX_LEVEL");
+    assert_eq!(
+        c.battle_save.skill_level[crate::gamedata::CLASSID_GLA as usize],
+        50,
+    );
+    assert_eq!(
+        c.battle_save.skill_point[crate::gamedata::CLASSID_GLA as usize],
+        0,
+        "post-cap SP clamped to 0 (matches Meteor retail UI)",
+    );
+}
+
+/// Level-up fires "You attain level N" + one "You learn X" for each
+/// ability unlocked at that level. Installs a synthetic
+/// battle-command map with a single GLA skill gated at level 2, runs
+/// `apply_add_exp` across the 1→2 threshold, and asserts the client
+/// received (a) the skillLevel/state_mainSkillLevel stateForAll
+/// property packet, (b) the 33909 level-attained message, and (c)
+/// the 33926 learn-command message carrying the command id.
+#[tokio::test]
+async fn level_up_fires_attain_level_and_learn_command_messages() {
+    use crate::actor::Character;
+    use crate::data::ClientHandle;
+    use crate::gamedata::BattleCommand;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use common::db::ConnCallExt;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    // Point the LuaEngine at the workspace scripts root so the
+    // Catalogs instance it owns can be populated.
+    let lua = Arc::new(crate::lua::LuaEngine::new(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("scripts/lua"),
+    ));
+
+    // Install a synthetic battle-command catalog: one GLA (class 4)
+    // skill at level 2 with id 0xC0DE. The level-up will cross 1→2,
+    // so the learn path should pick this up.
+    let mut commands: HashMap<u16, BattleCommand> = HashMap::new();
+    commands.insert(
+        0xC0DE,
+        BattleCommand {
+            id: 0xC0DE,
+            name: "TestSkill".into(),
+            job: 4,
+            level: 2,
+            ..BattleCommand::default()
+        },
+    );
+    let mut by_level = HashMap::new();
+    by_level.insert((4u8, 2i16), vec![0xC0DE_u16]);
+    lua.catalogs()
+        .install_battle_commands_with_level_index(commands, by_level);
+
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (909, 0, 0, 0, 'LearnsSomething')",
+                [],
+            )?;
+            c.execute(
+                r"INSERT INTO characters_class_levels (characterId) VALUES (909)",
+                [],
+            )?;
+            c.execute(
+                r"INSERT INTO characters_class_exp (characterId) VALUES (909)",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let mut chara = Character::new(909);
+    chara.chara.class = 4; // GLA
+    chara.chara.level = 1;
+    chara.battle_save.skill_level[4] = 1;
+    registry
+        .insert(ActorHandle::new(909, ActorKindTag::Player, 200, 909, chara))
+        .await;
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(32);
+    world.register_client(909, ClientHandle::new(909, tx)).await;
+
+    // LEVEL_THRESHOLDS[0] = 570 — 600 is enough to cross 1→2.
+    crate::runtime::quest_apply::apply_add_exp(
+        909,
+        4,
+        600,
+        &registry,
+        &db,
+        Some(&world),
+        Some(&lua),
+    )
+    .await;
+
+    // Drain the client channel and look for the two game-message
+    // subpackets (OP_GAME_MESSAGE = 0x01FD) carrying the expected
+    // text ids. Wire layout of each frame:
+    //   0x00-0x0F  BasePacket header
+    //   0x10-0x1F  SubPacket header
+    //   0x20-0x2F  GameMessage header (only on game-message subs)
+    //   0x30+      body — u32 receiver, u32 sender, u16 text_id, ...
+    // text_id therefore sits at frame offset 0x38.
+    let mut saw_attain = false;
+    let mut saw_learn = false;
+    let attain_marker = 33909u16.to_le_bytes();
+    let learn_marker = 33926u16.to_le_bytes();
+    while let Ok(frame) = rx.try_recv() {
+        if frame.len() < 0x3a {
+            continue;
+        }
+        let text_bytes = &frame[0x38..0x3a];
+        if text_bytes == attain_marker {
+            saw_attain = true;
+        } else if text_bytes == learn_marker {
+            saw_learn = true;
+        }
+    }
+    assert!(saw_attain, "level-up should emit textId 33909 'You attain level N'");
+    assert!(saw_learn, "level-up should emit textId 33926 'You learn X' for each unlock");
+}
+
+// ---------------------------------------------------------------------------
 // Death-state ticker passes — Tier 1 #7 follow-up
 //   * Modifier::Raise auto-revive
 //   * BattleNpc respawn timer
@@ -4694,6 +4894,7 @@ async fn level_up_state_for_all_broadcasts_to_nearby_players() {
         &registry,
         &db,
         Some(&world),
+        None,
     )
     .await;
 
@@ -4873,6 +5074,7 @@ async fn apply_add_exp_consumes_rested_pool() {
         &registry,
         &db,
         None,
+        None,
     )
     .await;
 
@@ -4966,6 +5168,7 @@ async fn apply_add_exp_emits_property_packets_to_client() {
         &registry,
         &db,
         Some(&world),
+        None,
     )
     .await;
 
@@ -5042,6 +5245,7 @@ async fn apply_add_exp_level_up_emits_extra_state_for_all_bundle() {
         &registry,
         &db,
         Some(&world),
+        None,
     )
     .await;
 

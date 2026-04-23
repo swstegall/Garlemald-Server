@@ -38,6 +38,11 @@ pub struct Catalogs {
     pub guildleves: RwLock<HashMap<u32, GuildleveGamedata>>,
     pub status_effects: RwLock<HashMap<u32, StatusEffectDef>>,
     pub battle_commands: RwLock<HashMap<u16, BattleCommand>>,
+    /// Side-index of `battle_commands` grouped by `(class_id, level)`.
+    /// Lets the level-up path look up "which abilities unlock on the
+    /// transition 1→2 for Gladiator?" in constant time. Populated
+    /// alongside the flat `battle_commands` map.
+    pub battle_commands_by_level: RwLock<HashMap<(u8, i16), Vec<u16>>>,
     /// Maps static-actor name (e.g. `"DftFst"`) to its fixed actor id.
     pub static_actors: RwLock<HashMap<String, u32>>,
     /// Quest id → metadata (className drives Lua script-path resolution).
@@ -85,6 +90,33 @@ impl Catalogs {
         if let Ok(mut w) = self.battle_commands.write() {
             *w = commands;
         }
+    }
+
+    /// Install both the flat command map and the `(class, level)`
+    /// side index at once. Used at boot from `load_global_battle_command_list`
+    /// which builds both in a single DB pass.
+    pub fn install_battle_commands_with_level_index(
+        &self,
+        commands: HashMap<u16, BattleCommand>,
+        by_level: HashMap<(u8, i16), Vec<u16>>,
+    ) {
+        if let Ok(mut w) = self.battle_commands.write() {
+            *w = commands;
+        }
+        if let Ok(mut w) = self.battle_commands_by_level.write() {
+            *w = by_level;
+        }
+    }
+
+    /// Command ids a `class_id` unlocks when they reach `level`.
+    /// Returns an empty Vec when nothing unlocks at that threshold —
+    /// most levels don't have a new ability. Caller iterates the
+    /// result to emit "You learn X" lines.
+    pub fn commands_unlocked_at(&self, class_id: u8, level: i16) -> Vec<u16> {
+        let Ok(w) = self.battle_commands_by_level.read() else {
+            return Vec::new();
+        };
+        w.get(&(class_id, level)).cloned().unwrap_or_default()
     }
 
     pub fn register_static_actor(&self, name: impl Into<String>, actor_id: u32) {

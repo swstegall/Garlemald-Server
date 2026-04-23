@@ -136,6 +136,32 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Populate the battle-command catalog + the `(class, level)` side
+    // index. The level-up pass in `runtime::quest_apply::apply_add_exp`
+    // reads the side index via `Catalogs::commands_unlocked_at` to
+    // emit "You learn X" game-messages on every ability unlock.
+    // Non-fatal — a missing catalog silently skips the unlock
+    // notifications.
+    match db.load_global_battle_command_list().await {
+        Ok((commands, by_level)) => {
+            let command_count = commands.len();
+            let indexed_tiers = by_level.len();
+            lua.catalogs()
+                .install_battle_commands_with_level_index(commands, by_level);
+            tracing::info!(
+                command_count,
+                indexed_tiers,
+                "server_battle_commands catalog loaded",
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "server_battle_commands load failed — ability-unlock notifications disabled",
+            );
+        }
+    }
+
     // Populate the crafting recipe + passive-guildleve catalogs used by
     // `CraftCommand.lua`. Both are non-fatal — if either load fails the
     // CraftJudge Lua flow simply fails the first GetRecipeResolver() or

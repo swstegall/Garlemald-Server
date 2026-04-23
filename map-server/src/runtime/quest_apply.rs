@@ -152,7 +152,7 @@ pub async fn apply_runtime_lua_command(
             true
         }
         LC::AddExp { actor_id, class_id, exp } => {
-            apply_add_exp(actor_id, class_id, exp, registry, db, Some(world)).await;
+            apply_add_exp(actor_id, class_id, exp, registry, db, Some(world), lua).await;
             true
         }
         LC::AddGil { actor_id, amount } => {
@@ -564,6 +564,7 @@ pub async fn apply_add_exp(
     registry: &ActorRegistry,
     db: &Database,
     world: Option<&WorldManager>,
+    lua: Option<&Arc<LuaEngine>>,
 ) {
     if exp == 0 {
         return;
@@ -650,7 +651,10 @@ pub async fn apply_add_exp(
     }
 
     // Client-facing property emits — only fire when we have a
-    // WorldManager to reach the session → client handle.
+    // WorldManager to reach the session → client handle. Also
+    // carries the ability-unlock lookup through `lua.catalogs()` so
+    // the learn-commands game-messages fire for the player when
+    // level-up crosses a threshold that unlocks an ability.
     if let Some(world) = world {
         emit_exp_property_updates(
             actor_id,
@@ -663,6 +667,7 @@ pub async fn apply_add_exp(
             &handle,
             world,
             registry,
+            lua,
         )
         .await;
     }
@@ -730,6 +735,7 @@ async fn emit_exp_property_updates(
     handle: &ActorHandle,
     world: &WorldManager,
     registry: &ActorRegistry,
+    lua: Option<&Arc<LuaEngine>>,
 ) {
     let session_id = handle.session_id;
     if session_id == 0 {
@@ -803,6 +809,104 @@ async fn emit_exp_property_updates(
                     )
                     .await;
                 }
+            }
+        }
+
+        // "You attain level [level]." (textId 33909) + the
+        // ability-unlock chain Meteor runs in
+        // `Player.EquipAbilitiesAtLevel`. One game-message per
+        // crossed level so a multi-level rollover reports each
+        // threshold distinctly — matches retail's per-level
+        // feedback cadence. For each newly-reached level we look up
+        // the class's battle-command ids at that level via
+        // `Catalogs::commands_unlocked_at` and fire one 33926
+        // ("You learn X") per unlock, with the command id as the
+        // LuaParam.
+        emit_level_up_game_messages(
+            actor_id,
+            class_id,
+            new_level,
+            levels_gained,
+            client.clone(),
+            lua,
+        )
+        .await;
+    }
+}
+
+/// Emit the per-level "You attain level N" + "You learn X" game
+/// messages a level-up rollover should produce. Iterates over the
+/// `levels_gained` most-recent level thresholds so a rollover that
+/// crossed 2 levels in one call (rare but possible with large
+/// `AddExp` grants) reports both. Silent no-op if `lua` is `None`
+/// (test harness) or the catalog is empty.
+async fn emit_level_up_game_messages(
+    actor_id: u32,
+    class_id: u8,
+    new_level: i16,
+    levels_gained: i16,
+    client: crate::data::ClientHandle,
+    lua: Option<&Arc<LuaEngine>>,
+) {
+    use common::luaparam::LuaParam;
+
+    // Retail text ids — see `Player.EquipAbilitiesAtLevel` at
+    // `origin/develop:Map Server/Actors/Chara/Player/Player.cs:2618`
+    // (`33926: You learn [command]`) and `LevelUp`
+    // (`33909: You attain level [level]`).
+    const TEXT_LEVEL_ATTAINED: u16 = 33909;
+    const TEXT_LEARN_COMMAND: u16 = 33926;
+
+    for gained_idx in (0..levels_gained).rev() {
+        // `new_level` is the *final* post-rollover level; the
+        // intermediate levels we passed through are at
+        // `new_level - gained_idx`.
+        let at_level = new_level - gained_idx;
+
+        // "You attain level N."
+        let level_msg = crate::packets::send::misc::build_game_message(
+            actor_id,
+            crate::packets::send::misc::GameMessageOptions {
+                sender_actor_id: 0,
+                receiver_actor_id: actor_id,
+                text_id: TEXT_LEVEL_ATTAINED,
+                log: 0x20,
+                display_id: None,
+                custom_sender: None,
+                lua_params: vec![LuaParam::UInt32(at_level as u32)],
+            },
+        );
+        if let Ok(base) = common::BasePacket::create_from_subpacket(&level_msg, true, false) {
+            client.send_bytes(base.to_bytes()).await;
+        }
+
+        // Ability unlocks at this level — one message per command.
+        let Some(lua) = lua else {
+            continue;
+        };
+        let commands = lua.catalogs().commands_unlocked_at(class_id, at_level);
+        for command_id in commands {
+            tracing::info!(
+                actor = actor_id,
+                class = class_id,
+                level = at_level,
+                command_id,
+                "ability unlock: You learn <command>",
+            );
+            let learn_msg = crate::packets::send::misc::build_game_message(
+                actor_id,
+                crate::packets::send::misc::GameMessageOptions {
+                    sender_actor_id: 0,
+                    receiver_actor_id: actor_id,
+                    text_id: TEXT_LEARN_COMMAND,
+                    log: 0x20,
+                    display_id: None,
+                    custom_sender: None,
+                    lua_params: vec![LuaParam::UInt32(command_id as u32)],
+                },
+            );
+            if let Ok(base) = common::BasePacket::create_from_subpacket(&learn_msg, true, false) {
+                client.send_bytes(base.to_bytes()).await;
             }
         }
     }

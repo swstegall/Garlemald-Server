@@ -989,6 +989,7 @@ impl PacketProcessor {
                     &self.registry,
                     &self.db,
                     Some(&self.world),
+                    self.lua.as_ref(),
                 )
                 .await;
             }
