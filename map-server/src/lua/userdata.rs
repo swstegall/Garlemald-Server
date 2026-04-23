@@ -1828,6 +1828,27 @@ impl UserData for LuaDirectorHandle {
         methods.add_method("GetContentMembers", |_, _this, _: ()| Ok(Vec::<u32>::new()));
         methods.add_method("SetLeader", |_, _this, _actor: Value| Ok(()));
         methods.add_method("IsInstanceRaid", |_, _this, _: ()| Ok(false));
+        // `director:EndGuildleve(was_completed)` — drives the
+        // production drain that lets a `directors/Guildleve/*.lua`
+        // `main` coroutine actually finish the leve. Pushes
+        // `LuaCommand::EndGuildleve`; the processor handler decodes
+        // the zone from the director's composite actor id, calls
+        // `GuildleveDirector::end_guildleve` into a local
+        // `DirectorOutbox`, and immediately drains the resulting
+        // `GuildleveEnded` event through `dispatch_director_event`
+        // — closing the loop on yesterday's
+        // `award_leve_completion_seals` so it actually fires for live
+        // players, not just integration tests.
+        methods.add_method("EndGuildleve", |_, this, was_completed: Option<bool>| {
+            push(
+                &this.queue,
+                LuaCommand::EndGuildleve {
+                    director_actor_id: this.actor_id,
+                    was_completed: was_completed.unwrap_or(true),
+                },
+            );
+            Ok(())
+        });
     }
 }
 

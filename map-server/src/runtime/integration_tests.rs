@@ -5214,6 +5214,220 @@ async fn dispatch_guildleve_ended_awards_seals_only_on_completion() {
     );
 }
 
+/// `LuaDirectorHandle::EndGuildleve` exists at the userdata layer
+/// and pushes a `LuaCommand::EndGuildleve` carrying both the
+/// caller-supplied `was_completed` flag and the director's composite
+/// actor id. Catches a regression where the binding gets shadowed by
+/// a no-op `add_method` registered later in `add_methods` — the same
+/// trap the QuitGame/Logout audit caught earlier.
+#[tokio::test]
+async fn lua_director_end_guildleve_binding_pushes_command() {
+    use crate::lua::LuaEngine;
+    use crate::lua::command::CommandQueue;
+    use crate::lua::userdata::LuaDirectorHandle;
+
+    let root = std::env::temp_dir().join(format!(
+        "garlemald-end-guildleve-binding-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("test.lua"),
+        r#"
+            function fire(d)
+                d:EndGuildleve(true)
+                d:EndGuildleve(false)
+                d:EndGuildleve()  -- default-arg should be true
+            end
+        "#,
+    )
+    .unwrap();
+
+    let lua = LuaEngine::new(&root);
+    let (vm, queue) = lua.load_script(&root.join("test.lua")).expect("load");
+
+    let dir_ud = vm
+        .create_userdata(LuaDirectorHandle {
+            name: "test_director".to_string(),
+            actor_id: 0x6320_0001, // (6 << 28) | (100 << 19) | 1
+            class_path: "/Director/Guildleve/PrivateGLBattleSweepNormal".to_string(),
+            queue: queue.clone(),
+        })
+        .unwrap();
+    let f: mlua::Function = vm.globals().get("fire").unwrap();
+    f.call::<()>(dir_ud).expect("fire should not error");
+
+    let cmds = CommandQueue::drain(&queue);
+    assert_eq!(cmds.len(), 3, "expected 3 EndGuildleve cmds; drained: {cmds:?}");
+    assert!(matches!(
+        cmds[0],
+        crate::lua::LuaCommandKind::EndGuildleve {
+            director_actor_id: 0x6320_0001,
+            was_completed: true,
+        }
+    ));
+    assert!(matches!(
+        cmds[1],
+        crate::lua::LuaCommandKind::EndGuildleve {
+            director_actor_id: 0x6320_0001,
+            was_completed: false,
+        }
+    ));
+    assert!(
+        matches!(
+            cmds[2],
+            crate::lua::LuaCommandKind::EndGuildleve {
+                director_actor_id: 0x6320_0001,
+                was_completed: true,
+            }
+        ),
+        "no-arg form should default to was_completed=true",
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// Production drain end-to-end: a Lua script's `director:EndGuildleve(true)`
+/// call should land on the player's session as the victory packet bundle
+/// AND deposit seals via `apply_end_guildleve` → `dispatch_director_event`
+/// → `award_leve_completion_seals`. Yesterday's seal accrual was only
+/// fireable from synthetic `DirectorEvent`s in tests; this test pins
+/// the full Lua-binding → processor → dispatcher chain.
+#[tokio::test]
+async fn lua_end_guildleve_command_drains_through_dispatcher_and_grants_seals() {
+    use crate::actor::Character;
+    use crate::data::{ClientHandle, Session as MapSession};
+    use crate::lua::LuaCommandKind as LuaCommand;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use crate::zone::navmesh::StubNavmeshLoader;
+    use crate::zone::zone::Zone;
+    use common::db::ConnCallExt;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    let lua = Arc::new(crate::lua::LuaEngine::new("/nonexistent"));
+
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (185, 0, 0, 0, 'LeveScripted')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    db.set_gc_current(185, crate::actor::gc::GC_TWIN_ADDER)
+        .await
+        .unwrap();
+    db.set_gc_rank(185, crate::actor::gc::GC_TWIN_ADDER, 11)
+        .await
+        .unwrap();
+
+    // Register zone + create a real GuildleveDirector on it via the
+    // production `AreaCore::create_guildleve_director` path. The
+    // `apply_end_guildleve` handler decodes the zone from the
+    // returned actor id, so the encoding has to round-trip.
+    let mut zone = Zone::new(
+        180,
+        "test",
+        1,
+        "/Area/Zone/Test",
+        0, 0, 0,
+        false, false, false, false, false,
+        Some(&StubNavmeshLoader),
+    );
+    let director_actor_id = zone.core.create_guildleve_director(
+        20_026,             // guildleve_id (sweep normal)
+        2,                  // difficulty: 2-star → 250 seals
+        185,                // owner_actor_id
+        20_021,             // plate_id
+        2,                  // location: Gridania music bucket
+        300,                // time_limit_seconds
+        [3, 0, 0, 0],       // aim_num_template
+    );
+    // Add the player as a member of the leve director's roster — the
+    // dispatcher's seal accrual loops over `player_members`, and an
+    // empty roster would silently skip the deposit.
+    {
+        let gld = zone
+            .core
+            .guildleve_director_mut(director_actor_id)
+            .expect("director just created");
+        let mut ob = crate::director::DirectorOutbox::new();
+        gld.base.add_member(185, /* is_player */ true, &mut ob);
+        // Drain isn't asserted — the MemberAdded event is not what
+        // this test exercises; `apply_end_guildleve` will create its
+        // own outbox for the GuildleveEnded path.
+        let _ = ob.drain();
+    }
+    world.register_zone(zone).await;
+
+    // Register a Player + session + ClientHandle so the dispatcher
+    // has somewhere to send the victory music + completion text.
+    let mut chara = Character::new(185);
+    chara.chara.gc_current = crate::actor::gc::GC_TWIN_ADDER;
+    chara.chara.gc_rank_gridania = 11;
+    registry
+        .insert(ActorHandle::new(185, ActorKindTag::Player, 180, 185, chara))
+        .await;
+    world
+        .upsert_session(MapSession {
+            id: 185,
+            current_zone_id: 180,
+            ..MapSession::default()
+        })
+        .await;
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(8);
+    world.register_client(185, ClientHandle::new(185, tx)).await;
+
+    let processor = crate::processor::PacketProcessor {
+        db: db.clone(),
+        world: world.clone(),
+        registry: registry.clone(),
+        lua: Some(lua),
+    };
+    let handle = registry.get(185).await.unwrap();
+
+    // Drive the LuaCommand the binding pushes — same shape Lua
+    // emits when it calls `thisDirector:EndGuildleve(true)`.
+    processor
+        .apply_login_lua_command(
+            &handle,
+            LuaCommand::EndGuildleve {
+                director_actor_id,
+                was_completed: true,
+            },
+        )
+        .await;
+
+    // Seals deposited from the leve completion (2★ → 250 from the
+    // difficulty table).
+    let balance = db.get_seals(185, crate::actor::gc::GC_TWIN_ADDER).await.unwrap();
+    assert_eq!(
+        balance, 250,
+        "completed 2-star leve through Lua binding should grant 250 seals end-to-end",
+    );
+
+    // At least one packet hit the session — the victory music + the
+    // `GL_TEXT_COMPLETE` game message both fire on the success path.
+    assert!(
+        rx.try_recv().is_ok(),
+        "victory packet bundle should reach the owner session",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Broadcast-around-actor helper — consolidation (wired into chocobo
 // SendMountAppearance + level-up stateForAll).

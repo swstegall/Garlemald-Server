@@ -396,6 +396,22 @@ pub enum LuaCommand {
         gc: u8,
         amount: i32,
     },
+    /// `director:EndGuildleve(was_completed)` — script-driven leve
+    /// teardown. Called from the `main(thisDirector)` coroutine in
+    /// every `directors/Guildleve/*.lua` script when the leve's
+    /// objective sequence finishes (`was_completed=true`) or its time
+    /// limit elapses (`was_completed=false`). Wires the script-side
+    /// trigger to `runtime::director::apply_end_guildleve`, which
+    /// looks up the matching `GuildleveDirector` on the zone (decoded
+    /// from the actor id's zone-bits), calls its `end_guildleve`
+    /// helper into a local `DirectorOutbox`, and drains the resulting
+    /// `GuildleveEnded` event through `dispatch_director_event` —
+    /// closing the production loop that previously made yesterday's
+    /// `award_leve_completion_seals` only fireable from tests.
+    EndGuildleve {
+        director_actor_id: u32,
+        was_completed: bool,
+    },
     /// `player:PromoteGC(gc)` — atomic seal-spend + rank-bump.
     /// Mirrors the post-confirm tail of Meteor's
     /// `PopulaceCompanyOfficer.lua` flow: `eventDoRankUp` confirms the
