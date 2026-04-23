@@ -193,5 +193,42 @@ pub fn install_globals(
         globals.set("print", print_fn)?;
     }
 
+    // `bit32` polyfill — Lua 5.2's `bit32` library was removed in
+    // 5.3+, but every Meteor/garlemald script that touches bitfield
+    // data (`battleutils.lua`, `hiteffect.lua`, `guildleve.lua`,
+    // several `commands/gm/*.lua`) reaches for it. We polyfill the
+    // four methods actually used (`band`, `bor`, `lshift`, `rshift`)
+    // using Lua 5.4's native bitwise operators so the scripts parse
+    // and run without a per-call rewrite. Vararg `band`/`bor` match
+    // Lua 5.2 semantics (fold across N operands).
+    {
+        let bit32 = lua.create_table()?;
+        let lshift: Function = lua.create_function(|_, (x, n): (i64, i64)| Ok(x << n))?;
+        let rshift: Function = lua.create_function(|_, (x, n): (i64, i64)| Ok(x >> n))?;
+        let band: Function = lua.create_function(|_, args: MultiValue| {
+            let mut acc: i64 = -1; // all bits set
+            for v in args {
+                if let Value::Integer(i) = v {
+                    acc &= i;
+                }
+            }
+            Ok(acc)
+        })?;
+        let bor: Function = lua.create_function(|_, args: MultiValue| {
+            let mut acc: i64 = 0;
+            for v in args {
+                if let Value::Integer(i) = v {
+                    acc |= i;
+                }
+            }
+            Ok(acc)
+        })?;
+        bit32.set("lshift", lshift)?;
+        bit32.set("rshift", rshift)?;
+        bit32.set("band", band)?;
+        bit32.set("bor", bor)?;
+        globals.set("bit32", bit32)?;
+    }
+
     Ok(())
 }

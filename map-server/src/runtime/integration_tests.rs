@@ -3723,6 +3723,73 @@ async fn rental_expiry_tick_dismounts() {
 }
 
 // ---------------------------------------------------------------------------
+// NPC Lua coverage — Tier 4 #20
+// ---------------------------------------------------------------------------
+
+/// Parse-all smoke over every populace + unique NPC script. 726 files
+/// at the 2026-04-22 audit (all of Meteor `develop`'s `base/chara/npc/populace`
+/// + `unique` trees, post the `48d996bd` ShopSalesman cleanup). Any
+/// file that fails to parse — syntax error, MoonSharp-ism we haven't
+/// matched, or typo — fails the whole suite, so this test is a net
+/// guard against Meteor's Lua shipping with a token mlua can't chew.
+#[tokio::test]
+async fn every_populace_and_unique_npc_script_parses() {
+    use crate::lua::LuaEngine;
+
+    let script_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .join("scripts/lua");
+    let engine = LuaEngine::new(&script_root);
+
+    let mut dirs = vec![
+        script_root.join("base/chara/npc/populace"),
+        script_root.join("unique"),
+    ];
+    let mut failures: Vec<(String, String)> = Vec::new();
+    let mut count = 0usize;
+    while let Some(dir) = dirs.pop() {
+        if !dir.exists() {
+            continue;
+        }
+        for entry in std::fs::read_dir(&dir).expect("readdir") {
+            let Ok(entry) = entry else { continue };
+            let p = entry.path();
+            if p.is_dir() {
+                dirs.push(p);
+            } else if p.extension().and_then(|s| s.to_str()) == Some("lua") {
+                count += 1;
+                if let Err(e) = engine.load_script(&p) {
+                    let rel = p
+                        .strip_prefix(&script_root)
+                        .map(|r| r.display().to_string())
+                        .unwrap_or_else(|_| p.display().to_string());
+                    failures.push((rel, e.to_string()));
+                }
+            }
+        }
+    }
+    // Cap on reported failures so the panic message is readable; the
+    // count at the top still tells you the scale.
+    if !failures.is_empty() {
+        let preview: Vec<String> = failures
+            .iter()
+            .take(10)
+            .map(|(path, err)| format!("  {path}: {err}"))
+            .collect();
+        panic!(
+            "{} of {count} NPC scripts failed to parse:\n{}",
+            failures.len(),
+            preview.join("\n"),
+        );
+    }
+    assert!(
+        count > 600,
+        "expected >600 NPC scripts to parse; got {count} — is the tree missing?",
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Leveling progression polish — Tier 4 #19
 // ---------------------------------------------------------------------------
 
