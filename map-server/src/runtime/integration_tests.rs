@@ -6499,6 +6499,182 @@ async fn promote_gc_refuses_at_story_rank_cap() {
     assert_eq!(balance, 50_000);
 }
 
+/// Tier-shift gate refusal: a Maelstrom Corporal (17) at the
+/// Sergeant promotion tier-shift can have all the seals in the world,
+/// but without the per-GC story quest "An Officer and a Wise Man"
+/// (111405) completed, `apply_promote_gc` refuses to bump them past
+/// rank 17. Mirrors the in-game `eventTalkQuestUncomplete()` dialog
+/// the script's comment header at PopulaceCompanyOfficer.lua:20
+/// describes.
+#[tokio::test]
+async fn promote_gc_refuses_at_sergeant_tier_shift_without_quest_completed() {
+    use crate::actor::Character;
+    use crate::data::Session as MapSession;
+    use crate::lua::LuaCommandKind as LuaCommand;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use common::db::ConnCallExt;
+    use std::sync::Arc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    let lua = Arc::new(crate::lua::LuaEngine::new("/nonexistent"));
+
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (177, 0, 0, 0, 'CorporalGated')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    db.set_gc_current(177, crate::actor::gc::GC_MAELSTROM)
+        .await
+        .unwrap();
+    db.set_gc_rank(177, crate::actor::gc::GC_MAELSTROM, 17) // Corporal
+        .await
+        .unwrap();
+    // Far above the 2,500 cost — the refusal must come from the
+    // tier-shift gate, not from balance.
+    db.add_seals(177, crate::actor::gc::GC_MAELSTROM, 100_000)
+        .await
+        .unwrap();
+
+    let mut chara = Character::new(177);
+    chara.chara.gc_current = crate::actor::gc::GC_MAELSTROM;
+    chara.chara.gc_rank_limsa = 17;
+    // Quest journal is empty — the gate quest 111405 is NOT completed.
+    registry
+        .insert(ActorHandle::new(177, ActorKindTag::Player, 200, 177, chara))
+        .await;
+    world
+        .upsert_session(MapSession {
+            id: 177,
+            current_zone_id: 200,
+            ..MapSession::default()
+        })
+        .await;
+
+    let processor = crate::processor::PacketProcessor {
+        db: db.clone(),
+        world: world.clone(),
+        registry: registry.clone(),
+        lua: Some(lua),
+    };
+    let handle = registry.get(177).await.unwrap();
+    processor
+        .apply_login_lua_command(
+            &handle,
+            LuaCommand::PromoteGC {
+                player_id: 177,
+                gc: crate::actor::gc::GC_MAELSTROM,
+            },
+        )
+        .await;
+
+    // Rank still 17; full balance.
+    {
+        let c = handle.character.read().await;
+        assert_eq!(c.chara.gc_rank_limsa, 17);
+    }
+    let balance = db.get_seals(177, crate::actor::gc::GC_MAELSTROM).await.unwrap();
+    assert_eq!(balance, 100_000, "tier-shift refusal must not deduct seals");
+}
+
+/// Tier-shift gate happy path: completing the gate quest unblocks
+/// the Sergeant promotion. Same setup as the refusal test above but
+/// with quest 111405 marked complete on the player's journal — the
+/// promotion goes through, seals deducted, rank bumped to 21.
+#[tokio::test]
+async fn promote_gc_passes_sergeant_tier_shift_when_quest_completed() {
+    use crate::actor::Character;
+    use crate::data::Session as MapSession;
+    use crate::lua::LuaCommandKind as LuaCommand;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use common::db::ConnCallExt;
+    use std::sync::Arc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    let lua = Arc::new(crate::lua::LuaEngine::new("/nonexistent"));
+
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (178, 0, 0, 0, 'CorporalGraduate')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    db.set_gc_current(178, crate::actor::gc::GC_MAELSTROM)
+        .await
+        .unwrap();
+    db.set_gc_rank(178, crate::actor::gc::GC_MAELSTROM, 17)
+        .await
+        .unwrap();
+    db.add_seals(178, crate::actor::gc::GC_MAELSTROM, 5_000)
+        .await
+        .unwrap();
+
+    let mut chara = Character::new(178);
+    chara.chara.gc_current = crate::actor::gc::GC_MAELSTROM;
+    chara.chara.gc_rank_limsa = 17;
+    // Mark "An Officer and a Wise Man" (111405) complete on the
+    // journal — that's the Maelstrom Sergeant gate.
+    chara.quest_journal.set_completed(111_405, true);
+    registry
+        .insert(ActorHandle::new(178, ActorKindTag::Player, 200, 178, chara))
+        .await;
+    world
+        .upsert_session(MapSession {
+            id: 178,
+            current_zone_id: 200,
+            ..MapSession::default()
+        })
+        .await;
+
+    let processor = crate::processor::PacketProcessor {
+        db: db.clone(),
+        world: world.clone(),
+        registry: registry.clone(),
+        lua: Some(lua),
+    };
+    let handle = registry.get(178).await.unwrap();
+    processor
+        .apply_login_lua_command(
+            &handle,
+            LuaCommand::PromoteGC {
+                player_id: 178,
+                gc: crate::actor::gc::GC_MAELSTROM,
+            },
+        )
+        .await;
+
+    // Rank bumped Corporal (17) → Sergeant Third Class (21).
+    {
+        let c = handle.character.read().await;
+        assert_eq!(c.chara.gc_rank_limsa, 21);
+    }
+    // Seal cost (2500) deducted.
+    let balance = db.get_seals(178, crate::actor::gc::GC_MAELSTROM).await.unwrap();
+    assert_eq!(balance, 5_000 - 2_500);
+}
+
 /// New `LuaItemPackage:HasItem` / `:GetItemQuantity` + the
 /// `GetGCPromotionCost` / `GetNextGCRank` / `GetGCRankSealCap`
 /// globals must answer correctly from inside a Lua script — the

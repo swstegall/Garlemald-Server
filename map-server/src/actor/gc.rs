@@ -159,6 +159,50 @@ pub fn gc_promotion_cost(current: u8) -> i32 {
     }
 }
 
+/// Quest id that gates promotion past `current_rank` for `gc`.
+/// Retail 1.x had two tier-shift gates the GC officer enforced
+/// regardless of seal balance: the petty-officer transition
+/// (Corporal 17 → Sergeant Third Class 21) and the commission to
+/// officer (Chief Sergeant 27 → Second Lieutenant 31). Both points
+/// shipped with a dedicated story quest the player had to complete
+/// before the dialog branch would even offer the promotion option.
+///
+/// Quest ids sourced from `ffxiv_classic_wiki_context.md`'s
+/// `gamedata_quests` dump cross-checked against the
+/// `mirke-menagerie-context.md` GC story transcripts:
+///
+/// * **Sergeant gate** (17 → 21):
+///   * Maelstrom — "An Officer and a Wise Man" (`Com0l5`, 111405) —
+///     the Brooks confrontation the Mirke text at line 16921 sets up.
+///   * Twin Adder — "Their Finest Hour" (`Com0g5`, 111605) — the
+///     Patch 1.19 ceremony arc at line 19509.
+///   * Immortal Flames — "Burning Man" (`Com0u5`, 111805) — third
+///     in the parallel `Com0u_` series, same pattern as the other GCs.
+/// * **Lieutenant gate** (27 → 31):
+///   * Maelstrom — "Patrol, Interrupted" (`Gcl702`, 111434) — the
+///     Aquamarine Cross trial at Mistbeard Cove (Mirke line 18335)
+///     that ends with "Congratulations, Second Lieutenant."
+///   * Twin Adder — "Cure for the Common Pox" (`Gcg702`, 111634).
+///   * Immortal Flames — "Mess with the Goat, Get the Horns"
+///     (`Gcu702`, 111834).
+///
+/// Returns `None` for non-tier-shift transitions (every other rank
+/// promotes on seal balance alone) and for unknown ranks / invalid
+/// GCs.
+pub fn tier_shift_quest(current_rank: u8, gc: u8) -> Option<u32> {
+    match (current_rank, gc) {
+        // Sergeant promotion gate — Corporal (17) → Sergeant Third Class (21).
+        (17, GC_MAELSTROM) => Some(111_405),
+        (17, GC_TWIN_ADDER) => Some(111_605),
+        (17, GC_IMMORTAL_FLAMES) => Some(111_805),
+        // Lieutenant commission gate — Chief Sergeant (27) → Second Lieutenant (31).
+        (27, GC_MAELSTROM) => Some(111_434),
+        (27, GC_TWIN_ADDER) => Some(111_634),
+        (27, GC_IMMORTAL_FLAMES) => Some(111_834),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,6 +260,37 @@ mod tests {
         assert_eq!(next_rank(0), None);
         assert_eq!(next_rank(42), None);
         assert_eq!(next_rank(99), None);
+    }
+
+    #[test]
+    fn tier_shift_quest_returns_per_gc_quest_at_petty_officer_and_lieutenant_gates() {
+        // Sergeant gate (17 → 21) — `Com0_5` series.
+        assert_eq!(tier_shift_quest(17, GC_MAELSTROM), Some(111_405));
+        assert_eq!(tier_shift_quest(17, GC_TWIN_ADDER), Some(111_605));
+        assert_eq!(tier_shift_quest(17, GC_IMMORTAL_FLAMES), Some(111_805));
+        // Lieutenant gate (27 → 31) — `Gc[lgu]702` series.
+        assert_eq!(tier_shift_quest(27, GC_MAELSTROM), Some(111_434));
+        assert_eq!(tier_shift_quest(27, GC_TWIN_ADDER), Some(111_634));
+        assert_eq!(tier_shift_quest(27, GC_IMMORTAL_FLAMES), Some(111_834));
+    }
+
+    #[test]
+    fn tier_shift_quest_returns_none_off_the_gates() {
+        // Non-tier-shift transitions promote on seal balance alone.
+        for rank in [RANK_RECRUIT, 11, 13, 15, 21, 23, 25] {
+            for gc in [GC_MAELSTROM, GC_TWIN_ADDER, GC_IMMORTAL_FLAMES] {
+                assert_eq!(
+                    tier_shift_quest(rank, gc),
+                    None,
+                    "rank {rank} gc {gc} should not be gated",
+                );
+            }
+        }
+        // Unknown / invalid GC at a gate rank still returns None — the
+        // surrounding promotion handler refuses on its own GC validity
+        // check before reaching this lookup.
+        assert_eq!(tier_shift_quest(17, GC_NONE), None);
+        assert_eq!(tier_shift_quest(27, 99), None);
     }
 
     #[test]

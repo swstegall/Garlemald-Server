@@ -1969,8 +1969,9 @@ impl PacketProcessor {
             tracing::debug!(player = player_id, "PromoteGC: player not in registry");
             return;
         };
-        // Read current enrollment + rank under a single read lock.
-        let (enrolled_gc, current_rank) = {
+        // Read current enrollment + rank + (for tier-shift gates) the
+        // completed-quest set under a single read lock.
+        let (enrolled_gc, current_rank, completed_quests) = {
             let c = handle.character.read().await;
             let rank = match gc {
                 crate::actor::gc::GC_MAELSTROM => c.chara.gc_rank_limsa,
@@ -1978,7 +1979,9 @@ impl PacketProcessor {
                 crate::actor::gc::GC_IMMORTAL_FLAMES => c.chara.gc_rank_uldah,
                 _ => 0,
             };
-            (c.chara.gc_current, rank)
+            let completed: std::collections::HashSet<u32> =
+                c.quest_journal.iter_completed().collect();
+            (c.chara.gc_current, rank, completed)
         };
         if enrolled_gc != gc {
             tracing::info!(
@@ -1998,6 +2001,26 @@ impl PacketProcessor {
             );
             return;
         };
+        // Tier-shift gate — Corporal → Sergeant Third Class (17 → 21)
+        // and Chief Sergeant → Second Lieutenant (27 → 31) require
+        // their respective per-GC story quest to be completed before
+        // the dialog branch even offers the promotion. Refuse here
+        // even if seal balance + cap checks would otherwise pass — the
+        // script's `eventTalkQuestUncomplete()` dialog the comment
+        // header at `PopulaceCompanyOfficer.lua:20` describes is the
+        // client-visible counterpart.
+        if let Some(gate_quest) = crate::actor::gc::tier_shift_quest(current_rank, gc)
+            && !completed_quests.contains(&gate_quest)
+        {
+            tracing::info!(
+                player = player_id,
+                gc,
+                current_rank,
+                gate_quest,
+                "PromoteGC refused: tier-shift story quest not completed",
+            );
+            return;
+        }
         let cost = crate::actor::gc::gc_promotion_cost(current_rank);
         if cost <= 0 {
             tracing::info!(
