@@ -412,6 +412,61 @@ pub enum LuaCommand {
         director_actor_id: u32,
         was_completed: bool,
     },
+    /// `director:StartGuildleve()` — script-driven leve start. Called
+    /// at the top of every `directors/Guildleve/*.lua` `main`
+    /// coroutine right after the opening `wait(3)`. Drains a
+    /// `GuildleveStarted` (music + start msg + time-limit msg) +
+    /// `GuildleveSyncAll` event pair through the dispatcher so the
+    /// player sees the leve UI light up.
+    StartGuildleve {
+        director_actor_id: u32,
+    },
+    /// `director:AbandonGuildleve()` — fires the abandon-message text
+    /// then runs the same teardown as `EndGuildleve(false)`. Used by
+    /// `GuildleveWarpPoint.lua` and a couple `Quest/QuestDirector*`
+    /// scripts that bail the leve mid-flight.
+    AbandonGuildleve {
+        director_actor_id: u32,
+    },
+    /// `director:UpdateAimNumNow(index, value)` — bumps the
+    /// `aim_num_now[index]` counter (the "kills remaining" / "items
+    /// gathered" tracker the client renders on the leve widget) and
+    /// emits a property-update event the dispatcher logs (real
+    /// SetActorProperty packet emit is the natural follow-up — the
+    /// underlying property-builder pipeline isn't wired through the
+    /// dispatcher yet).
+    UpdateAimNumNow {
+        director_actor_id: u32,
+        index: u8,
+        value: i8,
+    },
+    /// `director:UpdateUIState(index, value)` — sibling of
+    /// `UpdateAimNumNow` for the `ui_state[index]` slots. Same
+    /// dispatcher path, same packet-emit deferral.
+    UpdateUiState {
+        director_actor_id: u32,
+        index: u8,
+        value: i8,
+    },
+    /// `director:UpdateMarkers(index, x, y, z)` — repositions the
+    /// leve's per-objective minimap marker. Same dispatcher path as
+    /// the aim/ui updaters. Note: script name is plural
+    /// (`UpdateMarkers`) but each call moves a single marker — the
+    /// `index` arg disambiguates the slot.
+    UpdateMarkers {
+        director_actor_id: u32,
+        index: u8,
+        x: f32,
+        y: f32,
+        z: f32,
+    },
+    /// `director:SyncAllInfo()` — bulk re-push of every leve property
+    /// (aim_num + aim_num_now + ui_state + markers) to every player
+    /// member. Called right after `StartGuildleve()` to seed the
+    /// client's leve widget.
+    SyncAllInfo {
+        director_actor_id: u32,
+    },
     /// `player:PromoteGC(gc)` — atomic seal-spend + rank-bump.
     /// Mirrors the post-confirm tail of Meteor's
     /// `PopulaceCompanyOfficer.lua` flow: `eventDoRankUp` confirms the

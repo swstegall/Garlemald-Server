@@ -748,6 +748,50 @@ impl PacketProcessor {
                 self.apply_end_guildleve(director_actor_id, was_completed)
                     .await;
             }
+            LC::StartGuildleve { director_actor_id } => {
+                self.apply_start_guildleve(director_actor_id).await;
+            }
+            LC::AbandonGuildleve { director_actor_id } => {
+                self.apply_abandon_guildleve(director_actor_id).await;
+            }
+            LC::UpdateAimNumNow {
+                director_actor_id,
+                index,
+                value,
+            } => {
+                self.apply_director_outbox_op(director_actor_id, "UpdateAimNumNow", |gld, ob| {
+                    gld.update_aim_num_now(index, value, ob);
+                })
+                .await;
+            }
+            LC::UpdateUiState {
+                director_actor_id,
+                index,
+                value,
+            } => {
+                self.apply_director_outbox_op(director_actor_id, "UpdateUIState", |gld, ob| {
+                    gld.update_ui_state(index, value, ob);
+                })
+                .await;
+            }
+            LC::UpdateMarkers {
+                director_actor_id,
+                index,
+                x,
+                y,
+                z,
+            } => {
+                self.apply_director_outbox_op(director_actor_id, "UpdateMarkers", |gld, ob| {
+                    gld.update_marker(index, x, y, z, ob);
+                })
+                .await;
+            }
+            LC::SyncAllInfo { director_actor_id } => {
+                self.apply_director_outbox_op(director_actor_id, "SyncAllInfo", |gld, ob| {
+                    gld.sync_all(ob);
+                })
+                .await;
+            }
             LC::SetLoginDirector {
                 player_id,
                 director_actor_id,
@@ -1878,58 +1922,65 @@ impl PacketProcessor {
         tracing::info!(player = player_id, gc, rank, "SetGCRank applied");
     }
 
-    /// `director:EndGuildleve(was_completed)` — production drain that
-    /// closes the loop on the leve-completion seal accrual that
-    /// landed yesterday but was previously only fireable from tests.
+    /// Shared production-drain plumbing for every script-driven
+    /// `director:*` mutation that needs to fan a `DirectorEvent`
+    /// through `dispatch_director_event` to the player members.
+    /// `op_name` is purely for tracing; `mutate` runs under a single
+    /// zone write lock with a fresh `DirectorOutbox` and the
+    /// guildleve director it's targeting.
     ///
-    /// Decodes `(director_actor_id >> 19) & 0x1FF` to find the zone,
-    /// pulls the matching `GuildleveDirector` off `Zone::core`, calls
-    /// its `end_guildleve` helper into a local `DirectorOutbox`,
-    /// snapshots the player_members roster, and immediately drains
-    /// the resulting `DirectorEvent`s through `dispatch_director_event`
-    /// (with the live `Database` handle so `award_leve_completion_seals`
-    /// can deposit). Quietly no-ops on:
+    /// Quietly no-ops on:
     /// * unknown zone (already torn down),
     /// * unknown / non-guildleve director (id mismatch),
-    /// * already-ended director (`end_guildleve` is idempotent — second
-    ///   call is internally a no-op).
-    async fn apply_end_guildleve(&self, director_actor_id: u32, was_completed: bool) {
+    /// * a `mutate` that doesn't push anything (e.g. an already-ended
+    ///   director — `end_guildleve`'s internal idempotency).
+    async fn apply_director_outbox_op<F>(
+        &self,
+        director_actor_id: u32,
+        op_name: &'static str,
+        mutate: F,
+    ) where
+        F: FnOnce(&mut crate::director::GuildleveDirector, &mut crate::director::DirectorOutbox),
+    {
         let zone_id = (director_actor_id >> 19) & 0x1FF;
         let Some(zone_arc) = self.world.zone(zone_id).await else {
             tracing::debug!(
                 director = director_actor_id,
                 zone = zone_id,
-                "EndGuildleve skipped — zone not loaded",
+                op = op_name,
+                "director-outbox op skipped — zone not loaded",
             );
             return;
         };
         // Drive the director under a single write lock so the
-        // outbox drain reflects exactly what `end_guildleve` pushed
-        // (vs. racing a second mutator).
-        let now_unix_s = common::utils::unix_timestamp() as u32;
+        // outbox drain reflects exactly what `mutate` pushed (vs.
+        // racing a second mutator on a different actor).
         let (events, player_members) = {
             let mut zone = zone_arc.write().await;
             let Some(gld) = zone.core.guildleve_director_mut(director_actor_id) else {
                 tracing::debug!(
                     director = director_actor_id,
                     zone = zone_id,
-                    "EndGuildleve skipped — guildleve director not on zone",
+                    op = op_name,
+                    "director-outbox op skipped — guildleve director not on zone",
                 );
                 return;
             };
-            let mut outbox = crate::director::DirectorOutbox::new();
-            gld.end_guildleve(now_unix_s, was_completed, &mut outbox);
-            // Snapshot the roster while we still hold the write lock —
-            // the dispatcher's `&[u32]` arg outlives this scope.
+            // Snapshot the roster BEFORE running `mutate` —
+            // operations like `abandon_guildleve` internally call
+            // `Director::end` which clears `player_members` as part
+            // of the teardown event chain. Reading after the mutate
+            // would lose the recipients we need to fan packets to.
             let roster: Vec<u32> = gld.base.player_members().collect();
+            let mut outbox = crate::director::DirectorOutbox::new();
+            mutate(gld, &mut outbox);
             (outbox.drain(), roster)
         };
 
-        // Drain — fires victory music / completion text / abandon msg
-        // (depending on `was_completed`) and, on completion, calls
-        // `award_leve_completion_seals` for every enlisted member of
-        // the leve roster. Pass the live DB handle so the seal
-        // accrual actually persists.
+        // Drain — fires whatever packets the matching dispatcher arm
+        // sends (victory music / start music / aim updates / etc).
+        // Pass the live DB handle so seal-accrual on `GuildleveEnded`
+        // can persist.
         for e in events {
             crate::director::dispatch_director_event(
                 &e,
@@ -1940,12 +1991,47 @@ impl PacketProcessor {
             )
             .await;
         }
-        tracing::info!(
+        tracing::debug!(
             director = director_actor_id,
             zone = zone_id,
-            was_completed,
-            "EndGuildleve applied",
+            op = op_name,
+            "director-outbox op applied",
         );
+    }
+
+    /// `director:EndGuildleve(was_completed)` — closes the loop on
+    /// the leve-completion seal accrual. Wraps the shared
+    /// outbox-op helper with the unix-time + was_completed args
+    /// `end_guildleve` needs.
+    async fn apply_end_guildleve(&self, director_actor_id: u32, was_completed: bool) {
+        let now_unix_s = common::utils::unix_timestamp() as u32;
+        self.apply_director_outbox_op(director_actor_id, "EndGuildleve", |gld, ob| {
+            gld.end_guildleve(now_unix_s, was_completed, ob);
+        })
+        .await;
+    }
+
+    /// `director:StartGuildleve()` — fires the leve start packet
+    /// bundle (music + start text + time-limit text) plus the
+    /// `GuildleveSyncAll` follow-up the helper already pushes.
+    async fn apply_start_guildleve(&self, director_actor_id: u32) {
+        let now_unix_s = common::utils::unix_timestamp() as u32;
+        self.apply_director_outbox_op(director_actor_id, "StartGuildleve", |gld, ob| {
+            gld.start_guildleve(now_unix_s, ob);
+        })
+        .await;
+    }
+
+    /// `director:AbandonGuildleve()` — fires the abandon-message
+    /// game-message, then runs the same teardown chain as
+    /// `EndGuildleve(false)` (no seal accrual on the dispatcher side
+    /// because `was_completed` is false).
+    async fn apply_abandon_guildleve(&self, director_actor_id: u32) {
+        let now_unix_s = common::utils::unix_timestamp() as u32;
+        self.apply_director_outbox_op(director_actor_id, "AbandonGuildleve", |gld, ob| {
+            gld.abandon_guildleve(now_unix_s, ob);
+        })
+        .await;
     }
 
     /// `player:SetHomePoint(aetheryteId)` — `AetheryteChild.lua` calls

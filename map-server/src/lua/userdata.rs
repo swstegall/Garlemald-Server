@@ -1849,6 +1849,83 @@ impl UserData for LuaDirectorHandle {
             );
             Ok(())
         });
+        // The remaining leve-side bindings are the same shape — push
+        // a `LuaCommand::*` with the director's composite actor id so
+        // the processor can decode the zone from the actor-id bits
+        // without a separate lookup. Together with `EndGuildleve`
+        // above they cover the full surface a
+        // `directors/Guildleve/*.lua` `main` coroutine touches.
+        methods.add_method("StartGuildleve", |_, this, _: ()| {
+            push(
+                &this.queue,
+                LuaCommand::StartGuildleve {
+                    director_actor_id: this.actor_id,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method("AbandonGuildleve", |_, this, _: ()| {
+            push(
+                &this.queue,
+                LuaCommand::AbandonGuildleve {
+                    director_actor_id: this.actor_id,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method(
+            "UpdateAimNumNow",
+            |_, this, (index, value): (u8, i8)| {
+                push(
+                    &this.queue,
+                    LuaCommand::UpdateAimNumNow {
+                        director_actor_id: this.actor_id,
+                        index,
+                        value,
+                    },
+                );
+                Ok(())
+            },
+        );
+        methods.add_method(
+            "UpdateUIState",
+            |_, this, (index, value): (u8, i8)| {
+                push(
+                    &this.queue,
+                    LuaCommand::UpdateUiState {
+                        director_actor_id: this.actor_id,
+                        index,
+                        value,
+                    },
+                );
+                Ok(())
+            },
+        );
+        methods.add_method(
+            "UpdateMarkers",
+            |_, this, (index, x, y, z): (u8, f32, f32, f32)| {
+                push(
+                    &this.queue,
+                    LuaCommand::UpdateMarkers {
+                        director_actor_id: this.actor_id,
+                        index,
+                        x,
+                        y,
+                        z,
+                    },
+                );
+                Ok(())
+            },
+        );
+        methods.add_method("SyncAllInfo", |_, this, _: ()| {
+            push(
+                &this.queue,
+                LuaCommand::SyncAllInfo {
+                    director_actor_id: this.actor_id,
+                },
+            );
+            Ok(())
+        });
     }
 }
 

@@ -5290,6 +5290,387 @@ async fn lua_director_end_guildleve_binding_pushes_command() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// The remaining leve-side bindings (`StartGuildleve`,
+/// `AbandonGuildleve`, `UpdateAimNumNow`, `UpdateUIState`,
+/// `UpdateMarkers`, `SyncAllInfo`) all push the right
+/// `LuaCommand` variant carrying the director's composite actor id +
+/// any per-binding args. Pinning the full surface here catches the
+/// no-op-stub-overwrite trap (mlua's last-write-wins for same-name
+/// methods) the QuitGame audit caught earlier.
+#[tokio::test]
+async fn lua_director_remaining_leve_bindings_push_correct_commands() {
+    use crate::lua::LuaEngine;
+    use crate::lua::command::CommandQueue;
+    use crate::lua::userdata::LuaDirectorHandle;
+
+    let root = std::env::temp_dir().join(format!(
+        "garlemald-leve-bindings-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("test.lua"),
+        r#"
+            function fire(d)
+                d:StartGuildleve()
+                d:SyncAllInfo()
+                d:UpdateMarkers(0, 59.0, 44.0, -163.0)
+                d:UpdateAimNumNow(0, 1)
+                d:UpdateUIState(2, 4)
+                d:AbandonGuildleve()
+            end
+        "#,
+    )
+    .unwrap();
+
+    let lua = LuaEngine::new(&root);
+    let (vm, queue) = lua.load_script(&root.join("test.lua")).expect("load");
+
+    let dir_ud = vm
+        .create_userdata(LuaDirectorHandle {
+            name: "test_director".to_string(),
+            actor_id: 0x6320_0001,
+            class_path: "/Director/Guildleve/PrivateGLBattleSweepNormal".to_string(),
+            queue: queue.clone(),
+        })
+        .unwrap();
+    let f: mlua::Function = vm.globals().get("fire").unwrap();
+    f.call::<()>(dir_ud).expect("fire should not error");
+
+    let cmds = CommandQueue::drain(&queue);
+    assert_eq!(cmds.len(), 6, "expected 6 leve cmds; drained: {cmds:?}");
+    assert!(matches!(
+        cmds[0],
+        crate::lua::LuaCommandKind::StartGuildleve { director_actor_id: 0x6320_0001 }
+    ));
+    assert!(matches!(
+        cmds[1],
+        crate::lua::LuaCommandKind::SyncAllInfo { director_actor_id: 0x6320_0001 }
+    ));
+    // UpdateMarkers carries the index + xyz triple verbatim.
+    if let crate::lua::LuaCommandKind::UpdateMarkers {
+        director_actor_id,
+        index,
+        x,
+        y,
+        z,
+    } = cmds[2]
+    {
+        assert_eq!(director_actor_id, 0x6320_0001);
+        assert_eq!(index, 0);
+        assert_eq!(x, 59.0);
+        assert_eq!(y, 44.0);
+        assert_eq!(z, -163.0);
+    } else {
+        panic!("cmds[2] should be UpdateMarkers, got {:?}", cmds[2]);
+    }
+    assert!(matches!(
+        cmds[3],
+        crate::lua::LuaCommandKind::UpdateAimNumNow {
+            director_actor_id: 0x6320_0001,
+            index: 0,
+            value: 1,
+        }
+    ));
+    assert!(matches!(
+        cmds[4],
+        crate::lua::LuaCommandKind::UpdateUiState {
+            director_actor_id: 0x6320_0001,
+            index: 2,
+            value: 4,
+        }
+    ));
+    assert!(matches!(
+        cmds[5],
+        crate::lua::LuaCommandKind::AbandonGuildleve {
+            director_actor_id: 0x6320_0001,
+        }
+    ));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// End-to-end production drain for an entire `directors/Guildleve/*.lua`
+/// `main` coroutine sequence: Start → SyncAll → UpdateMarkers →
+/// UpdateAimNumNow → End. Confirms each command lands on the live
+/// `GuildleveDirector` and the final EndGuildleve grants seals
+/// through the same dispatcher path as the standalone EndGuildleve
+/// test.
+#[tokio::test]
+async fn full_leve_main_coroutine_sequence_drains_through_dispatcher() {
+    use crate::actor::Character;
+    use crate::data::{ClientHandle, Session as MapSession};
+    use crate::lua::LuaCommandKind as LuaCommand;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use crate::zone::navmesh::StubNavmeshLoader;
+    use crate::zone::zone::Zone;
+    use common::db::ConnCallExt;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    let lua = Arc::new(crate::lua::LuaEngine::new("/nonexistent"));
+
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (190, 0, 0, 0, 'LeveSequencer')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    db.set_gc_current(190, crate::actor::gc::GC_MAELSTROM)
+        .await
+        .unwrap();
+    db.set_gc_rank(190, crate::actor::gc::GC_MAELSTROM, 11)
+        .await
+        .unwrap();
+
+    let mut zone = Zone::new(
+        180,
+        "test",
+        1,
+        "/Area/Zone/Test",
+        0, 0, 0,
+        false, false, false, false, false,
+        Some(&StubNavmeshLoader),
+    );
+    let director_actor_id = zone.core.create_guildleve_director(
+        20_026, // guildleve_id
+        3,      // 3-star → 350 seals
+        190,    // owner_actor_id
+        20_021, // plate_id
+        1,      // location: Limsa music bucket
+        300,    // time_limit_seconds
+        [3, 0, 0, 0],
+    );
+    {
+        let gld = zone
+            .core
+            .guildleve_director_mut(director_actor_id)
+            .expect("director just created");
+        let mut ob = crate::director::DirectorOutbox::new();
+        gld.base.add_member(190, true, &mut ob);
+        let _ = ob.drain();
+    }
+    world.register_zone(zone).await;
+
+    let mut chara = Character::new(190);
+    chara.chara.gc_current = crate::actor::gc::GC_MAELSTROM;
+    chara.chara.gc_rank_limsa = 11;
+    registry
+        .insert(ActorHandle::new(190, ActorKindTag::Player, 180, 190, chara))
+        .await;
+    world
+        .upsert_session(MapSession {
+            id: 190,
+            current_zone_id: 180,
+            ..MapSession::default()
+        })
+        .await;
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(64);
+    world.register_client(190, ClientHandle::new(190, tx)).await;
+
+    let processor = crate::processor::PacketProcessor {
+        db: db.clone(),
+        world: world.clone(),
+        registry: registry.clone(),
+        lua: Some(lua),
+    };
+    let handle = registry.get(190).await.unwrap();
+
+    // Drive the same sequence as PrivateGLBattleSweepNormal.lua's
+    // main() coroutine. Each command goes through
+    // `apply_login_lua_command` and the matching processor handler.
+    for cmd in [
+        LuaCommand::StartGuildleve { director_actor_id },
+        LuaCommand::SyncAllInfo { director_actor_id },
+        LuaCommand::UpdateMarkers {
+            director_actor_id,
+            index: 0,
+            x: 59.0,
+            y: 44.0,
+            z: -163.0,
+        },
+        LuaCommand::UpdateAimNumNow {
+            director_actor_id,
+            index: 0,
+            value: 1,
+        },
+        LuaCommand::UpdateAimNumNow {
+            director_actor_id,
+            index: 0,
+            value: 2,
+        },
+        LuaCommand::UpdateAimNumNow {
+            director_actor_id,
+            index: 0,
+            value: 3,
+        },
+        LuaCommand::EndGuildleve {
+            director_actor_id,
+            was_completed: true,
+        },
+    ] {
+        processor.apply_login_lua_command(&handle, cmd).await;
+    }
+
+    // The aim_num_now state inside the director should reflect the
+    // final write (value 3). Verifies the bindings actually mutate
+    // the director, not just push events.
+    {
+        let zone_arc = world.zone(180).await.unwrap();
+        let zone = zone_arc.read().await;
+        let gld = zone
+            .core
+            .guildleve_director(director_actor_id)
+            .expect("director still present");
+        assert_eq!(gld.work.aim_num_now[0], 3);
+        assert_eq!(gld.work.marker_x[0], 59.0);
+        assert_eq!(gld.work.marker_y[0], 44.0);
+        assert_eq!(gld.work.marker_z[0], -163.0);
+        assert!(gld.is_ended, "EndGuildleve should have flipped is_ended");
+    }
+
+    // 3★ leve completion → 350 seals deposited.
+    let balance = db.get_seals(190, crate::actor::gc::GC_MAELSTROM).await.unwrap();
+    assert_eq!(
+        balance, 350,
+        "3-star leve sequence should grant 350 seals end-to-end",
+    );
+
+    // Multiple packets hit the session: at minimum the StartGuildleve
+    // bundle (music + start text + time-limit text = 3 frames) + the
+    // EndGuildleve bundle (victory music + completion text = 2
+    // frames). Drain to be safe.
+    let mut packet_count = 0;
+    while rx.try_recv().is_ok() {
+        packet_count += 1;
+    }
+    assert!(
+        packet_count >= 5,
+        "expected ≥5 packets across the leve sequence, got {packet_count}",
+    );
+}
+
+/// AbandonGuildleve fires the abandon-message path and DOES NOT
+/// grant seals (was_completed=false on the GuildleveEnded event the
+/// helper internally chains).
+#[tokio::test]
+async fn abandon_guildleve_emits_abandon_message_and_grants_no_seals() {
+    use crate::actor::Character;
+    use crate::data::{ClientHandle, Session as MapSession};
+    use crate::lua::LuaCommandKind as LuaCommand;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use crate::zone::navmesh::StubNavmeshLoader;
+    use crate::zone::zone::Zone;
+    use common::db::ConnCallExt;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    let lua = Arc::new(crate::lua::LuaEngine::new("/nonexistent"));
+
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (191, 0, 0, 0, 'LeveAbandoner')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    db.set_gc_current(191, crate::actor::gc::GC_IMMORTAL_FLAMES)
+        .await
+        .unwrap();
+    db.set_gc_rank(191, crate::actor::gc::GC_IMMORTAL_FLAMES, 11)
+        .await
+        .unwrap();
+
+    let mut zone = Zone::new(
+        181,
+        "test",
+        1,
+        "/Area/Zone/Test",
+        0, 0, 0,
+        false, false, false, false, false,
+        Some(&StubNavmeshLoader),
+    );
+    let director_actor_id = zone.core.create_guildleve_director(
+        20_028, 4, 191, 20_021, 4, 300, [2, 0, 0, 0],
+    );
+    {
+        let gld = zone
+            .core
+            .guildleve_director_mut(director_actor_id)
+            .expect("director just created");
+        let mut ob = crate::director::DirectorOutbox::new();
+        gld.base.add_member(191, true, &mut ob);
+        let _ = ob.drain();
+    }
+    world.register_zone(zone).await;
+
+    let mut chara = Character::new(191);
+    chara.chara.gc_current = crate::actor::gc::GC_IMMORTAL_FLAMES;
+    chara.chara.gc_rank_uldah = 11;
+    registry
+        .insert(ActorHandle::new(191, ActorKindTag::Player, 181, 191, chara))
+        .await;
+    world
+        .upsert_session(MapSession {
+            id: 191,
+            current_zone_id: 181,
+            ..MapSession::default()
+        })
+        .await;
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(8);
+    world.register_client(191, ClientHandle::new(191, tx)).await;
+
+    let processor = crate::processor::PacketProcessor {
+        db: db.clone(),
+        world: world.clone(),
+        registry: registry.clone(),
+        lua: Some(lua),
+    };
+    let handle = registry.get(191).await.unwrap();
+    processor
+        .apply_login_lua_command(
+            &handle,
+            LuaCommand::AbandonGuildleve { director_actor_id },
+        )
+        .await;
+
+    // No seals — abandon path runs `end_guildleve(false)` internally.
+    let balance = db.get_seals(191, crate::actor::gc::GC_IMMORTAL_FLAMES).await.unwrap();
+    assert_eq!(balance, 0, "abandoned leve must not grant seals");
+
+    // At least the abandon-message packet hit the session.
+    assert!(
+        rx.try_recv().is_ok(),
+        "AbandonGuildleve should still emit the abandon-text packet",
+    );
+}
+
 /// Production drain end-to-end: a Lua script's `director:EndGuildleve(true)`
 /// call should land on the player's session as the victory packet bundle
 /// AND deposit seals via `apply_end_guildleve` → `dispatch_director_event`
