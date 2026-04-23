@@ -230,5 +230,27 @@ pub fn install_globals(
         globals.set("bit32", bit32)?;
     }
 
+    // GC promotion helpers — `PopulaceCompanyOfficer.lua` reads these
+    // to size the rank-up dialogue (`playerRankUpCost`,
+    // `playerNextRank`) and `PopulaceCompanyShop.lua` reads
+    // `GetGCRankSealCap` to gate big-ticket items. All three are pure
+    // functions of the input rank — no closure state needed, so they
+    // share the catalogs Arc only nominally.
+    {
+        let f = lua.create_function(|_, rank: u8| {
+            Ok(crate::actor::gc::next_rank(rank).unwrap_or(0))
+        })?;
+        globals.set("GetNextGCRank", f)?;
+    }
+    {
+        let f =
+            lua.create_function(|_, rank: u8| Ok(crate::actor::gc::gc_promotion_cost(rank)))?;
+        globals.set("GetGCPromotionCost", f)?;
+    }
+    {
+        let f = lua.create_function(|_, rank: u8| Ok(crate::actor::gc::rank_seal_cap(rank)))?;
+        globals.set("GetGCRankSealCap", f)?;
+    }
+
     Ok(())
 }

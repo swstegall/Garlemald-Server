@@ -454,51 +454,76 @@ function onEventStarted(player, npc, triggerName)
     skipGCcheck = 0; -- 0 No,  1 Yes
     playerGC = player.gcCurrent;
     playerGCSeal = 1000200 + playerGC;
-    playerCurrentRank = 13;
-    npcId = npc:GetActorClassId(); 
-      
+    -- Pull the live rank from the snapshot — same `playerGCRanks`
+    -- index trick PopulaceCompanyOfficer.lua uses.
+    local playerGCRanks = { player.gcRankLimsa, player.gcRankGridania, player.gcRankUldah };
+    playerCurrentRank = playerGCRanks[playerGC] or 0;
+    npcId = npc:GetActorClassId();
+
     if (playerGC == gcOfficer[npcId] or  skipGCcheck == 1) then
         callClientFunction(player, "eventTalkPreJoin");
         --player:SendMessage(0x20, "", "[Info]: Client takes awhile to load GC shops");
         while (true) do
-            
+
             eventTalkChoice = callClientFunction(player, "eventTalkMainMenu", 8, 11);
             --player:SendMessage(0x20, "", "eventTalkMainMenu: " .. tostring(eventTalkChoice));
 
-            if (eventTalkChoice == 1) then 
+            if (eventTalkChoice == 1) then
                 t1, t2, t3 = callClientFunction(player, "eventShopMenuOpen");
-                
+
                 --player:SendMessage(0x20, "", "eventShopMenuOpen: " .. tostring(t1) .. ", ".. tostring(t2) .. ", ".. tostring(t3));
 
                 while (true) do
-                    -- TODO:  ADD RANK CHECK, CITY CHECK, AND ITEM-RANGE CHECK
-                    
                     buyResult, buyIndex = callClientFunction(player, "eventShopMenuAsk");
-                    
+
                     if (buyIndex == -1) then
                         callClientFunction(player, "eventShopMenuClose");
                         break;
                     else
-                        -- [index] = { itemID, itemQuality, itemQuantity, itemCost gcRank, city, special, itemCategory }
-                        if (shopInfo[buyIndex][8] == 4) then
-                            location = INVENTORY_KEYITEMS;
-                        else    
-                            location = INVENTORY_NORMAL;  
+                        -- [index] = { itemID, itemQuality, itemQuantity, itemCost, gcRank, city, special, itemCategory }
+                        local entry = shopInfo[buyIndex];
+                        if (entry == nil) then
+                            -- Unknown item index — bail rather than silently consume seals.
+                            break;
+                        end
+                        local itemRank = entry[5];
+                        local itemCity = entry[6];
+
+                        -- Rank gate: every shop entry carries the
+                        -- minimum rank the player must hold to buy
+                        -- it (column 5; 0 = Recruit-OK). Refuse with
+                        -- the canonical "can't use" dialog when the
+                        -- player isn't promoted yet — Meteor leaves
+                        -- this client-side, but trusting the
+                        -- delegateCommand return is unsafe.
+                        if (itemRank > 0 and playerCurrentRank < itemRank) then
+                            callClientFunction(player, "eventTalkStepCantUse");
+                        elseif (itemCity ~= playerGC) then
+                            -- City check — entries are also tagged
+                            -- with their owning GC (column 6) so
+                            -- cross-GC shops never serve another
+                            -- faction's items.
+                            callClientFunction(player, "eventTalkStepCantUse");
+                        else
+                            if (entry[8] == 4) then
+                                location = INVENTORY_KEYITEMS;
+                            else
+                                location = INVENTORY_NORMAL;
+                            end
+                            purchaseItem(player, location, entry[1], entry[3], entry[2], entry[4], playerGCSeal);
                         end
                     end
-            
-                    purchaseItem(player, location, shopInfo[buyIndex][1], shopInfo[buyIndex][3], shopInfo[buyIndex][2], shopInfo[buyIndex][4], playerGCSeal);  
                 end
-                
+
                 --player:SendMessage(0x20, "", "Player picked an item at gcSealShopIndex " .. tostring(buyResult) .. ", ".. tostring(buyIndex));
-            
+
             elseif (eventTalkChoice == -1) then
                 break;
             end
         end
     else
         callClientFunction(player, "eventTalkStepCantUse");
-    end        
+    end
     callClientFunction(player, "eventTalkStepBreak");
     player:endEvent();
 end

@@ -5955,6 +5955,86 @@ async fn join_gc_sets_chara_state_and_db() {
     assert_eq!(post_rank, 17);
 }
 
+/// New `LuaItemPackage:HasItem` / `:GetItemQuantity` + the
+/// `GetGCPromotionCost` / `GetNextGCRank` / `GetGCRankSealCap`
+/// globals must answer correctly from inside a Lua script — the
+/// `PopulaceCompanyOfficer` / `PopulaceCompanyShop` rank-gate flow
+/// chains all four together.
+#[tokio::test]
+async fn gc_promotion_helpers_drive_officer_logic_end_to_end() {
+    use crate::lua::LuaEngine;
+    use crate::lua::userdata::{LuaPlayer, PlayerSnapshot};
+
+    let root = std::env::temp_dir().join(format!(
+        "garlemald-fc-helpers-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    // Mini-script that asks every binding the FC scripts depend on
+    // and writes the answers to globals so the test can read them
+    // back out. INVENTORY_CURRENCY = 99 (matches scripts/lua/global.lua).
+    std::fs::write(
+        root.join("test.lua"),
+        r#"
+            function fire(player)
+                local seal = 1000201        -- Storm seal (gc 1)
+                local pkg = player:GetItemPackage(99)
+                _seal_balance = pkg:GetItemQuantity(seal)
+                _has_500_seals = pkg:HasItem(seal, 500)
+                _has_5000_seals = pkg:HasItem(seal, 5000)
+                _has_any = pkg:HasItem(seal)        -- default min = 1
+                _next_rank_recruit = GetNextGCRank(127)
+                _next_rank_pvt3 = GetNextGCRank(11)
+                _next_rank_cap = GetNextGCRank(31)  -- past 1.23b cap → 0
+                _cost_recruit = GetGCPromotionCost(127)
+                _cost_pvt3 = GetGCPromotionCost(11)
+                _cost_capped = GetGCPromotionCost(31)
+                _seal_cap_pvt3 = GetGCRankSealCap(11)
+            end
+        "#,
+    )
+    .unwrap();
+
+    let lua = LuaEngine::new(&root);
+    let (vm, queue) = lua.load_script(&root.join("test.lua")).expect("load");
+
+    let snapshot = PlayerSnapshot {
+        actor_id: 88,
+        // 1500 Storm seals — enough for the canonical 1500-seal hop
+        // upstream Meteor's hardcode used, more than enough for the
+        // 100-seal Recruit→Pvt3 floor we ported.
+        inventory: vec![(1_000_201u32, 1_500i32)],
+        ..Default::default()
+    };
+    let player_ud = vm
+        .create_userdata(LuaPlayer {
+            snapshot,
+            queue: queue.clone(),
+        })
+        .unwrap();
+    let f: mlua::Function = vm.globals().get("fire").unwrap();
+    f.call::<()>(player_ud)
+        .unwrap_or_else(|e| panic!("fire() should not error: {e}"));
+
+    let g = vm.globals();
+    assert_eq!(g.get::<i64>("_seal_balance").unwrap(), 1500);
+    assert!(g.get::<bool>("_has_500_seals").unwrap());
+    assert!(!g.get::<bool>("_has_5000_seals").unwrap());
+    assert!(g.get::<bool>("_has_any").unwrap());
+    assert_eq!(g.get::<i64>("_next_rank_recruit").unwrap(), 11);
+    assert_eq!(g.get::<i64>("_next_rank_pvt3").unwrap(), 13);
+    assert_eq!(g.get::<i64>("_next_rank_cap").unwrap(), 0);
+    assert_eq!(g.get::<i64>("_cost_recruit").unwrap(), 100);
+    assert_eq!(g.get::<i64>("_cost_pvt3").unwrap(), 100);
+    assert_eq!(g.get::<i64>("_cost_capped").unwrap(), 0);
+    assert_eq!(g.get::<i64>("_seal_cap_pvt3").unwrap(), 10_000);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// `gcseals.lua` helper module + the seven PopulaceCompany* NPC
 /// scripts should all parse after the new GC bindings land.
 #[tokio::test]

@@ -1176,10 +1176,17 @@ impl UserData for LuaPlayer {
             // routes `AddItem`/`AddItems` into the command queue so the
             // hook traverses its full class/race branches and the
             // subsequent `SavePlayTime` etc. run to completion.
+            //
+            // Inventory snapshot is cloned through so `HasItem` /
+            // `GetItemQuantity` calls on the returned package can
+            // answer locally — `gcseals.lua` and
+            // `PopulaceCompanyOfficer.lua` both chain
+            // `:GetItemPackage(99):HasItem(seal, cost)`.
             let pkg = LuaItemPackage {
                 owner_actor_id: this.snapshot.actor_id,
                 package_code: pkg_code,
                 queue: this.queue.clone(),
+                inventory_snapshot: this.snapshot.inventory.clone(),
             };
             lua.create_userdata(pkg)
         });
@@ -1859,6 +1866,13 @@ impl UserData for LuaRetainer {
                 owner_actor_id: this.retainer_id,
                 package_code: pkg_code,
                 queue: this.queue.clone(),
+                // Retainer inventory snapshot threading is a separate
+                // follow-up — for now `HasItem` / `GetItemQuantity`
+                // on a retainer-owned package answer "no" / 0, which
+                // matches the conservative C# default and keeps
+                // bazaar-side scripts safe until the live pipeline
+                // lands.
+                inventory_snapshot: Vec::new(),
             })
         });
     }
@@ -1883,6 +1897,15 @@ pub struct LuaItemPackage {
     pub owner_actor_id: u32,
     pub package_code: u16,
     pub queue: Arc<Mutex<CommandQueue>>,
+    /// `(item_id, total_quantity)` snapshot the script can query via
+    /// `HasItem` / `GetItemQuantity` without going back through Lua.
+    /// Cloned from the owning `LuaPlayer.snapshot.inventory` at
+    /// `GetItemPackage(...)` time. Empty for retainer-owned packages
+    /// — those answer through the live Retainer struct via a future
+    /// retainer-inventory plumbing pass; for now the bag answers
+    /// `HasItem == false` (matches the conservative C# default of
+    /// "missing item").
+    pub inventory_snapshot: Vec<(u32, i32)>,
 }
 
 impl UserData for LuaItemPackage {
@@ -1939,6 +1962,38 @@ impl UserData for LuaItemPackage {
                 },
             );
             Ok(())
+        });
+        // `package:HasItem(catalogId, [minQty])` — answer locally from
+        // the inventory snapshot the owning `LuaPlayer` cloned in at
+        // `GetItemPackage(...)` time. Mirrors C#
+        // `ItemPackage.HasItem(itemId, quantity)` (defaults `quantity=1`).
+        // Used by `gcseals.lua::AddGCSeals` (cap-check) and
+        // `PopulaceCompanyOfficer.lua` (promotion-cost check).
+        methods.add_method(
+            "HasItem",
+            |_, this, (catalog_id, min_quantity): (u32, Option<i32>)| {
+                let min = min_quantity.unwrap_or(1);
+                Ok(this
+                    .inventory_snapshot
+                    .iter()
+                    .any(|(id, q)| *id == catalog_id && *q >= min))
+            },
+        );
+        // `package:GetItemQuantity(catalogId)` — total quantity of
+        // `catalogId` in the snapshot, summed across stacks. Returns
+        // `0` when absent (rather than the C# `-1` sentinel) since
+        // every script call site (`gcseals.lua::GetGCSeals`, the
+        // `PopulaceCompanyShop` cost-vs-balance branch) treats the
+        // missing-item case as a zero balance and the explicit `-1`
+        // would force every caller to special-case it.
+        methods.add_method("GetItemQuantity", |_, this, catalog_id: u32| {
+            let total: i32 = this
+                .inventory_snapshot
+                .iter()
+                .filter(|(id, _)| *id == catalog_id)
+                .map(|(_, q)| *q)
+                .sum();
+            Ok(total)
         });
     }
 }

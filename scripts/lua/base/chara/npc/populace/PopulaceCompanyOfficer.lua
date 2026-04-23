@@ -41,25 +41,30 @@ function onEventStarted(player, npc, triggerName)
 
     playerGC = player.gcCurrent;
     playerGCSeal = 1000200 + playerGC;
-    playerCurrentRank = 13;
-    playerRankUpCost = 1500;
-    playerNextRank = 15;
-    currentRankCap = 31; -- Second Lieutenant
+    -- Pull the player's current rank from the snapshot rather than
+    -- the upstream Meteor hardcode. `playerGCRanks[playerGC]` resolves
+    -- to the right per-GC rank field so the same script works for
+    -- Maelstrom / Twin Adder / Immortal Flames officers.
+    local playerGCRanks = { player.gcRankLimsa, player.gcRankGridania, player.gcRankUldah };
+    playerCurrentRank = playerGCRanks[playerGC] or 0;
+    playerNextRank = GetNextGCRank(playerCurrentRank);
+    playerRankUpCost = GetGCPromotionCost(playerCurrentRank);
+    currentRankCap = 31; -- Second Lieutenant (1.23b cap)
     npcId = npc:GetActorClassId();
-    
+
     if playerGC == gcOfficer[npcId] then
         callClientFunction(player, "eventTalkWelcome");
-        if playerCurrentRank < currentRankCap then
+        if playerNextRank ~= 0 and playerCurrentRank < currentRankCap then
             if player:GetItemPackage(INVENTORY_CURRENCY):HasItem(playerGCSeal, playerRankUpCost) then
                 -- Show Promotion window, allow paying
                 local choice = callClientFunction(player, "eventTalkJoined", playerCurrentRank, playerNextRank, true, true);
-                
+
                 -- If promotion accepted
                 if choice == 1 then
                     callClientFunction(player, "eventDoRankUp", playerNextRank, playerNextRank);
                    -- TODO: Table GC info or get it in source/sql.  Handle actual upgrade of GC rank/seal cap/cost/etc.
                 end
-   
+
             else
                 -- Show Promotion window, show dialog you can't afford promotion
                 callClientFunction(player, "eventTalkJoined", playerCurrentRank, playerNextRank, false, true);
@@ -67,7 +72,7 @@ function onEventStarted(player, npc, triggerName)
         else
             callClientFunction(player, "eventTalkJoined", playerCurrentRank, playerNextRank);
         end
-        
+
         callClientFunction(player, "eventTalkJoinedOnly");
     else
         callClientFunction(player, "eventTalkExclusive");

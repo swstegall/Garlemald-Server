@@ -107,6 +107,58 @@ pub fn rank_seal_cap(rank: u8) -> i32 {
 /// needs the flag set at quest-completion time.
 pub const STORY_RANK_CAP: u8 = 31;
 
+/// Sequential rank ladder the `PopulaceCompanyOfficer.lua` promotion
+/// flow walks. Recruit (127) → Private Third Class (11) →
+/// Private Second Class (13) → Private First Class (15) → Corporal (17)
+/// → Sergeant Third Class (21) → Sergeant Second Class (23) →
+/// Sergeant First Class (25) → Chief Sergeant (27) → Second Lieutenant
+/// (31, the 1.23b cap). The discontinuities (17 → 21, 27 → 31) match
+/// retail's tier-shift convention where the tens digit increments at
+/// each promotion category boundary. Returns `None` when the input is
+/// already at or past the cap, or doesn't match a known rank.
+pub fn next_rank(current: u8) -> Option<u8> {
+    Some(match current {
+        RANK_RECRUIT => 11,
+        11 => 13,
+        13 => 15,
+        15 => 17,
+        17 => 21,
+        21 => 23,
+        23 => 25,
+        25 => 27,
+        27 => 31,
+        // Lieutenants / Captains / Marshals / Champions are beyond
+        // 1.23b's content gate — promotion through these tiers needs
+        // the GC story-quest flag and isn't reachable from
+        // `PopulaceCompanyOfficer.lua` alone.
+        _ => return None,
+    })
+}
+
+/// Per-rank seal cost to advance to the next rank. Values mirror the
+/// retail Maelstrom NPC dialogue lines in
+/// `mirke-menagerie-context.md` ("a promotion from Storm Private Third
+/// Class to Storm Private Second Class will cost you 100 seals" at
+/// rank 11 → 13; the next-rank quote of 2,500 seals at rank 13 → 15;
+/// 25,000 at the upper Sergeant tier). The Recruit → Private Third
+/// Class hop is gated at 100 seals to match the same in-game
+/// conversation. Returns `0` for ranks at or past the 1.23b cap, and
+/// for unknown rank codes.
+pub fn gc_promotion_cost(current: u8) -> i32 {
+    match current {
+        RANK_RECRUIT => 100,
+        11 => 100,
+        13 => 1_000,
+        15 => 1_500,
+        17 => 2_500,
+        21 => 5_000,
+        23 => 10_000,
+        25 => 15_000,
+        27 => 25_000,
+        _ => 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,5 +190,46 @@ mod tests {
         assert_eq!(rank_seal_cap(0), 0);
         assert_eq!(rank_seal_cap(111), 0);
         assert_eq!(rank_seal_cap(42), 0);
+    }
+
+    #[test]
+    fn next_rank_walks_the_full_ladder_to_story_cap() {
+        // Recruit → Private Third Class → … → Second Lieutenant.
+        let mut path = Vec::new();
+        let mut r = RANK_RECRUIT;
+        path.push(r);
+        while let Some(n) = next_rank(r) {
+            path.push(n);
+            r = n;
+            assert!(
+                path.len() < 16,
+                "ladder should terminate within 10 steps, walked: {path:?}"
+            );
+        }
+        assert_eq!(path, vec![127, 11, 13, 15, 17, 21, 23, 25, 27, 31]);
+        // Stops at the 1.23b cap.
+        assert_eq!(next_rank(31), None);
+    }
+
+    #[test]
+    fn next_rank_returns_none_for_unknown_ranks() {
+        assert_eq!(next_rank(0), None);
+        assert_eq!(next_rank(42), None);
+        assert_eq!(next_rank(99), None);
+    }
+
+    #[test]
+    fn promotion_cost_table_matches_dialogue_anchors() {
+        // The Recruit → Private Third Class hop is the cheapest
+        // (100 seals — Storm Lieutenant Guincum dialogue).
+        assert_eq!(gc_promotion_cost(RANK_RECRUIT), 100);
+        // Storm Lieutenant Guincum: "from Private Third Class to
+        // Private Second Class will cost you 100 seals" (mirke
+        // line 16389).
+        assert_eq!(gc_promotion_cost(11), 100);
+        // Past-cap and unknown ranks → 0.
+        assert_eq!(gc_promotion_cost(31), 0);
+        assert_eq!(gc_promotion_cost(0), 0);
+        assert_eq!(gc_promotion_cost(99), 0);
     }
 }
