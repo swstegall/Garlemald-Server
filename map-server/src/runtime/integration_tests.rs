@@ -3723,6 +3723,314 @@ async fn rental_expiry_tick_dismounts() {
 }
 
 // ---------------------------------------------------------------------------
+// Broadcast-around-actor helper — consolidation (wired into chocobo
+// SendMountAppearance + level-up stateForAll).
+// ---------------------------------------------------------------------------
+
+/// `apply_send_mount_appearance` now fans to nearby Players via the
+/// shared `broadcast_around_actor` helper. Confirms: source gets
+/// their own copy, a nearby observer also gets bytes, a far observer
+/// doesn't.
+#[tokio::test]
+async fn send_mount_appearance_broadcasts_to_nearby_players() {
+    use crate::actor::Character;
+    use crate::data::{ClientHandle, Session as MapSession};
+    use crate::lua::LuaCommandKind as LuaCommand;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use crate::zone::zone::Zone;
+    use tokio::sync::mpsc;
+    use std::sync::Arc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    let lua = Arc::new(crate::lua::LuaEngine::new(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("scripts/lua"),
+    ));
+
+    // Zone with a spatial grid the broadcast helper will walk.
+    let zone = Zone::new(
+        500,
+        "MountBroadcast".to_string(),
+        1,
+        String::new(),
+        0,
+        0,
+        0,
+        false,
+        false,
+        true, // canRideChocobo
+        false,
+        false,
+        None,
+    );
+    world.register_zone(zone).await;
+
+    // Mounted source player at origin.
+    let mut source = Character::new(1);
+    source.base.zone_id = 500;
+    source.base.position_x = 0.0;
+    source.base.position_z = 0.0;
+    source.chara.mount_state = 1;
+    source.chara.chocobo_appearance = 5;
+    registry
+        .insert(ActorHandle::new(1, ActorKindTag::Player, 500, 1, source))
+        .await;
+    let (tx_src, mut rx_src) = mpsc::channel::<Vec<u8>>(32);
+    world.register_client(1, ClientHandle::new(1, tx_src)).await;
+    world
+        .upsert_session(MapSession {
+            id: 1,
+            current_zone_id: 500,
+            ..MapSession::default()
+        })
+        .await;
+    // Register into the zone's spatial grid so `actors_around`
+    // finds the centre (this parallels how `AreaEvent::ActorAdded`
+    // is processed in the real spawn path).
+    {
+        let zone_arc = world.zone(500).await.unwrap();
+        let mut z = zone_arc.write().await;
+        let mut _out = crate::zone::outbox::AreaOutbox::new();
+        z.core.add_actor(
+            crate::zone::area::StoredActor {
+                actor_id: 1,
+                kind: crate::zone::area::ActorKind::Player,
+                position: common::math::Vector3::new(0.0, 0.0, 0.0),
+                grid: (0, 0),
+                is_alive: true,
+            },
+            &mut _out,
+        );
+    }
+
+    // Nearby observer at (5, 0, 5) — inside BROADCAST_RADIUS (50).
+    let mut nearby = Character::new(2);
+    nearby.base.zone_id = 500;
+    nearby.base.position_x = 5.0;
+    nearby.base.position_z = 5.0;
+    registry
+        .insert(ActorHandle::new(2, ActorKindTag::Player, 500, 2, nearby))
+        .await;
+    let (tx_near, mut rx_near) = mpsc::channel::<Vec<u8>>(32);
+    world.register_client(2, ClientHandle::new(2, tx_near)).await;
+    {
+        let zone_arc = world.zone(500).await.unwrap();
+        let mut z = zone_arc.write().await;
+        let mut _out = crate::zone::outbox::AreaOutbox::new();
+        z.core.add_actor(
+            crate::zone::area::StoredActor {
+                actor_id: 2,
+                kind: crate::zone::area::ActorKind::Player,
+                position: common::math::Vector3::new(5.0, 0.0, 5.0),
+                grid: (0, 0),
+                is_alive: true,
+            },
+            &mut _out,
+        );
+    }
+
+    // Far observer at (500, 0, 500) — well outside BROADCAST_RADIUS.
+    let mut far = Character::new(3);
+    far.base.zone_id = 500;
+    far.base.position_x = 500.0;
+    far.base.position_z = 500.0;
+    registry
+        .insert(ActorHandle::new(3, ActorKindTag::Player, 500, 3, far))
+        .await;
+    let (tx_far, mut rx_far) = mpsc::channel::<Vec<u8>>(32);
+    world.register_client(3, ClientHandle::new(3, tx_far)).await;
+    {
+        let zone_arc = world.zone(500).await.unwrap();
+        let mut z = zone_arc.write().await;
+        let mut _out = crate::zone::outbox::AreaOutbox::new();
+        z.core.add_actor(
+            crate::zone::area::StoredActor {
+                actor_id: 3,
+                kind: crate::zone::area::ActorKind::Player,
+                position: common::math::Vector3::new(500.0, 0.0, 500.0),
+                grid: (0, 0),
+                is_alive: true,
+            },
+            &mut _out,
+        );
+    }
+
+    let processor = crate::processor::PacketProcessor {
+        db: db.clone(),
+        world: world.clone(),
+        registry: registry.clone(),
+        lua: Some(lua.clone()),
+    };
+    let handle = registry.get(1).await.unwrap();
+    processor
+        .apply_login_lua_command(&handle, LuaCommand::SendMountAppearance { player_id: 1 })
+        .await;
+
+    // Source got their own copy.
+    assert!(
+        rx_src.try_recv().is_ok(),
+        "source player should receive their own SetCurrentMountChocobo"
+    );
+    // Nearby got a copy via broadcast.
+    assert!(
+        rx_near.try_recv().is_ok(),
+        "nearby player should receive the broadcast",
+    );
+    // Far player did not — outside BROADCAST_RADIUS.
+    assert!(
+        rx_far.try_recv().is_err(),
+        "far player should NOT receive the broadcast",
+    );
+}
+
+/// Level-up `stateForAll` packet fans to a nearby player too — the
+/// `/stateForAll` target is retail's "everyone who can see this actor"
+/// convention.
+#[tokio::test]
+async fn level_up_state_for_all_broadcasts_to_nearby_players() {
+    use crate::actor::Character;
+    use crate::data::ClientHandle;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use crate::zone::zone::Zone;
+    use tokio::sync::mpsc;
+    use std::sync::Arc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    use common::db::ConnCallExt;
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name, restBonus)
+                  VALUES (88, 0, 0, 0, 'Leveller', 0)",
+                [],
+            )?;
+            c.execute(
+                r"INSERT INTO characters_class_levels (characterId) VALUES (88)",
+                [],
+            )?;
+            c.execute(
+                r"INSERT INTO characters_class_exp (characterId) VALUES (88)",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let zone = Zone::new(
+        600,
+        "LevelBroadcast".to_string(),
+        1,
+        String::new(),
+        0,
+        0,
+        0,
+        false,
+        false,
+        false,
+        false,
+        false,
+        None,
+    );
+    world.register_zone(zone).await;
+
+    // Source at origin.
+    let mut source = Character::new(88);
+    source.base.zone_id = 600;
+    source.chara.class = crate::gamedata::CLASSID_GLA as i16;
+    source.chara.level = 1;
+    source.battle_save.skill_level[crate::gamedata::CLASSID_GLA as usize] = 1;
+    registry
+        .insert(ActorHandle::new(88, ActorKindTag::Player, 600, 88, source))
+        .await;
+    let (tx_src, mut rx_src) = mpsc::channel::<Vec<u8>>(32);
+    world.register_client(88, ClientHandle::new(88, tx_src)).await;
+    {
+        let zone_arc = world.zone(600).await.unwrap();
+        let mut z = zone_arc.write().await;
+        let mut _out = crate::zone::outbox::AreaOutbox::new();
+        z.core.add_actor(
+            crate::zone::area::StoredActor {
+                actor_id: 88,
+                kind: crate::zone::area::ActorKind::Player,
+                position: common::math::Vector3::new(0.0, 0.0, 0.0),
+                grid: (0, 0),
+                is_alive: true,
+            },
+            &mut _out,
+        );
+    }
+
+    // Nearby observer.
+    let mut nearby = Character::new(89);
+    nearby.base.zone_id = 600;
+    nearby.base.position_x = 10.0;
+    nearby.base.position_z = 10.0;
+    registry
+        .insert(ActorHandle::new(89, ActorKindTag::Player, 600, 89, nearby))
+        .await;
+    let (tx_near, mut rx_near) = mpsc::channel::<Vec<u8>>(32);
+    world.register_client(89, ClientHandle::new(89, tx_near)).await;
+    {
+        let zone_arc = world.zone(600).await.unwrap();
+        let mut z = zone_arc.write().await;
+        let mut _out = crate::zone::outbox::AreaOutbox::new();
+        z.core.add_actor(
+            crate::zone::area::StoredActor {
+                actor_id: 89,
+                kind: crate::zone::area::ActorKind::Player,
+                position: common::math::Vector3::new(10.0, 0.0, 10.0),
+                grid: (0, 0),
+                is_alive: true,
+            },
+            &mut _out,
+        );
+    }
+
+    // LEVEL_THRESHOLDS[0] = 570 — gain 600 to trigger level up.
+    crate::runtime::quest_apply::apply_add_exp(
+        88,
+        crate::gamedata::CLASSID_GLA,
+        600,
+        &registry,
+        &db,
+        Some(&world),
+    )
+    .await;
+
+    let mut src_frames = 0;
+    while rx_src.try_recv().is_ok() {
+        src_frames += 1;
+    }
+    let mut near_frames = 0;
+    while rx_near.try_recv().is_ok() {
+        near_frames += 1;
+    }
+    assert!(
+        src_frames >= 2,
+        "source should receive battleStateForSelf + stateForAll, got {src_frames}",
+    );
+    assert!(
+        near_frames >= 1,
+        "nearby observer should receive stateForAll broadcast, got {near_frames}",
+    );
+}
+
+// ---------------------------------------------------------------------------
 // NPC Lua coverage — Tier 4 #20
 // ---------------------------------------------------------------------------
 

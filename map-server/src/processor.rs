@@ -1537,15 +1537,32 @@ impl PacketProcessor {
             ),
             _ => return,
         };
-        if let Some(client) = self.world.client(handle.session_id).await
-            && let Ok(base) = common::BasePacket::create_from_subpacket(&pkt, true, false)
-        {
-            client.send_bytes(base.to_bytes()).await;
+        if let Ok(base) = common::BasePacket::create_from_subpacket(&pkt, true, false) {
+            let bytes = base.to_bytes();
+            // Self-emit — the mount owner needs the packet for their
+            // own HUD regardless of whether any neighbours are
+            // around to see them.
+            if let Some(client) = self.world.client(handle.session_id).await {
+                client.send_bytes(bytes.clone()).await;
+            }
+            // Fan to every nearby Player via the shared zone-grid
+            // broadcast (source is auto-excluded by `actors_around`).
+            if let Some(zone) = self.world.zone(handle.zone_id).await {
+                let sent = crate::runtime::broadcast::broadcast_around_actor(
+                    &self.world,
+                    &self.registry,
+                    &zone,
+                    handle.actor_id,
+                    bytes,
+                )
+                .await;
+                tracing::debug!(
+                    player = player_id,
+                    nearby = sent,
+                    "SendMountAppearance broadcast fan-out",
+                );
+            }
         }
-        // NOTE: nearby-player broadcast uses the zone's spatial
-        // broadcast; deferred to the follow-up sprint that
-        // generalises the broadcast helper. For now self-emit is
-        // sufficient for the owning client to render the mount.
     }
 
     async fn apply_set_chocobo_name(&self, player_id: u32, name: String) {

@@ -662,6 +662,7 @@ pub async fn apply_add_exp(
             rested_after,
             &handle,
             world,
+            registry,
         )
         .await;
     }
@@ -710,11 +711,13 @@ pub fn consume_rested_xp(exp: i32, rested: i32) -> (i32, i32) {
 ///   - `charaWork/battleStateForSelf` → `skillPoint[class-1]`,
 ///     `playerWork.restBonusExpRate` (self-only).
 ///   - `charaWork/stateForAll` → `skillLevel[class-1]`,
-///     `state_mainSkillLevel` (broadcast on level-up).
+///     `state_mainSkillLevel` (self + broadcast on level-up).
 ///
-/// For now the packets are self-emitted only; the broadcast-to-nearby
-/// helper is the follow-up sprint's work on a generalised
-/// broadcast pipeline. The owning client sees the packet immediately.
+/// The level-up packets now fan to nearby Players via the shared
+/// `broadcast_around_actor` helper — the `/stateForAll` target name
+/// is retail's convention for "everyone who can see this actor
+/// needs this value", and matches how Meteor's `QueuePackets` fans
+/// `ActorPropertyPacketUtil` output after a level up.
 #[allow(clippy::too_many_arguments)]
 async fn emit_exp_property_updates(
     actor_id: u32,
@@ -726,6 +729,7 @@ async fn emit_exp_property_updates(
     rested_after: i32,
     handle: &ActorHandle,
     world: &WorldManager,
+    registry: &ActorRegistry,
 ) {
     let session_id = handle.session_id;
     if session_id == 0 {
@@ -736,8 +740,9 @@ async fn emit_exp_property_updates(
     };
     let class_slot = class_id.saturating_sub(1);
 
-    // Self-only: skillPoint + restBonusExpRate.
-    let mut self_packets = Vec::new();
+    // Self-only: skillPoint + restBonusExpRate — owner sees their
+    // own XP bar and rested-exp UI widget, nobody else needs to.
+    let mut self_only_packets = Vec::new();
     {
         let mut b = crate::packets::send::actor::ActorPropertyPacketBuilder::new(
             actor_id,
@@ -750,11 +755,22 @@ async fn emit_exp_property_updates(
         if rested_before != rested_after {
             b.add_int("playerWork.restBonusExpRate", rested_after as u32);
         }
-        self_packets.extend(b.done());
+        self_only_packets.extend(b.done());
+    }
+    for sub in &self_only_packets {
+        if let Ok(base) = common::BasePacket::create_from_subpacket(sub, true, false) {
+            client.send_bytes(base.to_bytes()).await;
+        }
     }
 
-    // Level-up: skillLevel + state_mainSkillLevel (broadcast in
-    // retail, self-only here pending the broadcast helper).
+    // Level-up: skillLevel + state_mainSkillLevel. Fan to nearby
+    // players AND self — the owner's client also reads the stateForAll
+    // row, so it needs the same bytes. Source is excluded by
+    // `actors_around` inside the broadcast helper, but we still
+    // send to the owning client directly so the packet isn't
+    // dropped if the broadcast grid happens not to include them
+    // (e.g. first frame after a zone-change before the grid
+    // re-registers the player).
     if levels_gained > 0 {
         let mut b = crate::packets::send::actor::ActorPropertyPacketBuilder::new(
             actor_id,
@@ -765,12 +781,29 @@ async fn emit_exp_property_updates(
             new_level as u16,
         );
         b.add_short("charaWork.parameterSave.state_mainSkillLevel", new_level as u16);
-        self_packets.extend(b.done());
-    }
-
-    for sub in self_packets {
-        if let Ok(base) = common::BasePacket::create_from_subpacket(&sub, true, false) {
-            client.send_bytes(base.to_bytes()).await;
+        let level_packets = b.done();
+        for sub in &level_packets {
+            if let Ok(base) = common::BasePacket::create_from_subpacket(sub, true, false) {
+                client.send_bytes(base.to_bytes()).await;
+            }
+        }
+        // Nearby broadcast — look up the zone by the player's
+        // current zone id, fan each subpacket bytes to every
+        // nearby Player. Silent no-op if the zone isn't live (e.g.
+        // in a pure DB-only integration test).
+        if let Some(zone) = world.zone(handle.zone_id).await {
+            for sub in &level_packets {
+                if let Ok(base) = common::BasePacket::create_from_subpacket(sub, true, false) {
+                    let _ = crate::runtime::broadcast::broadcast_around_actor(
+                        world,
+                        registry,
+                        &zone,
+                        handle.actor_id,
+                        base.to_bytes(),
+                    )
+                    .await;
+                }
+            }
         }
     }
 }
