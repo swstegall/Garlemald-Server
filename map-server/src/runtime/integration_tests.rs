@@ -9173,3 +9173,249 @@ async fn processor_rename_retainer_persists() {
     let after = db.load_retainer(95, 1).await.unwrap().expect("exists");
     assert_eq!(after.name, "Renamed");
 }
+
+// ---------------------------------------------------------------------------
+// Regional-leve hand-in — Tier 3 #13 rewards + Tier 4 #16 C seal accrual
+// ---------------------------------------------------------------------------
+
+/// Helper: install a character row, accept + complete a leve at a
+/// given band, and return the configured LuaEngine + DB handle.
+/// Factors out the substantial setup the four hand-in tests share.
+#[cfg(test)]
+async fn setup_completed_leve(
+    chara_id: u32,
+    leve_id: u32,
+    band: u16,
+    gc_current: u8,
+) -> (
+    Arc<crate::database::Database>,
+    Arc<ActorRegistry>,
+    Arc<crate::lua::LuaEngine>,
+) {
+    use crate::actor::quest::{Quest, quest_actor_id};
+    use crate::leve::{ACCEPTED_FLAG_BIT, COMPLETED_FLAG_BIT};
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use common::db::ConnCallExt;
+
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    let name = format!("HandIn{}", chara_id);
+    db.conn_for_test()
+        .call_db(move |c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (:cid, 0, 0, 0, :nm)",
+                rusqlite::named_params! { ":cid": chara_id, ":nm": name },
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let script_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("scripts/lua");
+    let lua = Arc::new(crate::lua::LuaEngine::new(&script_root));
+    let resolver = db.load_regional_leve_resolver().await.unwrap();
+    lua.catalogs().install_regional_leve_resolver(resolver);
+
+    let registry = Arc::new(ActorRegistry::new());
+    let mut character = crate::actor::Character::new(chara_id);
+    character.chara.gc_current = gc_current;
+    let mut quest = Quest::new(quest_actor_id(leve_id), format!("leve{leve_id}"));
+    quest.set_flag(ACCEPTED_FLAG_BIT);
+    quest.set_flag(COMPLETED_FLAG_BIT);
+    quest.set_counter(1, band);
+    // Pretend objective was filled — set counter0 to a non-zero
+    // value so the Quest looks like a real completed leve.
+    quest.set_counter(0, 100);
+    quest.clear_dirty();
+    character.quest_journal.add(quest);
+    registry
+        .insert(ActorHandle::new(
+            chara_id,
+            ActorKindTag::Player,
+            180,
+            chara_id,
+            character,
+        ))
+        .await;
+    (db, registry, lua)
+}
+
+/// Fieldcraft hand-in: gil + nothing else (no item reward seeded in
+/// scaffold, no seals for fieldcraft).
+#[tokio::test]
+async fn hand_in_fieldcraft_leve_grants_gil_and_clears_journal() {
+    use crate::runtime::quest_apply::apply_regional_leve_hand_in;
+    use common::db::ConnCallExt;
+
+    let (db, registry, lua) = setup_completed_leve(201, 130_001, 0, 0).await;
+
+    let outcome = apply_regional_leve_hand_in(201, 130_001, &registry, &db, Some(&lua)).await;
+    assert!(outcome.applied);
+    assert_eq!(outcome.gil_granted, 200); // seed 048 band-0 gil
+    assert_eq!(outcome.item_granted, None, "scaffold seeds have no item reward");
+    assert_eq!(outcome.seals_granted, None, "fieldcraft never grants seals");
+
+    // Journal cleared.
+    let h = registry.get(201).await.unwrap();
+    let c = h.character.read().await;
+    assert!(c.quest_journal.get(130_001).is_none());
+
+    // DB scenario row cleared too.
+    let rows: i64 = db
+        .conn_for_test()
+        .call_db(|c| {
+            let n: i64 = c.query_row(
+                r"SELECT COUNT(*) FROM characters_quest_scenario WHERE characterId = 201",
+                [],
+                |r| r.get(0),
+            )?;
+            Ok(n)
+        })
+        .await
+        .unwrap();
+    assert_eq!(rows, 0);
+}
+
+/// Battlecraft hand-in for a player who has NOT joined a GC:
+/// gil grants, seals do not.
+#[tokio::test]
+async fn hand_in_battlecraft_unenlisted_grants_gil_no_seals() {
+    use crate::runtime::quest_apply::apply_regional_leve_hand_in;
+
+    let (db, registry, lua) = setup_completed_leve(202, 140_001, 0, 0).await;
+
+    let outcome = apply_regional_leve_hand_in(202, 140_001, &registry, &db, Some(&lua)).await;
+    assert!(outcome.applied);
+    assert_eq!(outcome.gil_granted, 300); // seed 048 battlecraft band-0 gil
+    assert_eq!(outcome.seals_granted, None, "unenlisted battlecraft yields no seals");
+}
+
+/// Battlecraft hand-in for an enlisted player: gil + GC seals.
+#[tokio::test]
+async fn hand_in_battlecraft_enlisted_grants_gil_and_seals() {
+    use crate::actor::gc::GC_MAELSTROM;
+    use crate::runtime::quest_apply::apply_regional_leve_hand_in;
+
+    let (db, registry, lua) =
+        setup_completed_leve(203, 140_001, 0, GC_MAELSTROM).await;
+
+    let outcome = apply_regional_leve_hand_in(203, 140_001, &registry, &db, Some(&lua)).await;
+    assert!(outcome.applied);
+    assert_eq!(outcome.gil_granted, 300);
+    assert_eq!(
+        outcome.seals_granted,
+        Some((GC_MAELSTROM, 150)),
+        "seals = gil / 2 for battlecraft + enlisted (300/2 = 150)",
+    );
+
+    let seals = db.get_seals(203, GC_MAELSTROM).await.unwrap();
+    assert_eq!(seals, 150, "seals DB row reflects the grant");
+}
+
+/// Hand-in on a leve the player has accepted but NOT completed is a
+/// no-op — no rewards, journal untouched.
+#[tokio::test]
+async fn hand_in_incomplete_leve_is_noop() {
+    use crate::actor::quest::{Quest, quest_actor_id};
+    use crate::leve::ACCEPTED_FLAG_BIT;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use crate::runtime::quest_apply::apply_regional_leve_hand_in;
+    use common::db::ConnCallExt;
+
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (204, 0, 0, 0, 'Incomplete')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let script_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("scripts/lua");
+    let lua = Arc::new(crate::lua::LuaEngine::new(&script_root));
+    lua.catalogs()
+        .install_regional_leve_resolver(db.load_regional_leve_resolver().await.unwrap());
+
+    let registry = Arc::new(ActorRegistry::new());
+    let mut character = crate::actor::Character::new(204);
+    let mut quest = Quest::new(quest_actor_id(130_001), "leve130001".to_string());
+    // Accepted but NOT completed — progress is 2/5 at band 0.
+    quest.set_flag(ACCEPTED_FLAG_BIT);
+    quest.set_counter(0, 2);
+    quest.clear_dirty();
+    character.quest_journal.add(quest);
+    registry
+        .insert(ActorHandle::new(204, ActorKindTag::Player, 180, 204, character))
+        .await;
+
+    let outcome = apply_regional_leve_hand_in(204, 130_001, &registry, &db, Some(&lua)).await;
+    assert!(!outcome.applied, "incomplete leve hand-in must no-op");
+    assert_eq!(outcome.gil_granted, 0);
+
+    // Journal entry still present.
+    let h = registry.get(204).await.unwrap();
+    let c = h.character.read().await;
+    assert!(c.quest_journal.get(130_001).is_some());
+}
+
+/// Double hand-in is idempotent — the second call finds no journal
+/// entry and no-ops. Guards against rewards firing twice on a
+/// client-side network retry.
+#[tokio::test]
+async fn hand_in_is_idempotent_across_double_calls() {
+    use crate::runtime::quest_apply::apply_regional_leve_hand_in;
+
+    let (db, registry, lua) = setup_completed_leve(205, 130_001, 0, 0).await;
+
+    let first = apply_regional_leve_hand_in(205, 130_001, &registry, &db, Some(&lua)).await;
+    assert!(first.applied);
+
+    let second = apply_regional_leve_hand_in(205, 130_001, &registry, &db, Some(&lua)).await;
+    assert!(!second.applied, "second hand-in on a cleared leve is a no-op");
+    assert_eq!(second.gil_granted, 0);
+}
+
+/// End-to-end via the runtime drain: `LuaCommand::HandInRegionalLeve`
+/// routes through `apply_runtime_lua_commands` to the helper.
+#[tokio::test]
+async fn runtime_drain_hand_in_regional_leve_routes_correctly() {
+    use crate::lua::LuaCommandKind;
+    use crate::runtime::quest_apply::apply_runtime_lua_commands;
+
+    let (db, registry, lua) = setup_completed_leve(206, 130_001, 0, 0).await;
+    let world = Arc::new(WorldManager::new());
+
+    apply_runtime_lua_commands(
+        vec![LuaCommandKind::HandInRegionalLeve {
+            player_id: 206,
+            leve_id: 130_001,
+        }],
+        &registry,
+        &db,
+        &world,
+        Some(&lua),
+    )
+    .await;
+
+    let h = registry.get(206).await.unwrap();
+    let c = h.character.read().await;
+    assert!(c.quest_journal.get(130_001).is_none(), "leve cleared from journal");
+}

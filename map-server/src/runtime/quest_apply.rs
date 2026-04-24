@@ -190,6 +190,10 @@ pub async fn apply_runtime_lua_command(
             apply_add_item_to_retainer(retainer_id, item_package, item_id, quantity, db).await;
             true
         }
+        LC::HandInRegionalLeve { player_id, leve_id } => {
+            let _ = apply_regional_leve_hand_in(player_id, leve_id, registry, db, lua).await;
+            true
+        }
         LC::QuestOnNotice { player_id, quest_id } => {
             apply_quest_on_notice(player_id, quest_id, registry, db, world, lua).await;
             true
@@ -1510,6 +1514,172 @@ pub async fn apply_add_item_to_retainer(
             );
         }
     }
+}
+
+/// Outcome of a [`apply_regional_leve_hand_in`] call. Carried back
+/// so callers (and tests) can assert exactly which side effects
+/// fired without re-reading the DB for each assertion.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct LeveHandInOutcome {
+    /// `true` when the leve was in the journal + marked completed
+    /// and the reward pipeline ran. `false` on any no-op path
+    /// (leve not in journal, not completed, catalog row missing,
+    /// etc.).
+    pub applied: bool,
+    pub gil_granted: i32,
+    /// `(item_catalog_id, quantity)` when a reward item was
+    /// granted. `None` when the band's `reward_item_id == 0` or
+    /// the grant path was skipped.
+    pub item_granted: Option<(u32, i32)>,
+    /// `(gc, seals)` granted for an enlisted battlecraft hand-in.
+    /// `None` for fieldcraft, unenlisted battlecraft, or any
+    /// no-op path.
+    pub seals_granted: Option<(u8, i32)>,
+}
+
+/// Tier 3 #13 reward payout + Tier 4 #16 C seal accrual.
+/// Drain-side helper for the levemete hand-in flow. Semantics:
+///
+///  * the leve must be present in the player's journal AND have
+///    `COMPLETED_FLAG_BIT` set (i.e. a prior `advance_progress`
+///    call must already have saturated the objective) — otherwise
+///    no rewards fire and the journal is left untouched;
+///  * reward_gil for the active band is granted via
+///    [`Database::add_gil`];
+///  * if `reward_item_id[band] != 0`, that quantity of the item
+///    lands in `characters_inventory` via
+///    [`Database::add_harvest_item`];
+///  * for battlecraft leves, if the player is enlisted (`gc_current
+///    != 0`), Storm / Serpent / Flame seals are granted to their
+///    current GC via [`Database::add_seals`] at a rate of
+///    `reward_gil / 2` (placeholder — retail had dedicated per-leve
+///    seal-reward columns mozk-tabetai doesn't publish). Fieldcraft
+///    never grants seals.
+///  * on success the leve is removed from the journal (in-memory +
+///    DB) so the slot frees up for another levemete pickup.
+///
+/// Intended call sites: the future levemete-hand-in RPC
+/// (`handInLeve` / `completeLeve` `callClientFunction`) and the
+/// `LC::HandInRegionalLeve` runtime drain.
+///
+/// Short-circuits silently when the `RegionalLeveResolver` isn't
+/// installed — catalogs hand out `None` and the no-op outcome lets
+/// the caller distinguish "catalog missing" from "reward paid".
+pub async fn apply_regional_leve_hand_in(
+    player_id: u32,
+    leve_id: u32,
+    registry: &ActorRegistry,
+    db: &Database,
+    lua: Option<&Arc<LuaEngine>>,
+) -> LeveHandInOutcome {
+    let mut outcome = LeveHandInOutcome::default();
+    let Some(lua) = lua else {
+        return outcome;
+    };
+    let Some(resolver) = lua.catalogs().regional_leve_resolver() else {
+        return outcome;
+    };
+    let Some(data) = resolver.by_id(leve_id).cloned() else {
+        return outcome;
+    };
+    let Some(handle) = registry.get(player_id).await else {
+        return outcome;
+    };
+
+    // Snapshot everything we need + clear the journal slot, under
+    // one write lock. If the leve isn't completed we bail without
+    // touching the journal.
+    let (band, gc_current, was_removed) = {
+        let mut c = handle.character.write().await;
+        let (is_completed, band) = {
+            let Some(quest) = c.quest_journal.get(leve_id) else {
+                return outcome;
+            };
+            // Read the same counter/flag positions
+            // `RegionalLeveView` does, without constructing a
+            // mutable view (we don't mutate through it here).
+            let completed = quest.get_flag(crate::leve::COMPLETED_FLAG_BIT);
+            let difficulty = quest.get_counter(1).min(3) as usize;
+            (completed, difficulty)
+        };
+        if !is_completed {
+            return outcome;
+        }
+        let gc = c.chara.gc_current;
+        let removed = c.quest_journal.remove(leve_id).is_some();
+        (band, gc, removed)
+    };
+    if !was_removed {
+        return outcome;
+    }
+
+    // DB side: drop the scenario row so a fresh accept of the same
+    // leve id starts from zero progress + flags.
+    if let Err(e) = db.remove_quest(player_id, leve_id).await {
+        tracing::warn!(
+            player = player_id,
+            leve = leve_id,
+            err = %e,
+            "LeveHandIn: DB scenario clear failed (journal was already updated in-memory)",
+        );
+    }
+
+    // Rewards. Apply in the order retail's `handInLeve` ticks them
+    // so the client's message log reads gil → item → seals.
+    let gil = data.reward_gil.get(band).copied().unwrap_or(0);
+    if gil > 0 {
+        apply_add_gil(player_id, gil, db).await;
+        outcome.gil_granted = gil;
+    }
+    let item_id = data.reward_item_id.get(band).copied().unwrap_or(0);
+    let item_qty = data.reward_quantity.get(band).copied().unwrap_or(0);
+    if item_id > 0 && item_qty > 0 {
+        if let Err(e) = db
+            .add_harvest_item(player_id, item_id as u32, item_qty, 1)
+            .await
+        {
+            tracing::warn!(
+                player = player_id,
+                leve = leve_id,
+                item = item_id,
+                err = %e,
+                "LeveHandIn: reward-item grant failed",
+            );
+        } else {
+            outcome.item_granted = Some((item_id as u32, item_qty));
+        }
+    }
+    // Seal accrual — battlecraft + enlisted only. Tier 4 #16 C.
+    if data.leve_type == crate::leve::LeveType::Battlecraft
+        && crate::actor::gc::is_valid_gc(gc_current)
+    {
+        let seals = gil / 2;
+        if seals > 0 {
+            match db.add_seals(player_id, gc_current, seals).await {
+                Ok(_) => {
+                    outcome.seals_granted = Some((gc_current, seals));
+                }
+                Err(e) => tracing::warn!(
+                    player = player_id,
+                    leve = leve_id,
+                    gc = gc_current,
+                    err = %e,
+                    "LeveHandIn: seal accrual failed",
+                ),
+            }
+        }
+    }
+    outcome.applied = true;
+    tracing::info!(
+        player = player_id,
+        leve = leve_id,
+        band,
+        gil = outcome.gil_granted,
+        item = ?outcome.item_granted,
+        seals = ?outcome.seals_granted,
+        "LeveHandIn applied",
+    );
+    outcome
 }
 
 pub async fn apply_add_gil(actor_id: u32, amount: i32, db: &Database) {

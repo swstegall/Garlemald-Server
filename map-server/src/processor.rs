@@ -1208,6 +1208,16 @@ impl PacketProcessor {
                 )
                 .await;
             }
+            LC::HandInRegionalLeve { player_id, leve_id } => {
+                let _ = crate::runtime::quest_apply::apply_regional_leve_hand_in(
+                    player_id,
+                    leve_id,
+                    &self.registry,
+                    &self.db,
+                    self.lua.as_ref(),
+                )
+                .await;
+            }
             LC::SendMessage {
                 actor_id,
                 message_type,

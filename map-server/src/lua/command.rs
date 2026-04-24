@@ -122,6 +122,16 @@ pub enum LuaCommand {
         item_id: u32,
         quantity: i32,
     },
+    /// `levemete:HandInRegionalLeve(player, leve_id)` — the drain-side
+    /// trigger for Tier 3 #13 reward payout + Tier 4 #16 C seal
+    /// accrual. Routes through `apply_regional_leve_hand_in` which
+    /// grants gil / reward-item / (for battlecraft + enlisted
+    /// players) GC seals, then clears the leve from the journal.
+    /// Silently no-ops when the leve isn't marked completed.
+    HandInRegionalLeve {
+        player_id: u32,
+        leve_id: u32,
+    },
     RemoveItem {
         actor_id: u32,
         item_package: u16,
