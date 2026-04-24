@@ -1246,6 +1246,30 @@ impl PacketProcessor {
                 )
                 .await;
             }
+            LC::TryStatus {
+                source_actor_id,
+                target_actor_id,
+                status_id,
+                duration_s,
+                magnitude,
+                tick_ms,
+                tier,
+            } => {
+                let _ = crate::runtime::quest_apply::apply_try_status(
+                    source_actor_id,
+                    target_actor_id,
+                    status_id,
+                    duration_s,
+                    magnitude,
+                    tick_ms,
+                    tier,
+                    &self.registry,
+                    &self.db,
+                    &self.world,
+                    self.lua.as_ref(),
+                )
+                .await;
+            }
             LC::SendMessage {
                 actor_id,
                 message_type,

@@ -216,6 +216,31 @@ pub async fn apply_runtime_lua_command(
             .await;
             true
         }
+        LC::TryStatus {
+            source_actor_id,
+            target_actor_id,
+            status_id,
+            duration_s,
+            magnitude,
+            tick_ms,
+            tier,
+        } => {
+            let _ = apply_try_status(
+                source_actor_id,
+                target_actor_id,
+                status_id,
+                duration_s,
+                magnitude,
+                tick_ms,
+                tier,
+                registry,
+                db,
+                world,
+                lua,
+            )
+            .await;
+            true
+        }
         LC::QuestOnNotice { player_id, quest_id } => {
             apply_quest_on_notice(player_id, quest_id, registry, db, world, lua).await;
             true
@@ -1536,6 +1561,112 @@ pub async fn apply_add_item_to_retainer(
             );
         }
     }
+}
+
+/// Tier 1 #2 C — Lua-driven status-effect application. Parallels
+/// the internal `add_status_effect` path the Rust dispatcher uses
+/// during combat resolution, but gated behind a dedicated
+/// [`LuaCommand::TryStatus`] variant so Lua scripts can apply
+/// buffs / debuffs / DoTs without going through the full
+/// battle-event pipeline.
+///
+/// Behaviour matches Meteor's `action.TryStatus(action, target,
+/// status, tier?, magnitude?, duration?)` shape: build a fresh
+/// [`StatusEffect`] on the target, insert into its
+/// [`StatusEffectContainer`] (which honours the existing overwrite
+/// rules + 20-effect cap), and drain the resulting
+/// [`StatusOutbox`] through the shared
+/// [`crate::runtime::dispatcher::dispatch_status_event`] so the
+/// gain packet + `onGain` Lua hook fire just as they would for a
+/// Rust-internal apply.
+///
+/// Returns `true` when the effect landed (fresh or successful
+/// overwrite), `false` on any no-op path (missing target, full
+/// table, overwrite-rejected). Short-circuits silently when `lua`
+/// is `None` (test harness without a Catalogs clone) since the
+/// dispatcher requires a real `Arc<Catalogs>`.
+///
+/// [`StatusEffect`]: crate::status::StatusEffect
+/// [`StatusEffectContainer`]: crate::status::StatusEffectContainer
+/// [`StatusOutbox`]: crate::status::StatusOutbox
+pub async fn apply_try_status(
+    source_actor_id: u32,
+    target_actor_id: u32,
+    status_id: u32,
+    duration_s: u32,
+    magnitude: f64,
+    tick_ms: u32,
+    tier: u8,
+    registry: &ActorRegistry,
+    db: &Database,
+    world: &WorldManager,
+    lua: Option<&Arc<LuaEngine>>,
+) -> bool {
+    let Some(target) = registry.get(target_actor_id).await else {
+        tracing::debug!(
+            target = target_actor_id,
+            status = status_id,
+            "TryStatus: target not in registry",
+        );
+        return false;
+    };
+    // Status effects use ms-precision for tick accounting. Convert
+    // the seconds-precision `unix_timestamp()` helper into ms; this
+    // drifts by at most 999 ms vs a true ms clock, which is well
+    // below the finest granularity any ticking effect uses
+    // (typically 3 s).
+    let now_ms = (common::utils::unix_timestamp() as u64).saturating_mul(1000);
+    let mut outbox = crate::status::StatusOutbox::new();
+    let landed = {
+        let mut c = target.character.write().await;
+        let effect = crate::status::StatusEffect::new(
+            target_actor_id,
+            status_id,
+            magnitude,
+            tick_ms,
+            duration_s,
+            tier,
+            now_ms,
+        );
+        c.status_effects.add_status_effect(
+            effect,
+            source_actor_id,
+            now_ms,
+            crate::status::DEFAULT_GAIN_TEXT_ID,
+            &mut outbox,
+        )
+    };
+    if !landed {
+        tracing::debug!(
+            source = source_actor_id,
+            target = target_actor_id,
+            status = status_id,
+            "TryStatus: effect did not land (overwrite-rejected or table full)",
+        );
+        return false;
+    }
+    // Drain the outbox through the status dispatcher so packets /
+    // DB save / on-gain Lua hooks fire. Dispatcher needs a
+    // Catalogs Arc — reuse the LuaEngine's when available; fall
+    // back to a fresh empty Catalogs for the test-harness case.
+    let catalogs = lua
+        .map(|e| e.catalogs().clone())
+        .unwrap_or_else(|| std::sync::Arc::new(crate::lua::Catalogs::new()));
+    for event in outbox.drain() {
+        crate::runtime::dispatcher::dispatch_status_event(
+            &event, registry, world, db, &catalogs,
+        )
+        .await;
+    }
+    tracing::info!(
+        source = source_actor_id,
+        target = target_actor_id,
+        status = status_id,
+        duration_s,
+        magnitude,
+        "TryStatus applied",
+    );
+    true
 }
 
 /// Tier 4 #14 D — bazaar purchase drain helper. Thin wrapper over

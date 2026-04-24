@@ -175,6 +175,47 @@ pub fn install_globals(
         globals.set("GetGatherResolver", f)?;
     }
 
+    // `action` table — Tier 1 #2 C. Narrow Lua-driven combat
+    // surface. Today only exposes `TryStatus` (buff/debuff/DoT
+    // application); `DoAction` / full damage-resolution from Lua
+    // remains deferred — retail scripts rarely custom-roll damage,
+    // and the Rust battle dispatcher already owns the hot path.
+    {
+        let queue_ts = queue.clone();
+        let action_tbl = lua.create_table()?;
+        // action.TryStatus(sourceId, targetId, statusId, durationS,
+        //                  magnitude?, tickMs?, tier?)
+        // magnitude defaults to 0, tickMs to 0 (no DoT), tier to 0.
+        let try_status = lua.create_function(
+            move |_,
+                  (source_id, target_id, status_id, duration_s, magnitude, tick_ms, tier): (
+                u32,
+                u32,
+                u32,
+                u32,
+                Option<f64>,
+                Option<u32>,
+                Option<u8>,
+            )| {
+                super::command::CommandQueue::push(
+                    &queue_ts,
+                    super::command::LuaCommand::TryStatus {
+                        source_actor_id: source_id,
+                        target_actor_id: target_id,
+                        status_id,
+                        duration_s,
+                        magnitude: magnitude.unwrap_or(0.0),
+                        tick_ms: tick_ms.unwrap_or(0),
+                        tier: tier.unwrap_or(0),
+                    },
+                );
+                Ok(())
+            },
+        )?;
+        action_tbl.set("TryStatus", try_status)?;
+        globals.set("action", action_tbl)?;
+    }
+
     // GetRegionalLeveResolver() → LuaRegionalLeveResolver | nil.
     // Tier 3 #13 Lua-binding pass — exposes the fieldcraft +
     // battlecraft catalog to levemete NPC scripts so they can

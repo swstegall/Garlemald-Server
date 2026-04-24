@@ -152,6 +152,29 @@ pub enum LuaCommand {
         retainer_id: u32,
         server_item_id: u64,
     },
+    /// `action.TryStatus(source, target, statusId, ...)` — Lua-driven
+    /// status-effect application. Tier 1 #2 C. Builds a
+    /// [`StatusEffect`] from the given params and applies it via the
+    /// target's [`StatusEffectContainer`], draining the resulting
+    /// [`StatusOutbox`] so the gain packet + onGain hook fire end-to-
+    /// end. Silently no-ops on missing target or full effect table.
+    ///
+    /// Matches Meteor's inline-constructor shape `new StatusEffect(
+    /// ownerId, statusId, magnitude, tickMs, duration, tier)` so
+    /// ported scripts can move over without rewiring.
+    ///
+    /// [`StatusEffect`]: crate::status::StatusEffect
+    /// [`StatusEffectContainer`]: crate::status::StatusEffectContainer
+    /// [`StatusOutbox`]: crate::status::StatusOutbox
+    TryStatus {
+        source_actor_id: u32,
+        target_actor_id: u32,
+        status_id: u32,
+        duration_s: u32,
+        magnitude: f64,
+        tick_ms: u32,
+        tier: u8,
+    },
     RemoveItem {
         actor_id: u32,
         item_package: u16,

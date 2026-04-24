@@ -10239,3 +10239,227 @@ async fn lua_player_buy_from_retainer_emits_command() {
 
     let _ = std::fs::remove_file(&probe);
 }
+
+// ---------------------------------------------------------------------------
+// Lua action bindings — Tier 1 #2 C (narrow MVP: TryStatus only)
+// ---------------------------------------------------------------------------
+
+/// `apply_try_status` installs a fresh status effect on the
+/// target, which the target's `StatusEffectContainer` then
+/// carries in its `effects` map until expiry.
+#[tokio::test]
+async fn apply_try_status_installs_effect_on_target() {
+    use crate::runtime::quest_apply::apply_try_status;
+
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let character = crate::actor::Character::new(701);
+    registry
+        .insert(ActorHandle::new(
+            701,
+            ActorKindTag::Player,
+            100,
+            701,
+            character,
+        ))
+        .await;
+
+    let landed =
+        apply_try_status(0, 701, 253_000, /*dur*/ 30, /*mag*/ 1.0, 0, 0, &registry, &db, &world, None)
+            .await;
+    assert!(landed);
+
+    let h = registry.get(701).await.unwrap();
+    let c = h.character.read().await;
+    assert!(
+        c.status_effects.get(253_000).is_some(),
+        "effect persists on target container",
+    );
+}
+
+/// TryStatus on a missing target returns false cleanly — catches
+/// a client-side typo on `status_target_id`.
+#[tokio::test]
+async fn apply_try_status_no_ops_on_missing_target() {
+    use crate::runtime::quest_apply::apply_try_status;
+
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+
+    let landed =
+        apply_try_status(0, 999, 253_000, 30, 1.0, 0, 0, &registry, &db, &world, None).await;
+    assert!(!landed);
+}
+
+/// Applying the same effect id twice with the default
+/// `StatusEffectOverwrite::None` rule: second call returns false
+/// (overwrite-rejected), container still carries the first
+/// instance.
+#[tokio::test]
+async fn apply_try_status_respects_overwrite_rule() {
+    use crate::runtime::quest_apply::apply_try_status;
+
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    registry
+        .insert(ActorHandle::new(
+            702,
+            ActorKindTag::Player,
+            100,
+            702,
+            crate::actor::Character::new(702),
+        ))
+        .await;
+
+    // First call lands.
+    let first =
+        apply_try_status(0, 702, 253_001, 30, 1.0, 0, 0, &registry, &db, &world, None).await;
+    assert!(first);
+    // Second call on the same id — default Overwrite::None refuses.
+    let second =
+        apply_try_status(0, 702, 253_001, 60, 2.0, 0, 0, &registry, &db, &world, None).await;
+    assert!(!second, "second apply rejected by Overwrite::None");
+
+    let h = registry.get(702).await.unwrap();
+    let c = h.character.read().await;
+    let e = c.status_effects.get(253_001).expect("first effect");
+    assert_eq!(e.duration, 30, "original duration preserved");
+    assert_eq!(e.magnitude, 1.0);
+}
+
+/// End-to-end via the runtime drain: `LuaCommand::TryStatus`
+/// routes through `apply_runtime_lua_commands` to the helper.
+#[tokio::test]
+async fn runtime_drain_try_status_routes_correctly() {
+    use crate::lua::LuaCommandKind;
+    use crate::runtime::quest_apply::apply_runtime_lua_commands;
+
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    registry
+        .insert(ActorHandle::new(
+            703,
+            ActorKindTag::Player,
+            100,
+            703,
+            crate::actor::Character::new(703),
+        ))
+        .await;
+
+    apply_runtime_lua_commands(
+        vec![LuaCommandKind::TryStatus {
+            source_actor_id: 0,
+            target_actor_id: 703,
+            status_id: 253_002,
+            duration_s: 20,
+            magnitude: 2.5,
+            tick_ms: 3000,
+            tier: 1,
+        }],
+        &registry,
+        &db,
+        &world,
+        None,
+    )
+    .await;
+
+    let h = registry.get(703).await.unwrap();
+    let c = h.character.read().await;
+    let e = c.status_effects.get(253_002).expect("effect on target");
+    assert_eq!(e.duration, 20);
+    assert_eq!(e.magnitude, 2.5);
+    assert_eq!(e.tick_ms, 3000);
+    assert_eq!(e.tier, 1);
+}
+
+/// `action.TryStatus(...)` Lua global pushes a `TryStatus`
+/// command onto the queue with the right fields. Defaults for
+/// optional args: magnitude=0, tick_ms=0, tier=0.
+#[tokio::test]
+async fn lua_action_try_status_emits_command() {
+    use crate::lua::command::CommandQueue;
+    use crate::lua::{LuaCommandKind, LuaEngine};
+
+    let script_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("scripts/lua");
+    let engine = LuaEngine::new(&script_root);
+    let probe = script_root.join("commands/__probe_action_try_status.lua");
+    std::fs::write(&probe, "").unwrap();
+    let (lua, queue) = engine.load_script(&probe).expect("load probe");
+
+    lua.load(
+        r#"
+        action.TryStatus(1, 2, 253000, 30, 1.5, 3000, 2)
+        action.TryStatus(0, 3, 253001, 60)
+        "#,
+    )
+    .exec()
+    .unwrap();
+
+    let cmds = CommandQueue::drain(&queue);
+    assert_eq!(cmds.len(), 2);
+    match &cmds[0] {
+        LuaCommandKind::TryStatus {
+            source_actor_id,
+            target_actor_id,
+            status_id,
+            duration_s,
+            magnitude,
+            tick_ms,
+            tier,
+        } => {
+            assert_eq!(*source_actor_id, 1);
+            assert_eq!(*target_actor_id, 2);
+            assert_eq!(*status_id, 253_000);
+            assert_eq!(*duration_s, 30);
+            assert_eq!(*magnitude, 1.5);
+            assert_eq!(*tick_ms, 3000);
+            assert_eq!(*tier, 2);
+        }
+        other => panic!("expected TryStatus, got {other:?}"),
+    }
+    match &cmds[1] {
+        LuaCommandKind::TryStatus {
+            source_actor_id,
+            target_actor_id,
+            status_id,
+            duration_s,
+            magnitude,
+            tick_ms,
+            tier,
+        } => {
+            assert_eq!(*source_actor_id, 0);
+            assert_eq!(*target_actor_id, 3);
+            assert_eq!(*status_id, 253_001);
+            assert_eq!(*duration_s, 60);
+            assert_eq!(*magnitude, 0.0, "magnitude defaults to 0");
+            assert_eq!(*tick_ms, 0, "tick_ms defaults to 0");
+            assert_eq!(*tier, 0, "tier defaults to 0");
+        }
+        other => panic!("expected TryStatus, got {other:?}"),
+    }
+
+    let _ = std::fs::remove_file(&probe);
+}
