@@ -469,6 +469,22 @@ pub enum SeamlessResult {
     None,
 }
 
+/// Metadata carried alongside a live gather-node actor. Keyed by
+/// `(zone_id, unique_id)` on [`WorldManager::gather_node_metadata`]
+/// so `DummyCommand.lua` can resolve "the node the player clicked"
+/// back to its template id + harvest action without baking those
+/// fields onto the generic [`SpawnLocation`] / [`ActorClass`] shape.
+///
+/// The key mirrors how the spawner threads `unique_id` through from
+/// seed → live actor (see `Npc::new(… seed.unique_id …)` in
+/// `npc/spawner.rs`), so lookups from a targeted actor's
+/// `(zone_id, unique_id)` resolve in one map read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GatherNodeMetadata {
+    pub harvest_node_id: u32,
+    pub harvest_type: u32,
+}
+
 /// Top-level zone + session registry.
 pub struct WorldManager {
     zones: RwLock<HashMap<u32, Arc<RwLock<Zone>>>>,
@@ -478,6 +494,13 @@ pub struct WorldManager {
 
     /// Seamless boundary boxes keyed by region id.
     seamless_boundaries: RwLock<HashMap<u32, Vec<SeamlessBoundary>>>,
+
+    /// Per-gather-spawn metadata keyed by `(zone_id, unique_id)`. Lets
+    /// runtime code resolve a targeted actor (via its own
+    /// `unique_id`) to the `(harvest_node_id, harvest_type)` pair it
+    /// was seeded with without plumbing those fields through the
+    /// generic spawn pipeline.
+    gather_node_metadata: RwLock<HashMap<(u32, String), GatherNodeMetadata>>,
 
     /// Player state indexed by session id — zone membership, player
     /// position snapshot, etc. Updated by movement handlers.
@@ -494,9 +517,27 @@ impl WorldManager {
             zones: RwLock::new(HashMap::new()),
             zone_entrances: RwLock::new(HashMap::new()),
             seamless_boundaries: RwLock::new(HashMap::new()),
+            gather_node_metadata: RwLock::new(HashMap::new()),
             sessions: RwLock::new(HashMap::new()),
             clients: RwLock::new(HashMap::new()),
         }
+    }
+
+    /// Resolve a gather node's `(harvest_node_id, harvest_type)` from
+    /// the live actor's `(zone_id, unique_id)` key. Returns `None` if
+    /// the targeted actor is not a gather-node spawn (or gather spawns
+    /// weren't loaded at boot).
+    pub async fn gather_metadata(&self, zone_id: u32, unique_id: &str) -> Option<GatherNodeMetadata> {
+        self.gather_node_metadata
+            .read()
+            .await
+            .get(&(zone_id, unique_id.to_string()))
+            .copied()
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn gather_metadata_count(&self) -> usize {
+        self.gather_node_metadata.read().await.len()
     }
 
     // -----------------------------------------------------------------
@@ -563,6 +604,61 @@ impl WorldManager {
             attached,
             missing_zone,
             "npc spawn locations loaded"
+        );
+        // 6. Gather-node spawns. Treated as regular NPC seeds so the
+        // existing phase-3 spawner materialises them with no extra
+        // code path; the `(harvest_node_id, harvest_type)` pair is
+        // stashed on `WorldManager` keyed by `(zone_id, unique_id)`
+        // for DummyCommand.lua to look up later.
+        let gather_rows = db.load_gather_node_spawns().await?;
+        let gather_total = gather_rows.len();
+        let mut gather_attached = 0usize;
+        let mut gather_missing_zone = 0usize;
+        let mut gather_invalid_type = 0usize;
+        {
+            let mut meta = self.gather_node_metadata.write().await;
+            meta.clear();
+            for row in gather_rows {
+                if !crate::gathering::is_valid_harvest_type(row.harvest_type) {
+                    gather_invalid_type += 1;
+                    continue;
+                }
+                let Some(zone_arc) = self.zone(row.zone_id).await else {
+                    gather_missing_zone += 1;
+                    continue;
+                };
+                let seed = crate::zone::SpawnLocation::new(
+                    row.actor_class_id,
+                    row.unique_id.clone(),
+                    row.zone_id,
+                    row.private_area_name.clone(),
+                    row.private_area_level.max(0) as u32,
+                    row.position.0,
+                    row.position.1,
+                    row.position.2,
+                    row.rotation,
+                    0,
+                    0,
+                );
+                let mut z = zone_arc.write().await;
+                if z.add_spawn_location(seed).is_ok() {
+                    meta.insert(
+                        (row.zone_id, row.unique_id),
+                        GatherNodeMetadata {
+                            harvest_node_id: row.harvest_node_id,
+                            harvest_type: row.harvest_type,
+                        },
+                    );
+                    gather_attached += 1;
+                }
+            }
+        }
+        tracing::info!(
+            fetched = gather_total,
+            attached = gather_attached,
+            missing_zone = gather_missing_zone,
+            invalid_harvest_type = gather_invalid_type,
+            "gather-node spawns loaded"
         );
         tracing::info!("world boot-load complete");
         Ok(())

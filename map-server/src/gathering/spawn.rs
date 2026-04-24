@@ -23,15 +23,35 @@
 
 #![allow(dead_code)]
 
-/// `!mine` / Quarry — ore, clay, salt outcrops.
+/// `!mine` — ore outcrops. Retail action id 20001.
 pub const HARVEST_TYPE_MINE: u32 = 22002;
-/// `!log` — tree stumps, bushes.
+/// `!log` — tree stumps, bushes. Retail action id 20002.
 pub const HARVEST_TYPE_LOG: u32 = 22003;
-/// `!fish` — schools of fish, squid beds, coral.
+/// `!fish` — schools of fish, squid beds, coral. Retail action id 20003.
 pub const HARVEST_TYPE_FISH: u32 = 22004;
+/// `!quarry` — stone / dye / pigment deposits. Retail action id 20005.
+pub const HARVEST_TYPE_QUARRY: u32 = 22005;
+/// `!harvest` (botany) — grass, flowers, small animals. Retail action
+/// id 20006.
+pub const HARVEST_TYPE_HARVEST: u32 = 22006;
+/// `!spearfish` — shallow-water spear fishing for shellfish / small
+/// fish. Retail action id 20007.
+pub const HARVEST_TYPE_SPEARFISH: u32 = 22007;
 
+/// Numeric ids garlemald stores internally for the six 1.x harvest
+/// actions. Matches Meteor's `DummyCommand.lua` convention; the
+/// `load_gather_node_spawns` loader rejects any other value so the
+/// seed table can't wander into unknown territory.
 pub fn is_valid_harvest_type(ty: u32) -> bool {
-    matches!(ty, HARVEST_TYPE_MINE | HARVEST_TYPE_LOG | HARVEST_TYPE_FISH)
+    matches!(
+        ty,
+        HARVEST_TYPE_MINE
+            | HARVEST_TYPE_LOG
+            | HARVEST_TYPE_FISH
+            | HARVEST_TYPE_QUARRY
+            | HARVEST_TYPE_HARVEST
+            | HARVEST_TYPE_SPEARFISH
+    )
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -58,12 +78,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn harvest_type_validation_accepts_three_commands() {
+    fn harvest_type_validation_accepts_all_six_commands() {
         assert!(is_valid_harvest_type(HARVEST_TYPE_MINE));
         assert!(is_valid_harvest_type(HARVEST_TYPE_LOG));
         assert!(is_valid_harvest_type(HARVEST_TYPE_FISH));
+        assert!(is_valid_harvest_type(HARVEST_TYPE_QUARRY));
+        assert!(is_valid_harvest_type(HARVEST_TYPE_HARVEST));
+        assert!(is_valid_harvest_type(HARVEST_TYPE_SPEARFISH));
         assert!(!is_valid_harvest_type(0));
         assert!(!is_valid_harvest_type(22001));
-        assert!(!is_valid_harvest_type(22005));
+        assert!(!is_valid_harvest_type(22008));
     }
 }

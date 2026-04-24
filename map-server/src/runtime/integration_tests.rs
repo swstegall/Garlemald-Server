@@ -2972,6 +2972,119 @@ async fn runtime_drain_add_item_persists_to_characters_inventory() {
     assert_eq!(qty, 7);
 }
 
+/// Mozk-tabetai 1.x reseed — seeds 044 + 045 now carry the full
+/// catalog. Row counts: 2 tutorial + 114 mozk = 116 nodes,
+/// 8 tutorial + 531 mozk = 539 items. Exact match keeps the reseed
+/// accidentally-dropping-rows regression guard tight.
+#[tokio::test]
+async fn gather_catalog_reseed_includes_mozk_rows() {
+    let db = crate::database::Database::open(tempdb())
+        .await
+        .expect("db stub");
+    let resolver = db
+        .load_gather_resolver()
+        .await
+        .expect("gather catalog load");
+    assert_eq!(resolver.num_nodes(), 116, "2 tutorial + 114 mozk-sourced nodes");
+    assert_eq!(resolver.num_items(), 539, "8 tutorial + 531 mozk-sourced items");
+}
+
+/// Representative mozk row. Node 2000 is "Mine @ Bearded Rock" — the
+/// first row in the mozk gather table, with three items (Tin Ore,
+/// Brimstone, Alumen) sorted by retail catalog id. Aim levels map to
+/// slider positions via `(level + 5) * 10`, so Tin Ore (level 1) →
+/// aim 60 → slot 7, Brimstone (level 0) → 50 → slot 6, Alumen
+/// (level -1) → 40 → slot 5.
+#[tokio::test]
+async fn gather_resolver_resolves_mozk_sourced_node() {
+    let db = crate::database::Database::open(tempdb())
+        .await
+        .expect("db stub");
+    let resolver = db
+        .load_gather_resolver()
+        .await
+        .expect("gather catalog load");
+
+    let node = resolver.get_node(2000).expect("mozk node 2000");
+    assert_eq!(node.num_items(), 3);
+
+    let tin = resolver.get_item(5000).expect("Tin Ore");
+    assert_eq!(tin.item_catalog_id, 10_001_001);
+    assert_eq!(tin.aim, 60);
+
+    let brimstone = resolver.get_item(5001).expect("Brimstone");
+    assert_eq!(brimstone.item_catalog_id, 10_009_101);
+    assert_eq!(brimstone.aim, 50);
+
+    let alumen = resolver.get_item(5002).expect("Alumen");
+    assert_eq!(alumen.item_catalog_id, 10_009_111);
+    assert_eq!(alumen.aim, 40);
+
+    // Pivot: (60/10)+1 = 7, (50/10)+1 = 6, (40/10)+1 = 5 (1-indexed).
+    // `slots` is 0-indexed so subtract one.
+    let slots = resolver
+        .build_aim_slots(2000)
+        .expect("aim slots for mozk node");
+    assert_eq!(slots[6].item_key, 5000, "Tin Ore at slot 7");
+    assert_eq!(slots[5].item_key, 5001, "Brimstone at slot 6");
+    assert_eq!(slots[4].item_key, 5002, "Alumen at slot 5");
+}
+
+/// 12C end-to-end: `WorldManager::load_from_database` pulls
+/// `server_gather_node_spawns`, converts each row to a
+/// `SpawnLocation` attached to its target zone, and populates
+/// `gather_metadata` with the `(harvest_node_id, harvest_type)` pair
+/// keyed by `(zone_id, unique_id)`. The seed ships two tutorial
+/// mining outcrops in zone 180, so both paths should be exercised.
+#[tokio::test]
+async fn gather_spawns_attach_to_zones_and_metadata() {
+    let db = crate::database::Database::open(tempdb())
+        .await
+        .expect("db stub");
+    let world = Arc::new(WorldManager::new());
+    world
+        .load_from_database(&db, "127.0.0.1", 1989)
+        .await
+        .expect("world boot-load");
+
+    // Both seeded spawns should have been attached to zone 180.
+    let zone_180 = world.zone(180).await.expect("zone 180 present");
+    let seeds_in_180 = {
+        let z = zone_180.read().await;
+        z.spawn_locations
+            .iter()
+            .filter(|s| s.unique_id.starts_with("mining_outcrop_central_thanalan_"))
+            .count()
+    };
+    assert_eq!(seeds_in_180, 2, "both tutorial gather spawns seeded into zone 180");
+
+    // Metadata map should carry a `(harvest_node_id, harvest_type)`
+    // pair for each spawn.
+    assert_eq!(world.gather_metadata_count().await, 2);
+    let m1 = world
+        .gather_metadata(180, "mining_outcrop_central_thanalan_1")
+        .await
+        .expect("metadata for spawn 1");
+    assert_eq!(m1.harvest_node_id, 1001);
+    assert_eq!(m1.harvest_type, crate::gathering::HARVEST_TYPE_MINE);
+
+    let m2 = world
+        .gather_metadata(180, "mining_outcrop_central_thanalan_2")
+        .await
+        .expect("metadata for spawn 2");
+    assert_eq!(m2.harvest_node_id, 1002);
+    assert_eq!(m2.harvest_type, crate::gathering::HARVEST_TYPE_MINE);
+
+    // Unknown keys return None.
+    assert!(world.gather_metadata(180, "does_not_exist").await.is_none());
+    assert!(
+        world
+            .gather_metadata(999, "mining_outcrop_central_thanalan_1")
+            .await
+            .is_none()
+    );
+}
+
 /// Parse-all smoke: the rewritten `DummyCommand.lua` still loads
 /// without a syntax error. Guards against future accidental
 /// reintroduction of the lowercase `getItemPackage` / `addItem` /

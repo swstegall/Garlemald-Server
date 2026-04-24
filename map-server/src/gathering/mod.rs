@@ -51,4 +51,7 @@ pub use spawn::{GatherNodeSpawn, HARVEST_TYPE_MINE};
 #[allow(unused_imports)]
 pub use node::{AIM_SLOTS, AimSlot};
 #[allow(unused_imports)]
-pub use spawn::{HARVEST_TYPE_FISH, HARVEST_TYPE_LOG, is_valid_harvest_type};
+pub use spawn::{
+    HARVEST_TYPE_FISH, HARVEST_TYPE_HARVEST, HARVEST_TYPE_LOG, HARVEST_TYPE_QUARRY,
+    HARVEST_TYPE_SPEARFISH, is_valid_harvest_type,
+};
