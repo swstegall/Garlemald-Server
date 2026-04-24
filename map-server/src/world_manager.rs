@@ -1035,7 +1035,13 @@ impl WorldManager {
                 common::luaparam::LuaParam::False,
             ]
         };
-        script_bind_params.extend((0..20).map(|_| common::luaparam::LuaParam::UInt32(0)));
+        // Timers slice — Meteor's `int[20] timers = new int[20]` passes
+        // signed Int32 zeroes via `LuaUtils.CreateLuaParamList`'s array
+        // expansion, not UInt32. Garlemald was emitting `UInt32(0)` which
+        // produces LuaParam type byte 0x1 instead of the expected 0x0;
+        // the client's Player_work script reads the timer list by type
+        // to distinguish it from other fields.
+        script_bind_params.extend((0..20).map(|_| common::luaparam::LuaParam::Int32(0)));
         script_bind_params.push(common::luaparam::LuaParam::True);
 
         // Every subpacket crosses the world-server proxy; its reader

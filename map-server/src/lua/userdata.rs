@@ -2302,6 +2302,12 @@ impl UserData for LuaQuestHandle {
         methods.add_method("GetQuestId", |_, this, _: ()| Ok(this.quest_id));
         methods.add_method("HasQuest", |_, this, _: ()| Ok(this.has_quest));
         methods.add_method("GetSequence", |_, this, _: ()| Ok(this.sequence));
+        // Lowercase alias — MoonSharp (Meteor) is case-insensitive; scripts
+        // ported from the quest_system branch mix `quest:getSequence()`
+        // and `quest:GetSequence()`. mlua is case-sensitive, so we add
+        // a direct lowercase alias rather than force every script to
+        // normalise.
+        methods.add_method("getSequence", |_, this, _: ()| Ok(this.sequence));
 
         // `quest:OnNotice(player)` — `AfterQuestWarpDirector` (and
         // any other director that resumes a quest mid-flow) calls this

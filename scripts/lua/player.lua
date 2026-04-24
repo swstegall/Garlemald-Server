@@ -26,16 +26,25 @@ function onBeginLogin(player)
 		end
 	end
 
-	--For Opening. Set Director and reset position incase d/c.
+	--For Opening. Snap canonical position on first-login / reconnect.
 	--`pendingOpenerQuest` covers the first-login path (the AddQuest
 	--above hasn't applied against the snapshot yet); `HasQuest` covers
 	--the reconnect path after the AddQuest has already been persisted.
+	--
+	--OpeningDirector setup is temporarily disabled pending
+	--client-side cutscene debug. Server-side plumbing is correct —
+	--director registers in zone, onEventStarted runs in a coroutine,
+	--RunEventFunction 0x0130 reaches the client — but the client's
+	--own cutscene-handling path stays at "Now Loading…" after receiving
+	--the packet. Uncomment when the client-side gap is closed (the
+	--code path below matches Meteor's `ioncannon/quest_system` branch
+	--exactly, so the remaining gap is in the client, not the server).
 	if ((player:HasQuest(110001) == true or pendingOpenerQuest == 110001) and player:GetZoneID() == 193) then
-		director = player:GetZone():CreateDirector("OpeningDirector", false);
-		player:AddDirector(director);
-		director:StartDirector(true);
-		player:SetLoginDirector(director);
-		player:KickEvent(director, "noticeEvent", true);
+		-- director = player:GetZone():CreateDirector("OpeningDirector", false);
+		-- player:AddDirector(director);
+		-- director:StartDirector(true);
+		-- player:SetLoginDirector(director);
+		-- player:KickEvent(director, "noticeEvent", true);
 
 		player.positionX = 0.016;
 		player.positionY = 10.35;
@@ -46,11 +55,11 @@ function onBeginLogin(player)
 			player:GetQuest(110001):ClearQuestFlags();
 		end
 	elseif ((player:HasQuest(110005) == true or pendingOpenerQuest == 110005) and player:GetZoneID() == 166) then
-		director = player:GetZone():CreateDirector("OpeningDirector", false);
-		player:AddDirector(director);
-		director:StartDirector(false);
-		player:SetLoginDirector(director);
-		player:KickEvent(director, "noticeEvent", true);
+		-- director = player:GetZone():CreateDirector("OpeningDirector", false);
+		-- player:AddDirector(director);
+		-- director:StartDirector(false);
+		-- player:SetLoginDirector(director);
+		-- player:KickEvent(director, "noticeEvent", true);
 
 		player.positionX = 369.5434;
 		player.positionY = 4.21;
@@ -61,11 +70,11 @@ function onBeginLogin(player)
 			player:GetQuest(110005):ClearQuestFlags();
 		end
 	elseif ((player:HasQuest(110009) == true or pendingOpenerQuest == 110009) and player:GetZoneID() == 184) then
-		director = player:GetZone():CreateDirector("OpeningDirector", false);
-		player:AddDirector(director);
-		director:StartDirector(false);
-		player:SetLoginDirector(director);
-		player:KickEvent(director, "noticeEvent", true);
+		-- director = player:GetZone():CreateDirector("OpeningDirector", false);
+		-- player:AddDirector(director);
+		-- director:StartDirector(false);
+		-- player:SetLoginDirector(director);
+		-- player:KickEvent(director, "noticeEvent", true);
 
 		player.positionX = 5.364327;
 		player.positionY = 196.0;

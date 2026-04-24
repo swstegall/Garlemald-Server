@@ -437,9 +437,37 @@ impl LuaEngine {
             mv.push_back(v);
         }
 
-        let call = f.call::<Value>(mv);
+        // Run inside a coroutine so the hook body (man0l0.onNotice,
+        // etc.) can `callClientFunction(...)` which yields on
+        // `_WAIT_EVENT`. Mirrors Meteor's `CallLuaFunction` pattern
+        // (`Map Server/Lua/LuaEngine.cs:519 CreateCoroutine + Resume`).
+        // If the hook yields on a known wait directive, park it in
+        // the scheduler — the next `EventUpdate` / tick / signal
+        // resumes it.
+        let thread = match lua.create_thread(f) {
+            Ok(t) => t,
+            Err(e) => {
+                return PartialLuaCallResult {
+                    commands: CommandQueue::drain(&queue),
+                    error: Some(anyhow::anyhow!("create_thread({hook_name}): {e}")),
+                };
+            }
+        };
+        let resume_result = thread.resume::<Value>(mv);
         let commands = CommandQueue::drain(&queue);
-        let error = call.err().map(|e| anyhow::anyhow!("{hook_name}: {e}"));
+        let (value, error) = match resume_result {
+            Ok(v) => (v, None),
+            Err(e) => (Value::Nil, Some(anyhow::anyhow!("{hook_name}: {e}"))),
+        };
+        if matches!(thread.status(), mlua::ThreadStatus::Resumable) {
+            let directive = scheduler::classify_yield(&value);
+            let parked = ParkedCoroutine {
+                lua: lua.clone(),
+                thread,
+                queue,
+            };
+            self.repark(parked, directive);
+        }
         PartialLuaCallResult { commands, error }
     }
 

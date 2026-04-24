@@ -99,6 +99,7 @@ impl CommandProcessor {
             "setgcrank" => self.handle_set_gc_rank(&args).await,
             "addgcseals" => self.handle_add_gc_seals(&args).await,
             "warp" => self.handle_warp(&args).await,
+            "talkto" => self.handle_talkto(&args).await,
             other => format!("unknown command: {other} (args={:?})", args.rest()),
         };
         Ok(response)
@@ -118,7 +119,8 @@ impl CommandProcessor {
          rentchocobo <minutes> <name>, dismount <name>, \
          joingc <gc> <name>, setgcrank <gc> <rank> <name>, \
          addgcseals <gc> <amount> <name>, \
-         warp <zone> <x> <y> <z> <name>"
+         warp <zone> <x> <y> <z> <name>, \
+         talkto <actor_class_id> <name>"
             .into()
     }
 
@@ -781,6 +783,97 @@ impl CommandProcessor {
             actor_id: handle.actor_id,
             zone,
         }
+    }
+
+    /// `talkto <actor_class_id> <name>` — synthesise an EventStart from
+    /// the server side. Resolves the named player + an NPC with the
+    /// given `actor_class_id` in the player's zone, then drives the
+    /// same `chara.event_session.start_event(...)` → `EventOutbox` →
+    /// `dispatch_event_event` pipeline that `handle_event_start` runs
+    /// when the client sends a real EventStart packet. Exercises the
+    /// full quest `onTalk` dispatch + NPC-script `onEventStarted` flow
+    /// without the client needing to physically walk to the NPC +
+    /// press the interact key — which has proven unreliable to drive
+    /// through ffxiv-actor's synthesised CGEvents.
+    async fn handle_talkto(&self, args: &Args<'_>) -> String {
+        let actor_class_id = match args.parse_u32(0) {
+            Ok(v) => v,
+            Err(e) => return format!("usage: talkto <actor_class_id> <name> — {e}"),
+        };
+        let Some(name) = args.rest_joined(1) else {
+            return "usage: talkto <actor_class_id> <name>".into();
+        };
+        let Some(chara_id) = self.lookup_character_id(&name).await else {
+            return format!("unknown character: {name}");
+        };
+        let Some(player_handle) = self.registry.get(chara_id).await else {
+            return format!("{name} is not online");
+        };
+        let zone_id = player_handle.zone_id;
+
+        // Find the NPC by its actor_class_id in the same zone.
+        let mut npc_handle = None;
+        let actors = self.registry.actors_in_zone(zone_id).await;
+        for h in actors {
+            let matches = {
+                let c = h.character.read().await;
+                c.chara.actor_class_id == actor_class_id
+            };
+            if matches {
+                npc_handle = Some(h);
+                break;
+            }
+        }
+        let Some(npc_handle) = npc_handle else {
+            return format!(
+                "no NPC with actor_class_id={actor_class_id} in zone {zone_id}",
+            );
+        };
+        let owner_actor_id = npc_handle.actor_id;
+        let npc_name = {
+            let c = npc_handle.character.read().await;
+            c.base.actor_name.clone()
+        };
+
+        // Start the event + drain the outbox. Same shape as
+        // `handle_event_start` in processor.rs.
+        let mut outbox = crate::event::outbox::EventOutbox::new();
+        {
+            let mut chara = player_handle.character.write().await;
+            chara.event_session.start_event(
+                player_handle.actor_id,
+                owner_actor_id,
+                "talkDefault".to_string(),
+                0, // event_type
+                Vec::new(),
+                &mut outbox,
+            );
+        }
+        for e in outbox.drain() {
+            crate::event::dispatcher::dispatch_event_event(
+                &e,
+                &self.registry,
+                &self.world,
+                &self.db,
+                Some(&self.lua),
+            )
+            .await;
+        }
+
+        let active_quests: Vec<u32> = {
+            let c = player_handle.character.read().await;
+            c.quest_journal
+                .slots
+                .iter()
+                .flatten()
+                .map(|q| q.quest_id())
+                .collect()
+        };
+
+        format!(
+            "talkto fired event on player {chara_id} → NPC {owner_actor_id} (class {actor_class_id}, \"{npc_name}\"), {} active quest(s) in journal",
+            active_quests.len()
+        )
     }
 }
 

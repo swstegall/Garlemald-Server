@@ -1,27 +1,29 @@
-require ("global")
-require ("quests/man/man0l0")
-require ("quests/man/man0g0")
-require ("quests/man/man0u0")
+require("global")
 
 function init()
 	return "/Director/OpeningDirector";
 end
 
-function onEventStarted(player, actor, triggerName)		
-	
+-- Port of the `ioncannon/quest_system` branch of Meteor — OpeningDirector's
+-- `onEventStarted` delegates straight to the quest's `onNotice` hook, which
+-- is the one that actually fires the opening cutscene + EndEvent. Keeping
+-- the cutscene logic inside the quest script (not the director) keeps each
+-- quest self-contained and lets the director survive without knowing any
+-- per-quest flow.
+function onEventStarted(player, actor, eventTrigger, eventName)
 	if (player:HasQuest(110001) == true) then
 		quest = player:GetQuest(110001);
-		callClientFunction(player, "delegateEvent", player, quest, "processTtrNomal001withHQ", nil, nil, nil);		
+		quest:OnNotice(player);
 	elseif (player:HasQuest(110005) == true) then
 		quest = player:GetQuest(110005);
-		callClientFunction(player, "delegateEvent", player, quest, "processTtrNomal001withHQ", nil, nil, nil);
+		quest:OnNotice(player);
 	elseif (player:HasQuest(110009) == true) then
 		quest = player:GetQuest(110009);
-		callClientFunction(player, "delegateEvent", player, quest, "processTtrNomal001withHQ", nil, nil, nil);
+		quest:OnNotice(player);
 	end
-	
-	player:EndEvent();
-	
+end
+
+function main()
 end
 
 function onUpdate()
