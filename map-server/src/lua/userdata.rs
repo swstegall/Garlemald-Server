@@ -36,6 +36,7 @@ use mlua::{AnyUserData, UserData, UserDataFields, UserDataMethods, Value};
 use super::command::{CommandQueue, LuaCommand};
 use crate::crafting::{Recipe, RecipeResolver};
 use crate::gathering::{GatherNode, GatherNodeItem, GatherResolver};
+use crate::leve::{LeveType, RegionalLeveData, RegionalLeveResolver};
 
 fn push(queue: &Arc<Mutex<CommandQueue>>, cmd: LuaCommand) {
     CommandQueue::push(queue, cmd);
@@ -630,6 +631,23 @@ impl UserData for LuaPlayer {
                 LuaCommand::DismissMyRetainer {
                     player_id: this.snapshot.actor_id,
                     retainer_id,
+                },
+            );
+            Ok(())
+        });
+        // `player:HandInRegionalLeve(leveId)` — drain-side trigger
+        // for the levemete hand-in flow. Pays `reward_gil` +
+        // optional `reward_item_id x reward_quantity`; for an
+        // enlisted player on a battlecraft leve, also accrues GC
+        // seals at `reward_gil / 2`. Silently no-ops when the leve
+        // isn't completed or isn't in the journal. Tier 3 #13
+        // reward-payout + Tier 4 #16 C seal accrual.
+        methods.add_method("HandInRegionalLeve", |_, this, leve_id: u32| {
+            push(
+                &this.queue,
+                LuaCommand::HandInRegionalLeve {
+                    player_id: this.snapshot.actor_id,
+                    leve_id,
                 },
             );
             Ok(())
@@ -2851,3 +2869,136 @@ impl UserData for LuaGatherResolver {
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// LuaRegionalLeve / LuaRegionalLeveResolver — fieldcraft + battlecraft
+// leve catalog (Tier 3 #13 Lua bindings).
+//
+// Dot-accessed fields keep the Rust-side snake_case mapped to
+// camelCase (`leveType`, `recommendedClass`, `recommendedLevel`) so
+// scripts read the same names a ported Meteor script would expect
+// when we eventually land the levemete-side NPC flow.
+//
+// The per-band arrays (`objectiveTargetId`, `objectiveQuantity`,
+// `recommendedLevel`, `rewardItemId`, `rewardQuantity`, `rewardGil`)
+// are surfaced through per-band getter methods (`:GetObjectiveTargetId(band)`)
+// rather than auto-flattened into tables — leves read one band at a
+// time based on the quest's active `currentDifficulty`, so the
+// getter shape is the common case and sidesteps building four
+// tables that scripts would immediately index into anyway.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct LuaRegionalLeve {
+    pub inner: RegionalLeveData,
+}
+
+impl UserData for LuaRegionalLeve {
+    fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
+        fields.add_field_method_get("id", |_, this| Ok(this.inner.id));
+        fields.add_field_method_get("leveType", |_, this| {
+            Ok(this.inner.leve_type as u8 as u32)
+        });
+        fields.add_field_method_get("isFieldcraft", |_, this| {
+            Ok(this.inner.leve_type == LeveType::Fieldcraft)
+        });
+        fields.add_field_method_get("isBattlecraft", |_, this| {
+            Ok(this.inner.leve_type == LeveType::Battlecraft)
+        });
+        fields.add_field_method_get("plateId", |_, this| Ok(this.inner.plate_id));
+        fields.add_field_method_get("borderId", |_, this| Ok(this.inner.border_id));
+        fields.add_field_method_get("recommendedClass", |_, this| {
+            Ok(this.inner.recommended_class)
+        });
+        fields.add_field_method_get("issuingLocation", |_, this| {
+            Ok(this.inner.issuing_location)
+        });
+        fields.add_field_method_get("leveLocation", |_, this| {
+            Ok(this.inner.leve_location)
+        });
+        fields.add_field_method_get("deliveryDisplayName", |_, this| {
+            Ok(this.inner.delivery_display_name)
+        });
+        fields.add_field_method_get("region", |_, this| Ok(this.inner.region));
+    }
+
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        // Per-band getters. `band` is 0..=3; out-of-range values
+        // saturate to 3 to match `RegionalLeveData::clamp_difficulty`
+        // so scripts that pass a raw player-picked band index
+        // can't panic.
+        methods.add_method("GetObjectiveTargetId", |_, this, band: i32| {
+            Ok(this.inner.objective_target_id
+                [RegionalLeveData::clamp_difficulty(band)])
+        });
+        methods.add_method("GetObjectiveQuantity", |_, this, band: i32| {
+            Ok(this.inner.objective_quantity
+                [RegionalLeveData::clamp_difficulty(band)])
+        });
+        methods.add_method("GetRecommendedLevel", |_, this, band: i32| {
+            Ok(this.inner.recommended_level
+                [RegionalLeveData::clamp_difficulty(band)])
+        });
+        methods.add_method("GetRewardItemId", |_, this, band: i32| {
+            Ok(this.inner.reward_item_id
+                [RegionalLeveData::clamp_difficulty(band)])
+        });
+        methods.add_method("GetRewardQuantity", |_, this, band: i32| {
+            Ok(this.inner.reward_quantity
+                [RegionalLeveData::clamp_difficulty(band)])
+        });
+        methods.add_method("GetRewardGil", |_, this, band: i32| {
+            Ok(this.inner.reward_gil
+                [RegionalLeveData::clamp_difficulty(band)])
+        });
+    }
+}
+
+#[derive(Clone)]
+pub struct LuaRegionalLeveResolver {
+    pub resolver: Arc<RegionalLeveResolver>,
+}
+
+impl UserData for LuaRegionalLeveResolver {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("GetLeve", |_, this, id: u32| {
+            Ok(this
+                .resolver
+                .by_id(id)
+                .cloned()
+                .map(|inner| LuaRegionalLeve { inner }))
+        });
+        methods.add_method("GetNumLeves", |_, this, _: ()| {
+            Ok(this.resolver.num_leves() as u32)
+        });
+        methods.add_method("GetNumFieldcraft", |_, this, _: ()| {
+            Ok(this.resolver.num_fieldcraft() as u32)
+        });
+        methods.add_method("GetNumBattlecraft", |_, this, _: ()| {
+            Ok(this.resolver.num_battlecraft() as u32)
+        });
+
+        // Reverse lookups mirroring the Rust-side secondary indexes.
+        // Return Lua array tables (1-indexed) for parity with
+        // `GetRecipeFromMats` / `RecipesToItemIdTable`.
+        methods.add_method("FieldcraftLevesForItem", |lua, this, item_id: u32| {
+            let ids = this.resolver.fieldcraft_leves_for_item(item_id);
+            let tbl = lua.create_table()?;
+            for (i, id) in ids.iter().enumerate() {
+                tbl.raw_set(i as i64 + 1, *id)?;
+            }
+            Ok(tbl)
+        });
+        methods.add_method(
+            "BattlecraftLevesForClass",
+            |lua, this, actor_class_id: u32| {
+                let ids = this.resolver.battlecraft_leves_for_class(actor_class_id);
+                let tbl = lua.create_table()?;
+                for (i, id) in ids.iter().enumerate() {
+                    tbl.raw_set(i as i64 + 1, *id)?;
+                }
+                Ok(tbl)
+            },
+        );
+    }
+}

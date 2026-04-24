@@ -9419,3 +9419,156 @@ async fn runtime_drain_hand_in_regional_leve_routes_correctly() {
     let c = h.character.read().await;
     assert!(c.quest_journal.get(130_001).is_none(), "leve cleared from journal");
 }
+
+// ---------------------------------------------------------------------------
+// Regional-leve Lua bindings — Tier 3 #13 binding-surface wrap-up
+// ---------------------------------------------------------------------------
+
+/// `GetRegionalLeveResolver()` returns a userdata whose `GetLeve`,
+/// `GetNumLeves`, `GetNumFieldcraft`, `GetNumBattlecraft`, and
+/// `FieldcraftLevesForItem` / `BattlecraftLevesForClass` methods
+/// surface the seeded catalog to Lua.
+#[tokio::test]
+async fn lua_get_regional_leve_resolver_surfaces_catalog() {
+    use crate::lua::LuaEngine;
+
+    let db = crate::database::Database::open(tempdb())
+        .await
+        .expect("db stub");
+    let resolver = db.load_regional_leve_resolver().await.unwrap();
+
+    let script_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .join("scripts/lua");
+    let engine = LuaEngine::new(&script_root);
+    engine.catalogs().install_regional_leve_resolver(resolver);
+
+    let probe = script_root.join("commands/__probe_leve_resolver.lua");
+    std::fs::write(&probe, "").unwrap();
+    let (lua, _queue) = engine.load_script(&probe).expect("load probe");
+
+    let (
+        total,
+        fc,
+        bc,
+        leve_id,
+        is_fieldcraft,
+        obj_item_b0,
+        obj_qty_b0,
+        reward_gil_b2,
+        fc_for_copper,
+        bc_for_drake,
+    ): (
+        i64, i64, i64, i64, bool, i64, i64, i64, i64, i64,
+    ) = lua
+        .load(
+            r#"
+            local r = GetRegionalLeveResolver()
+            -- A fieldcraft leve — 130_003 (Thanalan Copper Ore, seed 048).
+            local leve = r:GetLeve(130003)
+            local fc_list = r:FieldcraftLevesForItem(10001006)
+            local bc_list = r:BattlecraftLevesForClass(5000091)
+            return r:GetNumLeves(),
+                   r:GetNumFieldcraft(),
+                   r:GetNumBattlecraft(),
+                   leve.id,
+                   leve.isFieldcraft,
+                   leve:GetObjectiveTargetId(0),
+                   leve:GetObjectiveQuantity(0),
+                   leve:GetRewardGil(2),
+                   fc_list[1] or 0,
+                   bc_list[1] or 0
+        "#,
+        )
+        .eval()
+        .unwrap();
+
+    assert_eq!(total, 6, "6 seed rows (3 fc + 3 bc)");
+    assert_eq!(fc, 3);
+    assert_eq!(bc, 3);
+    assert_eq!(leve_id, 130_003);
+    assert!(is_fieldcraft, "leve 130003 is a fieldcraft row");
+    assert_eq!(obj_item_b0, 10_001_006, "band 0 targets Copper Ore");
+    assert_eq!(obj_qty_b0, 5);
+    assert_eq!(reward_gil_b2, 1200, "band 2 reward gil");
+    assert_eq!(fc_for_copper, 130_003);
+    assert_eq!(bc_for_drake, 140_003);
+
+    let _ = std::fs::remove_file(&probe);
+}
+
+/// `GetRegionalLeveResolver()` returns nil when the catalog isn't
+/// installed — scripts should handle the missing-catalog path
+/// gracefully (matching the `GetGatherResolver` convention).
+#[tokio::test]
+async fn lua_get_regional_leve_resolver_returns_nil_without_catalog() {
+    use crate::lua::LuaEngine;
+
+    let script_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("scripts/lua");
+    let engine = LuaEngine::new(&script_root);
+    // Intentionally do NOT install a resolver.
+
+    let probe = script_root.join("commands/__probe_leve_resolver_nil.lua");
+    std::fs::write(&probe, "").unwrap();
+    let (lua, _queue) = engine.load_script(&probe).expect("load probe");
+
+    let is_nil: bool = lua
+        .load("return GetRegionalLeveResolver() == nil")
+        .eval()
+        .unwrap();
+    assert!(is_nil);
+
+    let _ = std::fs::remove_file(&probe);
+}
+
+/// `player:HandInRegionalLeve(leveId)` emits the `HandInRegionalLeve`
+/// LuaCommand variant with the calling player's id. Mirrors the
+/// shape of the `lua_retainer_add_item_emits_retainer_command_variant`
+/// test for the retainer inventory binding.
+#[tokio::test]
+async fn lua_player_hand_in_regional_leve_emits_command() {
+    use crate::lua::command::CommandQueue;
+    use crate::lua::userdata::{LuaPlayer, PlayerSnapshot};
+    use crate::lua::{LuaCommandKind, LuaEngine};
+
+    let script_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("scripts/lua");
+    let engine = LuaEngine::new(&script_root);
+    let probe = script_root.join("commands/__probe_leve_handin.lua");
+    std::fs::write(&probe, "").unwrap();
+    let (lua, _queue) = engine.load_script(&probe).expect("load probe");
+
+    let queue = CommandQueue::new();
+    let snapshot = PlayerSnapshot {
+        actor_id: 321,
+        name: "Handin".to_string(),
+        ..Default::default()
+    };
+    let player = LuaPlayer {
+        snapshot,
+        queue: queue.clone(),
+    };
+    lua.globals().set("player", player).unwrap();
+
+    lua.load(r#"player:HandInRegionalLeve(130003)"#)
+        .exec()
+        .unwrap();
+
+    let cmds = CommandQueue::drain(&queue);
+    assert_eq!(cmds.len(), 1);
+    match &cmds[0] {
+        LuaCommandKind::HandInRegionalLeve { player_id, leve_id } => {
+            assert_eq!(*player_id, 321);
+            assert_eq!(*leve_id, 130_003);
+        }
+        other => panic!("expected HandInRegionalLeve, got {other:?}"),
+    }
+
+    let _ = std::fs::remove_file(&probe);
+}

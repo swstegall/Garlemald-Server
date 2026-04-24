@@ -30,7 +30,9 @@ use mlua::{Function, Lua, MultiValue, Value};
 
 use super::catalogs::Catalogs;
 use super::command::CommandQueue;
-use super::userdata::{LuaGatherResolver, LuaItemData, LuaRecipeResolver, LuaWorldManager};
+use super::userdata::{
+    LuaGatherResolver, LuaItemData, LuaRecipeResolver, LuaRegionalLeveResolver, LuaWorldManager,
+};
 
 /// Install the global functions referenced by `scripts/global.lua`.
 pub fn install_globals(
@@ -171,6 +173,23 @@ pub fn install_globals(
                 .map(|resolver| LuaGatherResolver { resolver }))
         })?;
         globals.set("GetGatherResolver", f)?;
+    }
+
+    // GetRegionalLeveResolver() → LuaRegionalLeveResolver | nil.
+    // Tier 3 #13 Lua-binding pass — exposes the fieldcraft +
+    // battlecraft catalog to levemete NPC scripts so they can
+    // render the accept-menu UI + emit `HandInRegionalLeve` on a
+    // completed leve. Nil when the catalog failed to load; scripts
+    // should treat that the same way a missing `GetGatherResolver`
+    // is treated (no leves available, dialog gracefully empty).
+    {
+        let cats = catalogs.clone();
+        let f = lua.create_function(move |_, _: ()| {
+            Ok(cats
+                .regional_leve_resolver()
+                .map(|resolver| LuaRegionalLeveResolver { resolver }))
+        })?;
+        globals.set("GetRegionalLeveResolver", f)?;
     }
 
     // `print` → tracing::debug (so scripts don't spam stdout).
