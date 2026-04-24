@@ -143,6 +143,15 @@ pub enum LuaCommand {
         leve_id: u32,
         difficulty: u8,
     },
+    /// `player:BuyFromRetainer(retainerId, serverItemId)` — drain
+    /// trigger for a bazaar purchase. Transactional: debits buyer
+    /// gil, credits retainer owner, moves the item stack into the
+    /// buyer's NORMAL bag, and removes the listing. Tier 4 #14 D.
+    PurchaseRetainerBazaarItem {
+        buyer_id: u32,
+        retainer_id: u32,
+        server_item_id: u64,
+    },
     RemoveItem {
         actor_id: u32,
         item_package: u16,

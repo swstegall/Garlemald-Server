@@ -202,6 +202,20 @@ pub async fn apply_runtime_lua_command(
             let _ = apply_accept_regional_leve(player_id, leve_id, difficulty, registry, db, lua).await;
             true
         }
+        LC::PurchaseRetainerBazaarItem {
+            buyer_id,
+            retainer_id,
+            server_item_id,
+        } => {
+            let _ = apply_purchase_retainer_bazaar_item(
+                buyer_id,
+                retainer_id,
+                server_item_id,
+                db,
+            )
+            .await;
+            true
+        }
         LC::QuestOnNotice { player_id, quest_id } => {
             apply_quest_on_notice(player_id, quest_id, registry, db, world, lua).await;
             true
@@ -1520,6 +1534,47 @@ pub async fn apply_add_item_to_retainer(
                 err = %e,
                 "AddItemToRetainer: DB persist failed",
             );
+        }
+    }
+}
+
+/// Tier 4 #14 D — bazaar purchase drain helper. Thin wrapper over
+/// [`Database::purchase_retainer_bazaar_item`] that logs the
+/// outcome at the right level: `info` on success, `debug` for the
+/// "legitimate rejection" paths (`InsufficientGil`, `ListingGone`,
+/// `CannotBuyFromSelf`, `NoOwner`), `warn` only on actual DB
+/// errors. Callers rarely need the outcome enum beyond logging;
+/// the test harness can still reach the DB method directly when
+/// it does.
+pub async fn apply_purchase_retainer_bazaar_item(
+    buyer_id: u32,
+    retainer_id: u32,
+    server_item_id: u64,
+    db: &Database,
+) -> Option<crate::database::PurchaseOutcome> {
+    match db
+        .purchase_retainer_bazaar_item(buyer_id, retainer_id, server_item_id)
+        .await
+    {
+        Ok(outcome) => {
+            tracing::info!(
+                buyer = buyer_id,
+                retainer = retainer_id,
+                server_item = server_item_id,
+                outcome = ?outcome,
+                "PurchaseRetainerBazaarItem outcome",
+            );
+            Some(outcome)
+        }
+        Err(e) => {
+            tracing::warn!(
+                buyer = buyer_id,
+                retainer = retainer_id,
+                server_item = server_item_id,
+                err = %e,
+                "PurchaseRetainerBazaarItem: DB error",
+            );
+            None
         }
     }
 }

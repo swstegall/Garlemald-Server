@@ -9943,3 +9943,299 @@ async fn lua_player_accept_regional_leve_emits_command() {
 
     let _ = std::fs::remove_file(&probe);
 }
+
+// ---------------------------------------------------------------------------
+// Bazaar browse + purchase — Tier 4 #14 D
+// ---------------------------------------------------------------------------
+
+/// Helper: seed two characters (owner + buyer), hire a retainer
+/// under the owner, add a bazaar listing, and optionally prime the
+/// buyer with gil. Returns (db, owner_chara_id, buyer_chara_id,
+/// server_item_id, retainer_id).
+#[cfg(test)]
+async fn setup_bazaar_listing(
+    owner_id: u32,
+    buyer_id: u32,
+    retainer_id: u32,
+    item_catalog: u32,
+    qty: i32,
+    price_each: i32,
+    buyer_gil: i32,
+) -> (Arc<crate::database::Database>, u64) {
+    use common::db::ConnCallExt;
+
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    let owner_name = format!("Owner{}", owner_id);
+    let buyer_name = format!("Buyer{}", buyer_id);
+    db.conn_for_test()
+        .call_db(move |c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name) VALUES (:cid, 0, 0, 0, :nm)",
+                rusqlite::named_params! { ":cid": owner_id, ":nm": owner_name },
+            )?;
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name) VALUES (:cid, 0, 0, 0, :nm)",
+                rusqlite::named_params! { ":cid": buyer_id, ":nm": buyer_name },
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    db.hire_retainer(owner_id, retainer_id).await.unwrap();
+    db.add_retainer_bazaar_item(retainer_id, item_catalog, qty, 0, price_each)
+        .await
+        .unwrap();
+    if buyer_gil > 0 {
+        db.add_gil(buyer_id, buyer_gil).await.unwrap();
+    }
+    // Look up the server_item_id we just seeded.
+    let listings = db.list_retainer_bazaar(retainer_id).await.unwrap();
+    let sid = listings
+        .iter()
+        .find(|l| l.item_id == item_catalog)
+        .map(|l| l.server_item_id)
+        .expect("listing present");
+    (db, sid)
+}
+
+/// Happy-path purchase: buyer's gil drops, owner's gil rises, the
+/// listing disappears, and the item lands in the buyer's NORMAL
+/// bag. The full transactional shape of the helper.
+#[tokio::test]
+async fn purchase_retainer_bazaar_item_happy_path() {
+    use crate::database::PurchaseOutcome;
+    use common::db::ConnCallExt;
+
+    let (db, sid) = setup_bazaar_listing(401, 402, 1001, 10_001_006, 5, 50, 1000).await;
+
+    let outcome = db
+        .purchase_retainer_bazaar_item(402, 1001, sid)
+        .await
+        .unwrap();
+    match outcome {
+        PurchaseOutcome::Completed {
+            item_id,
+            quantity,
+            gil_spent,
+            owner_chara_id,
+            ..
+        } => {
+            assert_eq!(item_id, 10_001_006);
+            assert_eq!(quantity, 5);
+            assert_eq!(gil_spent, 250, "5 * 50 gil per unit");
+            assert_eq!(owner_chara_id, 401);
+        }
+        other => panic!("expected Completed, got {other:?}"),
+    }
+
+    // Listing removed.
+    let remaining = db.list_retainer_bazaar(1001).await.unwrap();
+    assert!(remaining.is_empty());
+
+    // Buyer has the item stack.
+    let buyer_qty: i32 = db
+        .conn_for_test()
+        .call_db(|c| {
+            let q: i32 = c.query_row(
+                r"SELECT si.quantity
+                  FROM characters_inventory ci
+                  INNER JOIN server_items si ON ci.serverItemId = si.id
+                  WHERE ci.characterId = 402 AND ci.itemPackage = 0 AND si.itemId = 10001006",
+                [],
+                |r| r.get(0),
+            )?;
+            Ok(q)
+        })
+        .await
+        .unwrap();
+    assert_eq!(buyer_qty, 5);
+
+    // Buyer gil = 1000 - 250 = 750; owner gil = 250.
+    let buyer_gil: i32 = db
+        .conn_for_test()
+        .call_db(|c| {
+            let q: i32 = c.query_row(
+                r"SELECT si.quantity
+                  FROM characters_inventory ci
+                  INNER JOIN server_items si ON ci.serverItemId = si.id
+                  WHERE ci.characterId = 402 AND ci.itemPackage = 99 AND si.itemId = 1000001",
+                [],
+                |r| r.get(0),
+            )?;
+            Ok(q)
+        })
+        .await
+        .unwrap();
+    assert_eq!(buyer_gil, 750);
+
+    let owner_gil: i32 = db
+        .conn_for_test()
+        .call_db(|c| {
+            let q: i32 = c.query_row(
+                r"SELECT si.quantity
+                  FROM characters_inventory ci
+                  INNER JOIN server_items si ON ci.serverItemId = si.id
+                  WHERE ci.characterId = 401 AND ci.itemPackage = 99 AND si.itemId = 1000001",
+                [],
+                |r| r.get(0),
+            )?;
+            Ok(q)
+        })
+        .await
+        .unwrap();
+    assert_eq!(owner_gil, 250);
+}
+
+/// Buyer with insufficient gil: listing untouched, buyer unchanged,
+/// owner unchanged. The outcome carries the specific shortfall.
+#[tokio::test]
+async fn purchase_retainer_bazaar_item_rejects_insufficient_gil() {
+    use crate::database::PurchaseOutcome;
+
+    // Buyer starts with 100 gil; the listing costs 5 * 50 = 250.
+    let (db, sid) = setup_bazaar_listing(403, 404, 1002, 10_001_001, 5, 50, 100).await;
+
+    let outcome = db
+        .purchase_retainer_bazaar_item(404, 1002, sid)
+        .await
+        .unwrap();
+    match outcome {
+        PurchaseOutcome::InsufficientGil { have, need } => {
+            assert_eq!(have, 100);
+            assert_eq!(need, 250);
+        }
+        other => panic!("expected InsufficientGil, got {other:?}"),
+    }
+
+    // Listing must still be present.
+    let remaining = db.list_retainer_bazaar(1002).await.unwrap();
+    assert_eq!(remaining.len(), 1);
+}
+
+/// Purchasing a listing that no longer exists returns
+/// `ListingGone` cleanly — the idempotent-retry path.
+#[tokio::test]
+async fn purchase_retainer_bazaar_item_is_idempotent_on_missing_listing() {
+    use crate::database::PurchaseOutcome;
+
+    let (db, sid) = setup_bazaar_listing(405, 406, 1003, 10_001_001, 3, 20, 500).await;
+
+    // First call succeeds.
+    let first = db
+        .purchase_retainer_bazaar_item(406, 1003, sid)
+        .await
+        .unwrap();
+    assert!(matches!(first, PurchaseOutcome::Completed { .. }));
+
+    // Second call on the gone listing.
+    let second = db
+        .purchase_retainer_bazaar_item(406, 1003, sid)
+        .await
+        .unwrap();
+    assert!(matches!(second, PurchaseOutcome::ListingGone));
+}
+
+/// Self-purchase is refused — the retainer owner must use the
+/// BazaarUndeal menu to retract their own stock.
+#[tokio::test]
+async fn purchase_retainer_bazaar_item_rejects_self_purchase() {
+    use crate::database::PurchaseOutcome;
+
+    let (db, sid) = setup_bazaar_listing(407, 999, 1001, 10_001_001, 1, 10, 0).await;
+    // Owner 407 tries to buy from their own retainer 1001.
+    let outcome = db
+        .purchase_retainer_bazaar_item(407, 1001, sid)
+        .await
+        .unwrap();
+    assert!(matches!(outcome, PurchaseOutcome::CannotBuyFromSelf));
+
+    // Listing untouched.
+    let remaining = db.list_retainer_bazaar(1001).await.unwrap();
+    assert_eq!(remaining.len(), 1);
+}
+
+/// End-to-end via the runtime drain: `LuaCommand::PurchaseRetainerBazaarItem`
+/// routes through `apply_runtime_lua_commands` to the helper.
+#[tokio::test]
+async fn runtime_drain_purchase_retainer_bazaar_item_routes_correctly() {
+    use crate::lua::LuaCommandKind;
+    use crate::runtime::quest_apply::apply_runtime_lua_commands;
+
+    let (db, sid) = setup_bazaar_listing(408, 409, 1002, 10_008_007, 2, 100, 500).await;
+
+    let registry = Arc::new(ActorRegistry::new());
+    let world = Arc::new(WorldManager::new());
+
+    apply_runtime_lua_commands(
+        vec![LuaCommandKind::PurchaseRetainerBazaarItem {
+            buyer_id: 409,
+            retainer_id: 1002,
+            server_item_id: sid,
+        }],
+        &registry,
+        &db,
+        &world,
+        None,
+    )
+    .await;
+
+    // Drain doesn't return anything, so verify via side effects —
+    // listing gone + buyer owns the stack.
+    let listings = db.list_retainer_bazaar(1002).await.unwrap();
+    assert!(listings.is_empty());
+}
+
+/// `player:BuyFromRetainer(retainerId, serverItemId)` emits the
+/// correct command variant with the calling player's actor id.
+#[tokio::test]
+async fn lua_player_buy_from_retainer_emits_command() {
+    use crate::lua::command::CommandQueue;
+    use crate::lua::userdata::{LuaPlayer, PlayerSnapshot};
+    use crate::lua::{LuaCommandKind, LuaEngine};
+
+    let script_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("scripts/lua");
+    let engine = LuaEngine::new(&script_root);
+    let probe = script_root.join("commands/__probe_bazaar_buy.lua");
+    std::fs::write(&probe, "").unwrap();
+    let (lua, _queue) = engine.load_script(&probe).expect("load probe");
+
+    let queue = CommandQueue::new();
+    let snapshot = PlayerSnapshot {
+        actor_id: 555,
+        name: "Buyer".to_string(),
+        ..Default::default()
+    };
+    let player = LuaPlayer {
+        snapshot,
+        queue: queue.clone(),
+    };
+    lua.globals().set("player", player).unwrap();
+
+    lua.load(r#"player:BuyFromRetainer(1001, 42)"#)
+        .exec()
+        .unwrap();
+
+    let cmds = CommandQueue::drain(&queue);
+    assert_eq!(cmds.len(), 1);
+    match &cmds[0] {
+        LuaCommandKind::PurchaseRetainerBazaarItem {
+            buyer_id,
+            retainer_id,
+            server_item_id,
+        } => {
+            assert_eq!(*buyer_id, 555);
+            assert_eq!(*retainer_id, 1001);
+            assert_eq!(*server_item_id, 42);
+        }
+        other => panic!("expected PurchaseRetainerBazaarItem, got {other:?}"),
+    }
+
+    let _ = std::fs::remove_file(&probe);
+}

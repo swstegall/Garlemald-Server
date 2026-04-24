@@ -1233,6 +1233,19 @@ impl PacketProcessor {
                 )
                 .await;
             }
+            LC::PurchaseRetainerBazaarItem {
+                buyer_id,
+                retainer_id,
+                server_item_id,
+            } => {
+                let _ = crate::runtime::quest_apply::apply_purchase_retainer_bazaar_item(
+                    buyer_id,
+                    retainer_id,
+                    server_item_id,
+                    &self.db,
+                )
+                .await;
+            }
             LC::SendMessage {
                 actor_id,
                 message_type,

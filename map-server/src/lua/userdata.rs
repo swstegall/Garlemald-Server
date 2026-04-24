@@ -672,6 +672,29 @@ impl UserData for LuaPlayer {
                 Ok(())
             },
         );
+        // `player:BuyFromRetainer(retainerId, serverItemId)` —
+        // Tier 4 #14 D bazaar purchase. Drains through
+        // `apply_purchase_retainer_bazaar_item` which handles gil
+        // transfer + item move + listing cleanup in a single DB
+        // transaction. Silently no-ops on an already-gone listing
+        // (idempotent), insufficient gil, or self-purchase — the
+        // outcome is logged but not propagated back to Lua since
+        // the retail BazaarDeal flow handles rejection via
+        // subsequent network messages rather than return codes.
+        methods.add_method(
+            "BuyFromRetainer",
+            |_, this, (retainer_id, server_item_id): (u32, u64)| {
+                push(
+                    &this.queue,
+                    LuaCommand::PurchaseRetainerBazaarItem {
+                        buyer_id: this.snapshot.actor_id,
+                        retainer_id,
+                        server_item_id,
+                    },
+                );
+                Ok(())
+            },
+        );
         methods.add_method("HasSpawnedRetainer", |_, this, _: ()| {
             Ok(this.snapshot.spawned_retainer.is_some())
         });

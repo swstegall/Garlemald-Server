@@ -3685,6 +3685,276 @@ impl Database {
         Ok(rows)
     }
 
+    /// Tier 4 #14 D — one-shot bazaar purchase. Transactional:
+    ///
+    ///  1. Resolves the retainer's owning character via
+    ///     `characters_retainers.characterId`.
+    ///  2. Looks up the listing by `(retainer_id, server_item_id)`
+    ///     and reads back its `priceGil`, `quantity`, `quality`,
+    ///     plus the backing `server_items.itemId` so we can credit
+    ///     the buyer without a second SELECT.
+    ///  3. Verifies the buyer's current gil balance covers
+    ///     `priceGil * quantity` (whole-stack purchase — partial
+    ///     fills are a follow-up; Meteor's client never splits
+    ///     bazaar stacks mid-buy).
+    ///  4. Deducts gil from the buyer, credits gil to the retainer's
+    ///     owner (single combined `UPDATE server_items` where possible).
+    ///  5. Deletes the listing row + its backing `server_items` row.
+    ///  6. Merges the stack into the buyer's NORMAL bag using the
+    ///     same merge-or-spill logic as [`Database::add_harvest_item`].
+    ///
+    /// Returns [`PurchaseOutcome::Completed`] on success (carrying
+    /// the actual gil transferred + item/quantity granted), or a
+    /// specific rejection variant on any failure path. Idempotent
+    /// on a second call with the same `server_item_id` — the
+    /// listing is gone so the second attempt returns
+    /// [`PurchaseOutcome::ListingGone`].
+    pub async fn purchase_retainer_bazaar_item(
+        &self,
+        buyer_chara_id: u32,
+        retainer_id: u32,
+        server_item_id: u64,
+    ) -> Result<PurchaseOutcome> {
+        let outcome = self
+            .conn
+            .call_db(move |c| {
+                let tx = c.transaction()?;
+                // Owner lookup. `characters_retainers` can hold
+                // multiple rows per retainerId (multiple players
+                // hired the same template), but a bazaar listing is
+                // scoped to one retainer per hire, so we pick the
+                // first (and typically only) owner.
+                let owner_chara_id: Option<u32> = tx
+                    .query_row(
+                        r"SELECT characterId FROM characters_retainers
+                          WHERE retainerId = :rid
+                          LIMIT 1",
+                        named_params! { ":rid": retainer_id },
+                        |r| r.get::<_, u32>(0),
+                    )
+                    .optional()?;
+                let Some(owner_chara_id) = owner_chara_id else {
+                    return Ok(PurchaseOutcome::NoOwner);
+                };
+                if owner_chara_id == buyer_chara_id {
+                    return Ok(PurchaseOutcome::CannotBuyFromSelf);
+                }
+
+                // Listing lookup.
+                let listing: Option<(i32, i32, i64, i32, i32)> = tx
+                    .query_row(
+                        r"SELECT si.quantity, si.quality, si.itemId,
+                                 rb.priceGil, rb.slot
+                          FROM characters_retainer_bazaar rb
+                          INNER JOIN server_items si ON rb.serverItemId = si.id
+                          WHERE rb.retainerId = :rid AND rb.serverItemId = :sid",
+                        named_params! {
+                            ":rid": retainer_id,
+                            ":sid": server_item_id as i64,
+                        },
+                        |r| Ok((
+                            r.get::<_, i32>(0)?,
+                            r.get::<_, i64>(1).unwrap_or(0) as i32,
+                            r.get::<_, i64>(2)?,
+                            r.get::<_, i32>(3).unwrap_or(0),
+                            r.get::<_, i32>(4).unwrap_or(0),
+                        )),
+                    )
+                    .optional()?;
+                let Some((qty, quality_raw, item_id_i64, price_per_unit, _slot)) = listing else {
+                    return Ok(PurchaseOutcome::ListingGone);
+                };
+                if qty <= 0 {
+                    return Ok(PurchaseOutcome::ListingGone);
+                }
+                let quality = quality_raw.clamp(0, 255) as u8;
+                let item_id = item_id_i64 as u32;
+                let total_price = price_per_unit
+                    .saturating_mul(qty);
+
+                // Buyer's current gil — single-stack currency row
+                // under `characters_inventory.itemPackage = 99`.
+                // Uses the canonical 1_000_001 gil item id rather
+                // than a dedicated gil column so future
+                // refactoring can converge the two paths.
+                let buyer_gil: i32 = tx
+                    .query_row(
+                        r"SELECT COALESCE(SUM(si.quantity), 0)
+                          FROM characters_inventory ci
+                          INNER JOIN server_items si ON ci.serverItemId = si.id
+                          WHERE ci.characterId = :cid
+                            AND ci.itemPackage = 99
+                            AND si.itemId = 1000001",
+                        named_params! { ":cid": buyer_chara_id },
+                        |r| r.get::<_, i32>(0),
+                    )
+                    .unwrap_or(0);
+                if buyer_gil < total_price {
+                    return Ok(PurchaseOutcome::InsufficientGil {
+                        have: buyer_gil,
+                        need: total_price,
+                    });
+                }
+
+                // Deduct from buyer. Uses the same merge-aware
+                // pattern `add_gil` produces: find the existing
+                // currency row + decrement in place.
+                if total_price > 0 {
+                    tx.execute(
+                        r"UPDATE server_items
+                          SET quantity = quantity - :price
+                          WHERE id IN (
+                              SELECT si.id FROM server_items si
+                              INNER JOIN characters_inventory ci
+                                  ON ci.serverItemId = si.id
+                              WHERE ci.characterId = :cid
+                                AND ci.itemPackage = 99
+                                AND si.itemId = 1000001
+                              LIMIT 1
+                          )",
+                        named_params! {
+                            ":price": total_price,
+                            ":cid": buyer_chara_id,
+                        },
+                    )?;
+
+                    // Credit owner — merge into existing stack or
+                    // seed a new row. Same shape as the
+                    // `add_harvest_item` NORMAL-bag merge but
+                    // targeting PKG_CURRENCY_CRYSTALS (99).
+                    let owner_sid: Option<i64> = tx
+                        .query_row(
+                            r"SELECT si.id FROM server_items si
+                              INNER JOIN characters_inventory ci ON ci.serverItemId = si.id
+                              WHERE ci.characterId = :cid
+                                AND ci.itemPackage = 99
+                                AND si.itemId = 1000001
+                              LIMIT 1",
+                            named_params! { ":cid": owner_chara_id },
+                            |r| r.get::<_, i64>(0),
+                        )
+                        .optional()?;
+                    match owner_sid {
+                        Some(sid) => {
+                            tx.execute(
+                                "UPDATE server_items SET quantity = quantity + :p WHERE id = :id",
+                                named_params! { ":p": total_price, ":id": sid },
+                            )?;
+                        }
+                        None => {
+                            tx.execute(
+                                r"INSERT INTO server_items (itemId, quantity, quality)
+                                  VALUES (1000001, :p, 0)",
+                                named_params! { ":p": total_price },
+                            )?;
+                            let sid = tx.last_insert_rowid();
+                            let next_slot: i32 = tx
+                                .query_row(
+                                    r"SELECT COALESCE(MAX(slot), -1) + 1
+                                      FROM characters_inventory
+                                      WHERE characterId = :cid AND itemPackage = 99",
+                                    named_params! { ":cid": owner_chara_id },
+                                    |r| r.get::<_, i32>(0),
+                                )
+                                .unwrap_or(0);
+                            tx.execute(
+                                r"INSERT INTO characters_inventory
+                                    (characterId, itemPackage, serverItemId, slot)
+                                  VALUES (:cid, 99, :sid, :slot)",
+                                named_params! {
+                                    ":cid": owner_chara_id, ":sid": sid, ":slot": next_slot,
+                                },
+                            )?;
+                        }
+                    }
+                }
+
+                // Transfer the item stack to the buyer's NORMAL
+                // bag. Delete the bazaar row + its backing
+                // server_items row first (so the stack isn't
+                // referenced from two inventories mid-write), then
+                // merge-or-spill into buyer's NORMAL bag.
+                tx.execute(
+                    r"DELETE FROM characters_retainer_bazaar
+                      WHERE retainerId = :rid AND serverItemId = :sid",
+                    named_params! {
+                        ":rid": retainer_id,
+                        ":sid": server_item_id as i64,
+                    },
+                )?;
+                tx.execute(
+                    "DELETE FROM server_items WHERE id = :sid",
+                    named_params! { ":sid": server_item_id as i64 },
+                )?;
+
+                // Merge into buyer's NORMAL bag (itemPackage = 0).
+                let existing_sid: Option<i64> = tx
+                    .query_row(
+                        r"SELECT si.id FROM server_items si
+                          INNER JOIN characters_inventory ci ON ci.serverItemId = si.id
+                          WHERE ci.characterId = :cid
+                            AND ci.itemPackage = 0
+                            AND si.itemId = :iid
+                            AND si.quality = :q
+                          LIMIT 1",
+                        named_params! {
+                            ":cid": buyer_chara_id,
+                            ":iid": item_id,
+                            ":q": quality as i64,
+                        },
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .optional()?;
+                match existing_sid {
+                    Some(sid) => {
+                        tx.execute(
+                            "UPDATE server_items SET quantity = quantity + :q WHERE id = :id",
+                            named_params! { ":q": qty, ":id": sid },
+                        )?;
+                    }
+                    None => {
+                        tx.execute(
+                            r"INSERT INTO server_items (itemId, quantity, quality)
+                              VALUES (:iid, :q, :qual)",
+                            named_params! {
+                                ":iid": item_id,
+                                ":q": qty,
+                                ":qual": quality as i64,
+                            },
+                        )?;
+                        let new_sid = tx.last_insert_rowid();
+                        let next_slot: i32 = tx
+                            .query_row(
+                                r"SELECT COALESCE(MAX(slot), -1) + 1
+                                  FROM characters_inventory
+                                  WHERE characterId = :cid AND itemPackage = 0",
+                                named_params! { ":cid": buyer_chara_id },
+                                |r| r.get::<_, i32>(0),
+                            )
+                            .unwrap_or(0);
+                        tx.execute(
+                            r"INSERT INTO characters_inventory
+                                (characterId, itemPackage, serverItemId, slot)
+                              VALUES (:cid, 0, :sid, :slot)",
+                            named_params! {
+                                ":cid": buyer_chara_id, ":sid": new_sid, ":slot": next_slot,
+                            },
+                        )?;
+                    }
+                }
+                tx.commit()?;
+                Ok(PurchaseOutcome::Completed {
+                    item_id,
+                    quantity: qty,
+                    quality,
+                    gil_spent: total_price,
+                    owner_chara_id,
+                })
+            })
+            .await?;
+        Ok(outcome)
+    }
+
     /// Remove a specific listing — called from the BazaarUndeal flow
     /// (owner retracts) and the BazaarDeal flow (buyer bought the
     /// last of the stack). Returns `true` if a row was actually
@@ -3719,6 +3989,37 @@ impl Database {
             .await?;
         Ok(removed)
     }
+}
+
+/// Outcome of a [`Database::purchase_retainer_bazaar_item`] call.
+/// Explicit variants so callers can distinguish "someone else
+/// grabbed this listing a tick ago" from "you're broke" from "you
+/// clicked your own retainer" without string-matching on an error.
+/// Tier 4 #14 D.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PurchaseOutcome {
+    Completed {
+        item_id: u32,
+        quantity: i32,
+        quality: u8,
+        gil_spent: i32,
+        /// Character id that received the gil.
+        owner_chara_id: u32,
+    },
+    /// Retainer template has no ownership row — orphan listing, or
+    /// the retainer was dismissed mid-browse.
+    NoOwner,
+    /// Buyer == owner — retail silently refuses this so the owner
+    /// uses the BazaarUndeal menu instead.
+    CannotBuyFromSelf,
+    /// Listing no longer present. Idempotent-retry friendly: if a
+    /// previous call succeeded or a race took the listing, we no-op.
+    ListingGone,
+    /// Buyer's gil balance is below the stack total.
+    InsufficientGil {
+        have: i32,
+        need: i32,
+    },
 }
 
 /// One row of the retainer bazaar — surfaces through `list_retainer_bazaar`
