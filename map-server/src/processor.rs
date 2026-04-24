@@ -1218,6 +1218,21 @@ impl PacketProcessor {
                 )
                 .await;
             }
+            LC::AcceptRegionalLeve {
+                player_id,
+                leve_id,
+                difficulty,
+            } => {
+                let _ = crate::runtime::quest_apply::apply_accept_regional_leve(
+                    player_id,
+                    leve_id,
+                    difficulty,
+                    &self.registry,
+                    &self.db,
+                    self.lua.as_ref(),
+                )
+                .await;
+            }
             LC::SendMessage {
                 actor_id,
                 message_type,

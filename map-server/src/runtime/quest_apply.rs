@@ -194,6 +194,14 @@ pub async fn apply_runtime_lua_command(
             let _ = apply_regional_leve_hand_in(player_id, leve_id, registry, db, lua).await;
             true
         }
+        LC::AcceptRegionalLeve {
+            player_id,
+            leve_id,
+            difficulty,
+        } => {
+            let _ = apply_accept_regional_leve(player_id, leve_id, difficulty, registry, db, lua).await;
+            true
+        }
         LC::QuestOnNotice { player_id, quest_id } => {
             apply_quest_on_notice(player_id, quest_id, registry, db, world, lua).await;
             true
@@ -1514,6 +1522,109 @@ pub async fn apply_add_item_to_retainer(
             );
         }
     }
+}
+
+/// Tier 3 #13 accept-side binding. The levemete counterpart to
+/// [`apply_regional_leve_hand_in`]: installs the leve in the
+/// player's journal with [`crate::leve::ACCEPTED_FLAG_BIT`] set and
+/// the chosen difficulty band stamped on `counter2` so the
+/// fieldcraft / battlecraft progress hooks tick correctly against
+/// the band's objective quantity.
+///
+/// Returns `true` when a fresh journal entry was created, `false`
+/// on any no-op path: missing catalog, missing player, missing
+/// leve data row, journal full, already-accepted. The idempotent
+/// already-in-journal path silently succeeds — retail levemetes
+/// just re-render the "you already have this leve" dialog line.
+pub async fn apply_accept_regional_leve(
+    player_id: u32,
+    leve_id: u32,
+    difficulty: u8,
+    registry: &ActorRegistry,
+    db: &Database,
+    lua: Option<&Arc<LuaEngine>>,
+) -> bool {
+    let Some(lua) = lua else {
+        return false;
+    };
+    let Some(resolver) = lua.catalogs().regional_leve_resolver() else {
+        return false;
+    };
+    if resolver.by_id(leve_id).is_none() {
+        tracing::debug!(
+            player = player_id,
+            leve = leve_id,
+            "AcceptRegionalLeve: leve id not in catalog",
+        );
+        return false;
+    }
+    let Some(handle) = registry.get(player_id).await else {
+        return false;
+    };
+    // Clamp to the valid band range up front — mirrors
+    // `RegionalLeveData::clamp_difficulty`. Saturating is cheaper
+    // than failing since retail scripts sometimes pass the 1-indexed
+    // UI band; we normalise to the 0-indexed storage band.
+    let band = difficulty.min(3);
+
+    let save_tuple = {
+        let mut c = handle.character.write().await;
+        if c.quest_journal.has(leve_id) {
+            tracing::debug!(
+                player = player_id,
+                leve = leve_id,
+                "AcceptRegionalLeve: already in journal (idempotent no-op)",
+            );
+            return false;
+        }
+        let actor_id = crate::actor::quest::quest_actor_id(leve_id);
+        // Regional leves don't have `gamedata_quests` catalog rows
+        // (they're a separate data model), so there's no
+        // script-name lookup. Use a formulaic name so the DB row
+        // is distinguishable in audits — same convention my test
+        // fixtures used.
+        let name = format!("leve{leve_id}");
+        let mut quest = crate::actor::quest::Quest::new(actor_id, name);
+        quest.set_flag(crate::leve::ACCEPTED_FLAG_BIT);
+        quest.set_counter(1, band as u16);
+        quest.clear_dirty();
+        let Some(slot) = c.quest_journal.add(quest) else {
+            tracing::warn!(
+                player = player_id,
+                leve = leve_id,
+                "AcceptRegionalLeve: journal full",
+            );
+            return false;
+        };
+        let flags = 1u32 << crate::leve::ACCEPTED_FLAG_BIT;
+        (slot as i32, actor_id, flags)
+    };
+    let (slot, actor_id, flags) = save_tuple;
+    // save_quest params (per database.rs:2118): counter1 / counter2 /
+    // counter3 = the DB column names. RegionalLeveView's
+    // `set_counter(1, band)` writes the *in-memory* idx-1 counter,
+    // which persists to the `counter2` DB column. So: counter1 = 0
+    // (progress starts fresh), counter2 = band (difficulty),
+    // counter3 = 0 (reserved).
+    if let Err(e) = db
+        .save_quest(player_id, slot, actor_id, 0, flags, 0, band as u16, 0)
+        .await
+    {
+        tracing::warn!(
+            player = player_id,
+            leve = leve_id,
+            err = %e,
+            "AcceptRegionalLeve: DB persist failed",
+        );
+    }
+    tracing::info!(
+        player = player_id,
+        leve = leve_id,
+        slot,
+        band,
+        "AcceptRegionalLeve applied",
+    );
+    true
 }
 
 /// Outcome of a [`apply_regional_leve_hand_in`] call. Carried back

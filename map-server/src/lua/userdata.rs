@@ -652,6 +652,26 @@ impl UserData for LuaPlayer {
             );
             Ok(())
         });
+        // `player:AcceptRegionalLeve(leveId, difficulty)` — levemete
+        // accept counterpart to `HandInRegionalLeve`. Adds the leve
+        // to the journal with ACCEPTED_FLAG_BIT set + difficulty
+        // band stamped. Idempotent on already-accepted leves.
+        // `difficulty` defaults to 0 when omitted for ergonomic
+        // call-sites that only ever offer the easiest band.
+        methods.add_method(
+            "AcceptRegionalLeve",
+            |_, this, (leve_id, difficulty): (u32, Option<u8>)| {
+                push(
+                    &this.queue,
+                    LuaCommand::AcceptRegionalLeve {
+                        player_id: this.snapshot.actor_id,
+                        leve_id,
+                        difficulty: difficulty.unwrap_or(0),
+                    },
+                );
+                Ok(())
+            },
+        );
         methods.add_method("HasSpawnedRetainer", |_, this, _: ()| {
             Ok(this.snapshot.spawned_retainer.is_some())
         });

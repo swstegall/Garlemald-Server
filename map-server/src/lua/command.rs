@@ -132,6 +132,17 @@ pub enum LuaCommand {
         player_id: u32,
         leve_id: u32,
     },
+    /// `player:AcceptRegionalLeve(leveId, difficulty)` — the
+    /// levemete accept-menu counterpart to [`Self::HandInRegionalLeve`].
+    /// Adds a quest entry to the journal with `ACCEPTED_FLAG_BIT`
+    /// set and `counter2 = difficulty` (clamped 0..=3) so progress
+    /// hooks tick correctly against the chosen band. Idempotent on
+    /// already-accepted leves. Tier 3 #13 accept-side binding.
+    AcceptRegionalLeve {
+        player_id: u32,
+        leve_id: u32,
+        difficulty: u8,
+    },
     RemoveItem {
         actor_id: u32,
         item_package: u16,

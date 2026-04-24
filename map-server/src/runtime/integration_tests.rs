@@ -9572,3 +9572,374 @@ async fn lua_player_hand_in_regional_leve_emits_command() {
 
     let _ = std::fs::remove_file(&probe);
 }
+
+// ---------------------------------------------------------------------------
+// Regional-leve accept — Tier 3 #13 accept-side binding wrap-up
+// ---------------------------------------------------------------------------
+
+/// Accept installs a fresh journal entry with ACCEPTED_FLAG_BIT set
+/// + the chosen difficulty band stored on counter2, and the row
+/// persists to `characters_quest_scenario`.
+#[tokio::test]
+async fn accept_regional_leve_installs_journal_entry_and_persists() {
+    use crate::runtime::quest_apply::apply_accept_regional_leve;
+    use common::db::ConnCallExt;
+
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (301, 0, 0, 0, 'Accepter')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let script_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("scripts/lua");
+    let lua = Arc::new(crate::lua::LuaEngine::new(&script_root));
+    lua.catalogs()
+        .install_regional_leve_resolver(db.load_regional_leve_resolver().await.unwrap());
+
+    let registry = Arc::new(ActorRegistry::new());
+    let character = crate::actor::Character::new(301);
+    registry
+        .insert(ActorHandle::new(
+            301,
+            ActorKindTag::Player,
+            180,
+            301,
+            character,
+        ))
+        .await;
+
+    let accepted = apply_accept_regional_leve(301, 130_003, 2, &registry, &db, Some(&lua)).await;
+    assert!(accepted);
+
+    // In-memory journal has the row with the right flag + band.
+    let h = registry.get(301).await.unwrap();
+    let c = h.character.read().await;
+    let q = c.quest_journal.get(130_003).expect("in journal");
+    assert!(q.get_flag(crate::leve::ACCEPTED_FLAG_BIT));
+    assert_eq!(q.get_counter(1), 2, "counter2 = difficulty band");
+    assert!(!q.get_flag(crate::leve::COMPLETED_FLAG_BIT));
+
+    // DB row persisted with the matching shape.
+    let (counter2, flags): (i64, i64) = db
+        .conn_for_test()
+        .call_db(|c| {
+            let row = c.query_row(
+                r"SELECT counter2, flags FROM characters_quest_scenario
+                  WHERE characterId = 301 AND questId = ?1",
+                [130_003i64],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+            )?;
+            Ok(row)
+        })
+        .await
+        .unwrap();
+    assert_eq!(counter2, 2);
+    assert_ne!(
+        flags & (1 << crate::leve::ACCEPTED_FLAG_BIT),
+        0,
+        "ACCEPTED bit persisted",
+    );
+}
+
+/// Accept on a leve id the catalog doesn't know about returns false
+/// without touching the journal. Guards against client-side typos
+/// ghost-writing empty quest slots.
+#[tokio::test]
+async fn accept_regional_leve_rejects_unknown_leve_id() {
+    use crate::runtime::quest_apply::apply_accept_regional_leve;
+    use common::db::ConnCallExt;
+
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (302, 0, 0, 0, 'Ghost')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let script_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("scripts/lua");
+    let lua = Arc::new(crate::lua::LuaEngine::new(&script_root));
+    lua.catalogs()
+        .install_regional_leve_resolver(db.load_regional_leve_resolver().await.unwrap());
+
+    let registry = Arc::new(ActorRegistry::new());
+    registry
+        .insert(ActorHandle::new(
+            302,
+            ActorKindTag::Player,
+            180,
+            302,
+            crate::actor::Character::new(302),
+        ))
+        .await;
+
+    let accepted = apply_accept_regional_leve(302, 999_999, 0, &registry, &db, Some(&lua)).await;
+    assert!(!accepted);
+
+    let h = registry.get(302).await.unwrap();
+    let c = h.character.read().await;
+    assert!(c.quest_journal.get(999_999).is_none());
+}
+
+/// Double accept is idempotent — second call returns false and
+/// leaves the journal slot unchanged. Guards against client-side
+/// network retries double-installing the leve.
+#[tokio::test]
+async fn accept_regional_leve_is_idempotent_on_double_call() {
+    use crate::runtime::quest_apply::apply_accept_regional_leve;
+    use common::db::ConnCallExt;
+
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (303, 0, 0, 0, 'Retryer')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let script_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("scripts/lua");
+    let lua = Arc::new(crate::lua::LuaEngine::new(&script_root));
+    lua.catalogs()
+        .install_regional_leve_resolver(db.load_regional_leve_resolver().await.unwrap());
+
+    let registry = Arc::new(ActorRegistry::new());
+    registry
+        .insert(ActorHandle::new(
+            303,
+            ActorKindTag::Player,
+            180,
+            303,
+            crate::actor::Character::new(303),
+        ))
+        .await;
+
+    let first = apply_accept_regional_leve(303, 130_001, 1, &registry, &db, Some(&lua)).await;
+    assert!(first);
+    let second = apply_accept_regional_leve(303, 130_001, 3, &registry, &db, Some(&lua)).await;
+    assert!(!second, "second accept no-ops");
+
+    // Difficulty should still be the first value — the second call
+    // didn't clobber it.
+    let h = registry.get(303).await.unwrap();
+    let c = h.character.read().await;
+    let q = c.quest_journal.get(130_001).unwrap();
+    assert_eq!(q.get_counter(1), 1);
+}
+
+/// Full loop: accept → advance_progress → hand_in. Exercises every
+/// Tier 3 #13 public helper against a single player in sequence.
+#[tokio::test]
+async fn full_leve_loop_accept_progress_hand_in() {
+    use crate::lua::LuaCommandKind;
+    use crate::runtime::quest_apply::{
+        apply_accept_regional_leve, apply_runtime_lua_commands,
+    };
+    use common::db::ConnCallExt;
+
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (304, 0, 0, 0, 'FullLoop')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let script_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("scripts/lua");
+    let lua = Arc::new(crate::lua::LuaEngine::new(&script_root));
+    lua.catalogs()
+        .install_regional_leve_resolver(db.load_regional_leve_resolver().await.unwrap());
+
+    let registry = Arc::new(ActorRegistry::new());
+    registry
+        .insert(ActorHandle::new(
+            304,
+            ActorKindTag::Player,
+            180,
+            304,
+            crate::actor::Character::new(304),
+        ))
+        .await;
+    let world = Arc::new(WorldManager::new());
+
+    // 1. Accept leve 130_003 (Thanalan Copper Ore, band 0 = 5 ore).
+    let accepted = apply_accept_regional_leve(304, 130_003, 0, &registry, &db, Some(&lua)).await;
+    assert!(accepted);
+
+    // 2. Progress via AddItem drain — 5 copper ore in one shot,
+    // which should saturate at the objective + flip COMPLETED.
+    apply_runtime_lua_commands(
+        vec![LuaCommandKind::AddItem {
+            actor_id: 304,
+            item_package: crate::inventory::PKG_NORMAL,
+            item_id: 10_001_006,
+            quantity: 5,
+        }],
+        &registry,
+        &db,
+        &world,
+        Some(&lua),
+    )
+    .await;
+
+    {
+        let h = registry.get(304).await.unwrap();
+        let c = h.character.read().await;
+        let q = c.quest_journal.get(130_003).unwrap();
+        assert_eq!(q.get_counter(0), 5, "progress saturated");
+        assert!(q.get_flag(crate::leve::COMPLETED_FLAG_BIT));
+    }
+
+    // 3. Hand in via drain — should grant gil (200 at band 0) and
+    // clear the leve from the journal.
+    apply_runtime_lua_commands(
+        vec![LuaCommandKind::HandInRegionalLeve {
+            player_id: 304,
+            leve_id: 130_003,
+        }],
+        &registry,
+        &db,
+        &world,
+        Some(&lua),
+    )
+    .await;
+
+    let h = registry.get(304).await.unwrap();
+    let c = h.character.read().await;
+    assert!(c.quest_journal.get(130_003).is_none(), "journal cleared");
+
+    // Gil row exists via the shared add_gil path.
+    let gil: i32 = db
+        .conn_for_test()
+        .call_db(|c| {
+            let q: i32 = c.query_row(
+                r"SELECT si.quantity
+                  FROM characters_inventory ci
+                  INNER JOIN server_items si ON ci.serverItemId = si.id
+                  WHERE ci.characterId = 304 AND si.itemId = 1000001",
+                [],
+                |r| r.get(0),
+            )?;
+            Ok(q)
+        })
+        .await
+        .unwrap();
+    assert_eq!(gil, 200, "band-0 gil reward granted");
+}
+
+/// Lua `player:AcceptRegionalLeve(id, band)` emits the correct
+/// command variant + default-band-0 convention when `band` is
+/// omitted.
+#[tokio::test]
+async fn lua_player_accept_regional_leve_emits_command() {
+    use crate::lua::command::CommandQueue;
+    use crate::lua::userdata::{LuaPlayer, PlayerSnapshot};
+    use crate::lua::{LuaCommandKind, LuaEngine};
+
+    let script_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("scripts/lua");
+    let engine = LuaEngine::new(&script_root);
+    let probe = script_root.join("commands/__probe_leve_accept.lua");
+    std::fs::write(&probe, "").unwrap();
+    let (lua, _queue) = engine.load_script(&probe).expect("load probe");
+
+    let queue = CommandQueue::new();
+    let snapshot = PlayerSnapshot {
+        actor_id: 777,
+        name: "Accepter".to_string(),
+        ..Default::default()
+    };
+    let player = LuaPlayer {
+        snapshot,
+        queue: queue.clone(),
+    };
+    lua.globals().set("player", player).unwrap();
+
+    lua.load(
+        r#"
+        player:AcceptRegionalLeve(130001, 2)
+        player:AcceptRegionalLeve(140001)
+        "#,
+    )
+    .exec()
+    .unwrap();
+
+    let cmds = CommandQueue::drain(&queue);
+    assert_eq!(cmds.len(), 2);
+    match &cmds[0] {
+        LuaCommandKind::AcceptRegionalLeve {
+            player_id,
+            leve_id,
+            difficulty,
+        } => {
+            assert_eq!(*player_id, 777);
+            assert_eq!(*leve_id, 130_001);
+            assert_eq!(*difficulty, 2);
+        }
+        other => panic!("expected AcceptRegionalLeve, got {other:?}"),
+    }
+    match &cmds[1] {
+        LuaCommandKind::AcceptRegionalLeve {
+            leve_id,
+            difficulty,
+            ..
+        } => {
+            assert_eq!(*leve_id, 140_001);
+            assert_eq!(*difficulty, 0, "omitted band defaults to 0");
+        }
+        other => panic!("expected AcceptRegionalLeve, got {other:?}"),
+    }
+
+    let _ = std::fs::remove_file(&probe);
+}
