@@ -31,6 +31,7 @@ use crate::crafting::{PassiveGuildleveData, RecipeResolver};
 use crate::data::ItemData;
 use crate::gamedata::{BattleCommand, GuildleveGamedata, QuestMeta, StatusEffectDef};
 use crate::gathering::GatherResolver;
+use crate::leve::RegionalLeveResolver;
 
 #[derive(Default)]
 pub struct Catalogs {
@@ -61,6 +62,10 @@ pub struct Catalogs {
     /// `recipes` — every Lua VM clones the Arc into its local frame
     /// for `GetGatherResolver():GetNode(...)` lookups.
     pub gather_nodes: RwLock<Option<Arc<GatherResolver>>>,
+    /// Shared regional-leve (fieldcraft + battlecraft) resolver. Arc
+    /// so `GetRegionalLeveResolver()` in Lua hands out a userdata
+    /// wrapper without copying the catalog.
+    pub regional_leves: RwLock<Option<Arc<RegionalLeveResolver>>>,
 }
 
 impl Catalogs {
@@ -154,6 +159,20 @@ impl Catalogs {
     /// startup race).
     pub fn gather_resolver(&self) -> Option<Arc<GatherResolver>> {
         self.gather_nodes.read().ok().and_then(|w| w.clone())
+    }
+
+    pub fn install_regional_leve_resolver(&self, resolver: RegionalLeveResolver) {
+        if let Ok(mut w) = self.regional_leves.write() {
+            *w = Some(Arc::new(resolver));
+        }
+    }
+
+    /// Cheap `Arc` clone of the installed regional-leve resolver, or
+    /// `None` if it hasn't been installed yet. Used by the progress
+    /// hooks in `runtime/quest_apply.rs` + the Lua binding so they
+    /// share one catalog instance.
+    pub fn regional_leve_resolver(&self) -> Option<Arc<RegionalLeveResolver>> {
+        self.regional_leves.read().ok().and_then(|w| w.clone())
     }
 
     /// Return a cheap `Arc` clone of the installed resolver, or `None`

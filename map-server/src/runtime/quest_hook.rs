@@ -101,6 +101,20 @@ pub async fn fire_on_kill_bnpc(
         };
         (ids, snap)
     };
+    // Tier 3 #13 — tick any accepted battlecraft leves whose band-0
+    // objective targets this BattleNpc's actor class. Runs
+    // independently of the per-quest Lua dispatch below; a leve that
+    // also happens to share a script on disk is still a valid quest
+    // and will run its `onKillBNpc` handler normally.
+    crate::runtime::quest_apply::advance_battlecraft_leves(
+        attacker.actor_id,
+        bnpc_class_id,
+        registry,
+        db,
+        Some(lua),
+    )
+    .await;
+
     if active_quest_ids.is_empty() {
         return;
     }

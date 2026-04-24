@@ -38,6 +38,7 @@ mod gamedata;
 mod gathering;
 mod group;
 mod inventory;
+mod leve;
 mod lua;
 mod npc;
 mod packets;
@@ -209,6 +210,27 @@ async fn main() -> Result<()> {
             tracing::warn!(
                 error = %e,
                 "gather-node catalog load failed — DummyCommand.lua will run with no drops",
+            );
+        }
+    }
+
+    // Regional leves (Tier 3 #13) — fieldcraft + battlecraft. Progress
+    // hooks in `runtime::quest_apply` resolve through
+    // `GetRegionalLeveResolver()` to decide which active leve ticks on
+    // a given gather / kill event. Load failure is non-fatal — the
+    // hooks short-circuit to no-op when the resolver is absent.
+    match db.load_regional_leve_resolver().await {
+        Ok(resolver) => {
+            let total = resolver.num_leves();
+            let field = resolver.num_fieldcraft();
+            let battle = resolver.num_battlecraft();
+            lua.catalogs().install_regional_leve_resolver(resolver);
+            tracing::info!(total, fieldcraft = field, battlecraft = battle, "regional-leve catalog loaded");
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "regional-leve catalog load failed — fieldcraft/battlecraft leve progress will no-op",
             );
         }
     }

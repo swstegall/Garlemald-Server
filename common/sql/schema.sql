@@ -745,6 +745,46 @@ CREATE TABLE IF NOT EXISTS gamedata_passivegl_craft (
     rewardQuantity4      INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS gamedata_regional_leves (
+    id                   INTEGER PRIMARY KEY,
+    leveType             INTEGER NOT NULL,
+    plateId              INTEGER NOT NULL DEFAULT 0,
+    borderId             INTEGER NOT NULL DEFAULT 0,
+    recommendedClass     INTEGER NOT NULL DEFAULT 0,
+    issuingLocation      INTEGER NOT NULL DEFAULT 0,
+    guildleveLocation    INTEGER NOT NULL DEFAULT 0,
+    deliveryDisplayName  INTEGER NOT NULL DEFAULT 0,
+    region               INTEGER NOT NULL DEFAULT 0,
+
+    objectiveTargetId1   INTEGER NOT NULL,
+    objectiveQuantity1   INTEGER NOT NULL,
+    recommendedLevel1    INTEGER NOT NULL DEFAULT 1,
+    rewardItemId1        INTEGER NOT NULL DEFAULT 0,
+    rewardQuantity1      INTEGER NOT NULL DEFAULT 0,
+    rewardGil1           INTEGER NOT NULL DEFAULT 0,
+
+    objectiveTargetId2   INTEGER NOT NULL,
+    objectiveQuantity2   INTEGER NOT NULL,
+    recommendedLevel2    INTEGER NOT NULL DEFAULT 1,
+    rewardItemId2        INTEGER NOT NULL DEFAULT 0,
+    rewardQuantity2      INTEGER NOT NULL DEFAULT 0,
+    rewardGil2           INTEGER NOT NULL DEFAULT 0,
+
+    objectiveTargetId3   INTEGER NOT NULL,
+    objectiveQuantity3   INTEGER NOT NULL,
+    recommendedLevel3    INTEGER NOT NULL DEFAULT 1,
+    rewardItemId3        INTEGER NOT NULL DEFAULT 0,
+    rewardQuantity3      INTEGER NOT NULL DEFAULT 0,
+    rewardGil3           INTEGER NOT NULL DEFAULT 0,
+
+    objectiveTargetId4   INTEGER NOT NULL,
+    objectiveQuantity4   INTEGER NOT NULL,
+    recommendedLevel4    INTEGER NOT NULL DEFAULT 1,
+    rewardItemId4        INTEGER NOT NULL DEFAULT 0,
+    rewardQuantity4      INTEGER NOT NULL DEFAULT 0,
+    rewardGil4           INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS gamedata_gather_nodes (
     id       INTEGER PRIMARY KEY,
     grade    INTEGER NOT NULL DEFAULT 1,

@@ -8297,3 +8297,330 @@ async fn lua_retainer_add_bazaar_item_binding_queues_command() {
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// Regional leves — Tier 3 #13 (fieldcraft + battlecraft)
+// ---------------------------------------------------------------------------
+
+/// Seed 048 round-trip: `gamedata_regional_leves` loads into a
+/// `RegionalLeveResolver` with the expected 3+3 split, and both
+/// secondary indexes resolve the seeded targets.
+#[tokio::test]
+async fn regional_leve_catalog_seed_round_trips() {
+    let db = crate::database::Database::open(tempdb())
+        .await
+        .expect("db stub");
+    let resolver = db
+        .load_regional_leve_resolver()
+        .await
+        .expect("regional leve catalog load");
+
+    assert_eq!(resolver.num_leves(), 6);
+    assert_eq!(resolver.num_fieldcraft(), 3);
+    assert_eq!(resolver.num_battlecraft(), 3);
+
+    // Fieldcraft: Copper Ore → leve 130_003 (Thanalan mining).
+    let copper_leves = resolver.fieldcraft_leves_for_item(10_001_006);
+    assert_eq!(copper_leves, &[130_003]);
+    let walnut_leves = resolver.fieldcraft_leves_for_item(10_008_007);
+    assert_eq!(walnut_leves, &[130_002]);
+
+    // Battlecraft: drake placeholder class → leve 140_003.
+    let drake_leves = resolver.battlecraft_leves_for_class(5_000_091);
+    assert_eq!(drake_leves, &[140_003]);
+
+    // A leve we didn't seed shouldn't resolve.
+    assert!(resolver.fieldcraft_leves_for_item(999_999).is_empty());
+    assert!(resolver.battlecraft_leves_for_class(999_999).is_empty());
+}
+
+/// End-to-end fieldcraft progress: the `LuaCommand::AddItem` drain
+/// path, which already lands a `characters_inventory` row for every
+/// harvested drop, also ticks any accepted fieldcraft leve whose
+/// band-0 objective targets that item id. The counter is persisted
+/// through `Database::save_quest` on the same hop.
+#[tokio::test]
+async fn fieldcraft_leve_progress_ticks_on_add_item() {
+    use crate::actor::quest::{Quest, quest_actor_id};
+    use crate::leve::{ACCEPTED_FLAG_BIT, FIELDCRAFT_LEVE_ID_MIN};
+    use crate::lua::LuaCommandKind;
+    use crate::runtime::quest_apply::apply_runtime_lua_commands;
+    use common::db::ConnCallExt;
+
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (71, 0, 0, 0, 'Prospector')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    // Build a LuaEngine, install the regional-leve catalog from DB.
+    let script_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .join("scripts/lua");
+    let lua = Arc::new(crate::lua::LuaEngine::new(&script_root));
+    let resolver = db
+        .load_regional_leve_resolver()
+        .await
+        .expect("catalog load");
+    lua.catalogs().install_regional_leve_resolver(resolver);
+
+    // Player character has accepted leve 130_003 (Thanalan — Copper
+    // Ore). Band 0 objective is 5 ore.
+    let registry = Arc::new(ActorRegistry::new());
+    let mut character = crate::actor::Character::new(71);
+    let mut quest = Quest::new(quest_actor_id(130_003), "fcl130003".to_string());
+    quest.set_flag(ACCEPTED_FLAG_BIT);
+    quest.clear_dirty();
+    character.quest_journal.add(quest);
+    registry
+        .insert(ActorHandle::new(71, ActorKindTag::Player, 180, 71, character))
+        .await;
+
+    // Harvest 3 copper ore — progress should tick to 3.
+    let world = Arc::new(WorldManager::new());
+    apply_runtime_lua_commands(
+        vec![LuaCommandKind::AddItem {
+            actor_id: 71,
+            item_package: crate::inventory::PKG_NORMAL,
+            item_id: 10_001_006,
+            quantity: 3,
+        }],
+        &registry,
+        &db,
+        &world,
+        Some(&lua),
+    )
+    .await;
+
+    let c1_after_first = {
+        let h = registry.get(71).await.unwrap();
+        let c = h.character.read().await;
+        let q = c.quest_journal.get(130_003).expect("leve still present");
+        q.get_counter(0)
+    };
+    assert_eq!(c1_after_first, 3, "progress should tick by the AddItem quantity");
+
+    // Second harvest of 2 ore — should saturate at the band-0 target
+    // (5) and flip the COMPLETED_FLAG_BIT via `advance_progress`.
+    apply_runtime_lua_commands(
+        vec![LuaCommandKind::AddItem {
+            actor_id: 71,
+            item_package: crate::inventory::PKG_NORMAL,
+            item_id: 10_001_006,
+            quantity: 2,
+        }],
+        &registry,
+        &db,
+        &world,
+        Some(&lua),
+    )
+    .await;
+
+    let (c1_after_second, completed) = {
+        let h = registry.get(71).await.unwrap();
+        let c = h.character.read().await;
+        let q = c.quest_journal.get(130_003).expect("leve still present");
+        (q.get_counter(0), q.get_flag(crate::leve::COMPLETED_FLAG_BIT))
+    };
+    assert_eq!(c1_after_second, 5, "progress saturates at objective");
+    assert!(completed, "COMPLETED_FLAG_BIT should have flipped");
+
+    // DB persistence round-trip: the save_quest side-effect landed.
+    let (db_counter1, db_flags): (i64, i64) = db
+        .conn_for_test()
+        .call_db(|c| {
+            let row = c.query_row(
+                r"SELECT counter1, flags FROM characters_quest_scenario
+                  WHERE characterId = 71 AND questId = ?1",
+                [130_003i64],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+            )?;
+            Ok(row)
+        })
+        .await
+        .unwrap();
+    assert_eq!(db_counter1, 5);
+    assert!(
+        db_flags & (1 << crate::leve::COMPLETED_FLAG_BIT) != 0,
+        "COMPLETED_FLAG_BIT should be persisted",
+    );
+    // Silence unused-import warning on the range bound while also
+    // asserting the fixture really is a fieldcraft leve.
+    assert!(130_003 >= FIELDCRAFT_LEVE_ID_MIN);
+}
+
+/// Fieldcraft leve progress is gated on the ACCEPTED_FLAG_BIT — a
+/// random harvest by a player who has a matching leve in their
+/// journal but hasn't accepted it at a levemete must not tick.
+#[tokio::test]
+async fn fieldcraft_leve_progress_gated_on_accepted_flag() {
+    use crate::actor::quest::{Quest, quest_actor_id};
+    use crate::lua::LuaCommandKind;
+    use crate::runtime::quest_apply::apply_runtime_lua_commands;
+    use common::db::ConnCallExt;
+
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (72, 0, 0, 0, 'NotAccepted')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let script_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("scripts/lua");
+    let lua = Arc::new(crate::lua::LuaEngine::new(&script_root));
+    let resolver = db.load_regional_leve_resolver().await.unwrap();
+    lua.catalogs().install_regional_leve_resolver(resolver);
+
+    let registry = Arc::new(ActorRegistry::new());
+    let mut character = crate::actor::Character::new(72);
+    let mut quest = Quest::new(quest_actor_id(130_003), "fcl130003".to_string());
+    quest.clear_dirty(); // ACCEPTED flag intentionally left unset
+    character.quest_journal.add(quest);
+    registry
+        .insert(ActorHandle::new(72, ActorKindTag::Player, 180, 72, character))
+        .await;
+
+    let world = Arc::new(WorldManager::new());
+    apply_runtime_lua_commands(
+        vec![LuaCommandKind::AddItem {
+            actor_id: 72,
+            item_package: crate::inventory::PKG_NORMAL,
+            item_id: 10_001_006,
+            quantity: 3,
+        }],
+        &registry,
+        &db,
+        &world,
+        Some(&lua),
+    )
+    .await;
+
+    let c1 = {
+        let h = registry.get(72).await.unwrap();
+        let c = h.character.read().await;
+        let q = c.quest_journal.get(130_003).expect("leve still present");
+        q.get_counter(0)
+    };
+    assert_eq!(c1, 0, "unaccepted leve should not tick");
+}
+
+/// Battlecraft progress: calling `advance_battlecraft_leves` with
+/// the player id and the killed actor-class id ticks matching
+/// accepted leves. The `fire_on_kill_bnpc` path already invokes
+/// this helper; we test the helper directly here to avoid needing
+/// a full BattleNpc + zone setup.
+#[tokio::test]
+async fn battlecraft_leve_progress_ticks_on_kill() {
+    use crate::actor::quest::{Quest, quest_actor_id};
+    use crate::leve::ACCEPTED_FLAG_BIT;
+    use crate::runtime::quest_apply::advance_battlecraft_leves;
+    use common::db::ConnCallExt;
+
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (73, 0, 0, 0, 'Huntsman')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let script_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("scripts/lua");
+    let lua = Arc::new(crate::lua::LuaEngine::new(&script_root));
+    let resolver = db.load_regional_leve_resolver().await.unwrap();
+    lua.catalogs().install_regional_leve_resolver(resolver);
+
+    let registry = Arc::new(ActorRegistry::new());
+    let mut character = crate::actor::Character::new(73);
+    // Leve 140_003 (Thanalan drake extermination). Band 0 wants 3
+    // kills.
+    let mut quest = Quest::new(quest_actor_id(140_003), "bcl140003".to_string());
+    quest.set_flag(ACCEPTED_FLAG_BIT);
+    quest.clear_dirty();
+    character.quest_journal.add(quest);
+    registry
+        .insert(ActorHandle::new(73, ActorKindTag::Player, 180, 73, character))
+        .await;
+
+    // Kill three drakes — three separate invocations, one per kill.
+    let mut completions = Vec::new();
+    for _ in 0..3 {
+        let c = advance_battlecraft_leves(73, 5_000_091, &registry, &db, Some(&lua)).await;
+        completions.extend(c);
+    }
+    assert_eq!(completions, vec![140_003], "third kill should complete exactly once");
+
+    let (progress, completed) = {
+        let h = registry.get(73).await.unwrap();
+        let c = h.character.read().await;
+        let q = c.quest_journal.get(140_003).expect("leve still present");
+        (q.get_counter(0), q.get_flag(crate::leve::COMPLETED_FLAG_BIT))
+    };
+    assert_eq!(progress, 3);
+    assert!(completed);
+
+    // Fourth kill after completion — the `is_completed` guard in
+    // `RegionalLeveView::advance_progress` short-circuits and no
+    // further DB write happens.
+    let completions_4 =
+        advance_battlecraft_leves(73, 5_000_091, &registry, &db, Some(&lua)).await;
+    assert!(completions_4.is_empty(), "post-completion calls must be idempotent");
+}
+
+/// Missing-catalog safety: when no resolver is installed (fresh DB
+/// before boot-time install, or catalog load error), the progress
+/// helpers no-op cleanly rather than panicking.
+#[tokio::test]
+async fn regional_leve_progress_short_circuits_without_catalog() {
+    use crate::runtime::quest_apply::{advance_battlecraft_leves, advance_fieldcraft_leves};
+
+    let db = Arc::new(crate::database::Database::open(tempdb()).await.unwrap());
+    let script_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("scripts/lua");
+    let lua = Arc::new(crate::lua::LuaEngine::new(&script_root));
+    // Intentionally do NOT install a resolver.
+
+    let registry = Arc::new(ActorRegistry::new());
+    let fc = advance_fieldcraft_leves(1, 10_001_006, 5, &registry, &db, Some(&lua)).await;
+    let bc = advance_battlecraft_leves(1, 5_000_091, &registry, &db, Some(&lua)).await;
+    assert!(fc.is_empty());
+    assert!(bc.is_empty());
+}

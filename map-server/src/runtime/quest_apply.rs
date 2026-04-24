@@ -166,6 +166,19 @@ pub async fn apply_runtime_lua_command(
             quantity,
         } => {
             apply_add_item(actor_id, item_package, item_id, quantity, db).await;
+            // Tier 3 #13 — tick any accepted fieldcraft leves whose
+            // objective targets this item. Runs after `apply_add_item`
+            // so the DB write sequence is: inventory row → leve
+            // progress. Short-circuits cleanly when the catalog isn't
+            // installed (fresh-DB boot) or the player has no matching
+            // active leve.
+            if item_package == crate::inventory::PKG_NORMAL
+                && quantity > 0
+                && item_id != 0
+            {
+                let delta = quantity.min(u16::MAX as i32) as u16;
+                advance_fieldcraft_leves(actor_id, item_id, delta, registry, db, lua).await;
+            }
             true
         }
         LC::QuestOnNotice { player_id, quest_id } => {
@@ -1284,6 +1297,147 @@ pub async fn apply_add_item(
             );
         }
     }
+}
+
+/// Tier 3 #13 — advance any fieldcraft leves the player currently
+/// has accepted whose band-0 objective matches `item_catalog_id`.
+/// Returns the list of leve ids that transitioned to completed on
+/// this call (used by callers that want to emit a "leve complete"
+/// GameMessage without a before/after diff).
+///
+/// Short-circuits when:
+///  * no [`RegionalLeveResolver`] is installed (fresh DB, boot
+///    race) — catalogs hand out `None` and we early-return;
+///  * the resolver reports zero leves targeting this item — no
+///    matching active leve can possibly exist;
+///  * the player isn't in [`ActorRegistry`] — mirrors every other
+///    apply helper.
+///
+/// Progress persists through [`Database::save_quest`] exactly like
+/// any other quest mutation — the dirty-bit on [`Quest`] flips
+/// inside [`RegionalLeveView::advance_progress`] so existing
+/// machinery picks it up.
+///
+/// [`RegionalLeveResolver`]: crate::leve::RegionalLeveResolver
+/// [`RegionalLeveView::advance_progress`]: crate::leve::RegionalLeveView::advance_progress
+pub async fn advance_fieldcraft_leves(
+    player_id: u32,
+    item_catalog_id: u32,
+    delta: u16,
+    registry: &ActorRegistry,
+    db: &Database,
+    lua: Option<&Arc<LuaEngine>>,
+) -> Vec<u32> {
+    if delta == 0 {
+        return Vec::new();
+    }
+    let Some(lua) = lua else {
+        return Vec::new();
+    };
+    let Some(resolver) = lua.catalogs().regional_leve_resolver() else {
+        return Vec::new();
+    };
+    let leve_ids = resolver.fieldcraft_leves_for_item(item_catalog_id);
+    if leve_ids.is_empty() {
+        return Vec::new();
+    }
+    advance_regional_leves(player_id, leve_ids, delta, &resolver, registry, db).await
+}
+
+/// Tier 3 #13 — battlecraft counterpart. Advance any accepted
+/// battlecraft leves whose band-0 objective matches
+/// `actor_class_id`. Invoked from [`fire_on_kill_bnpc`] after the
+/// kill is resolved.
+///
+/// [`fire_on_kill_bnpc`]: crate::runtime::quest_hook::fire_on_kill_bnpc
+pub async fn advance_battlecraft_leves(
+    player_id: u32,
+    actor_class_id: u32,
+    registry: &ActorRegistry,
+    db: &Database,
+    lua: Option<&Arc<LuaEngine>>,
+) -> Vec<u32> {
+    let Some(lua) = lua else {
+        return Vec::new();
+    };
+    let Some(resolver) = lua.catalogs().regional_leve_resolver() else {
+        return Vec::new();
+    };
+    let leve_ids = resolver.battlecraft_leves_for_class(actor_class_id);
+    if leve_ids.is_empty() {
+        return Vec::new();
+    }
+    advance_regional_leves(player_id, leve_ids, 1, &resolver, registry, db).await
+}
+
+/// Shared fieldcraft/battlecraft inner loop. Walks the candidate
+/// leve ids, finds each one's quest slot, advances the view, and
+/// persists any dirty slots. Keeps the fan-out shape in one place
+/// so the fieldcraft and battlecraft entry points stay narrow.
+async fn advance_regional_leves(
+    player_id: u32,
+    leve_ids: &[u32],
+    delta: u16,
+    resolver: &crate::leve::RegionalLeveResolver,
+    registry: &ActorRegistry,
+    db: &Database,
+) -> Vec<u32> {
+    let Some(handle) = registry.get(player_id).await else {
+        return Vec::new();
+    };
+    let mut completed = Vec::new();
+    // Collect dirty-slot save work under the write lock, then drop
+    // the lock before awaiting the DB so a slow disk write doesn't
+    // hold the player's character lock.
+    let pending_saves: Vec<(i32, u32, u32, u32, [u16; 3], u32)> = {
+        let mut c = handle.character.write().await;
+        let mut saves = Vec::new();
+        for &leve_id in leve_ids {
+            let Some(data) = resolver.by_id(leve_id) else {
+                continue;
+            };
+            let Some(slot) = c.quest_journal.slot_of(leve_id) else {
+                continue;
+            };
+            let Some(quest) = c.quest_journal.slots[slot].as_mut() else {
+                continue;
+            };
+            let just_completed = {
+                let mut view = crate::leve::RegionalLeveView::new(quest, data);
+                view.advance_progress(delta)
+            };
+            if just_completed {
+                completed.push(leve_id);
+            }
+            if quest.is_dirty() {
+                let sequence = quest.get_sequence();
+                let flags = quest.get_flags();
+                let counters = [
+                    quest.get_counter(0),
+                    quest.get_counter(1),
+                    quest.get_counter(2),
+                ];
+                let actor_id = quest.actor_id;
+                quest.clear_dirty();
+                saves.push((slot as i32, actor_id, sequence, flags, counters, leve_id));
+            }
+        }
+        saves
+    };
+    for (slot, actor_id, sequence, flags, [c1, c2, c3], leve_id) in pending_saves {
+        if let Err(e) = db
+            .save_quest(player_id, slot, actor_id, sequence, flags, c1, c2, c3)
+            .await
+        {
+            tracing::warn!(
+                player = player_id,
+                leve = leve_id,
+                err = %e,
+                "regional leve progress: save_quest failed",
+            );
+        }
+    }
+    completed
 }
 
 pub async fn apply_add_gil(actor_id: u32, amount: i32, db: &Database) {

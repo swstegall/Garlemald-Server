@@ -1025,6 +1025,118 @@ impl Database {
         Ok(rows)
     }
 
+    /// Load every row of `gamedata_regional_leves` into a
+    /// [`RegionalLeveResolver`](crate::leve::RegionalLeveResolver).
+    /// Parallels [`Database::load_recipes`] / [`Database::load_gather_resolver`]
+    /// — one catalog, built once at boot, shared across Lua VMs via
+    /// [`Catalogs::install_regional_leve_resolver`](crate::lua::Catalogs::install_regional_leve_resolver).
+    /// Rows with an unknown `leveType` discriminator are skipped (not
+    /// silently corrupted into the default), so the resolver never
+    /// misroutes progress events.
+    pub async fn load_regional_leve_resolver(
+        &self,
+    ) -> Result<crate::leve::RegionalLeveResolver> {
+        let rows = self
+            .conn
+            .call_db(|c| {
+                let mut stmt = c.prepare(
+                    r"SELECT id, leveType, plateId, borderId, recommendedClass,
+                             issuingLocation, guildleveLocation, deliveryDisplayName, region,
+                             objectiveTargetId1, objectiveQuantity1, recommendedLevel1,
+                             rewardItemId1, rewardQuantity1, rewardGil1,
+                             objectiveTargetId2, objectiveQuantity2, recommendedLevel2,
+                             rewardItemId2, rewardQuantity2, rewardGil2,
+                             objectiveTargetId3, objectiveQuantity3, recommendedLevel3,
+                             rewardItemId3, rewardQuantity3, rewardGil3,
+                             objectiveTargetId4, objectiveQuantity4, recommendedLevel4,
+                             rewardItemId4, rewardQuantity4, rewardGil4
+                      FROM gamedata_regional_leves
+                      ORDER BY id ASC",
+                )?;
+                let rows: Vec<crate::leve::RegionalLeveData> = stmt
+                    .query_map([], |r| {
+                        let Some(ty) = crate::leve::LeveType::from_repr(r.get::<_, i64>(1)?) else {
+                            // Unknown discriminator → return a sentinel
+                            // the outer filter drops. We can't return
+                            // `None` directly from inside the rusqlite
+                            // closure, so mark the id as 0 and filter
+                            // after.
+                            return Ok(crate::leve::RegionalLeveData {
+                                id: 0,
+                                leve_type: crate::leve::LeveType::Fieldcraft,
+                                plate_id: 0,
+                                border_id: 0,
+                                recommended_class: 0,
+                                issuing_location: 0,
+                                leve_location: 0,
+                                delivery_display_name: 0,
+                                region: 0,
+                                objective_target_id: [0; 4],
+                                objective_quantity: [0; 4],
+                                recommended_level: [0; 4],
+                                reward_item_id: [0; 4],
+                                reward_quantity: [0; 4],
+                                reward_gil: [0; 4],
+                            });
+                        };
+                        Ok(crate::leve::RegionalLeveData {
+                            id: r.get::<_, u32>(0)?,
+                            leve_type: ty,
+                            plate_id: r.get::<_, u32>(2).unwrap_or_default(),
+                            border_id: r.get::<_, u32>(3).unwrap_or_default(),
+                            recommended_class: r.get::<_, u32>(4).unwrap_or_default(),
+                            issuing_location: r.get::<_, u32>(5).unwrap_or_default(),
+                            leve_location: r.get::<_, u32>(6).unwrap_or_default(),
+                            delivery_display_name: r.get::<_, u32>(7).unwrap_or_default(),
+                            region: r.get::<_, u32>(8).unwrap_or_default(),
+                            objective_target_id: [
+                                r.get::<_, i32>(9)?,
+                                r.get::<_, i32>(15)?,
+                                r.get::<_, i32>(21)?,
+                                r.get::<_, i32>(27)?,
+                            ],
+                            objective_quantity: [
+                                r.get::<_, i32>(10)?,
+                                r.get::<_, i32>(16)?,
+                                r.get::<_, i32>(22)?,
+                                r.get::<_, i32>(28)?,
+                            ],
+                            recommended_level: [
+                                r.get::<_, i32>(11)?,
+                                r.get::<_, i32>(17)?,
+                                r.get::<_, i32>(23)?,
+                                r.get::<_, i32>(29)?,
+                            ],
+                            reward_item_id: [
+                                r.get::<_, i32>(12)?,
+                                r.get::<_, i32>(18)?,
+                                r.get::<_, i32>(24)?,
+                                r.get::<_, i32>(30)?,
+                            ],
+                            reward_quantity: [
+                                r.get::<_, i32>(13)?,
+                                r.get::<_, i32>(19)?,
+                                r.get::<_, i32>(25)?,
+                                r.get::<_, i32>(31)?,
+                            ],
+                            reward_gil: [
+                                r.get::<_, i32>(14)?,
+                                r.get::<_, i32>(20)?,
+                                r.get::<_, i32>(26)?,
+                                r.get::<_, i32>(32)?,
+                            ],
+                        })
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await?;
+        // Filter out the id-0 sentinels that mark unknown-discriminator
+        // rows (see the `from_repr` None branch above).
+        let filtered = rows.into_iter().filter(|r| r.id != 0);
+        Ok(crate::leve::RegionalLeveResolver::from_rows(filtered))
+    }
+
     /// Grant a stack of a gathered item to `chara_id`'s NORMAL bag.
     /// Matches the C# `Player.GetItemPackage(INVENTORY_NORMAL).AddItem(...)`
     /// contract: if a partial stack of the same item+quality already
