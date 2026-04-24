@@ -647,88 +647,64 @@ async fn dispatch_director_event_started(
     let lua_params_owned: Vec<LuaParam> = lua_params.to_vec();
     let _ = event_type; // event_type is captured by the EventStartPacket but Meteor's dispatch ignores it for onEventStarted — the director branches on eventName.
 
+    // Run onEventStarted inside a coroutine via LuaEngine's helper so
+    // `callClientFunction(...)` inside the hook can `coroutine.yield`
+    // on `_WAIT_EVENT` and the scheduler parks it until the client's
+    // `EventUpdate` packet wakes it through `fire_player_event`.
     let result = tokio::task::spawn_blocking(move || {
-        let (lua_vm, queue) = match lua_clone.load_script(&script_path_clone) {
-            Ok(pair) => pair,
-            Err(e) => {
-                return Err(format!("load_script failed: {e}"));
-            }
-        };
-        let globals = lua_vm.globals();
-        let Some(f): Option<mlua::Function> = globals.get("onEventStarted").ok() else {
-            // Quiet no-op when the director has no `onEventStarted` —
-            // mirrors Meteor's behaviour for directors that only run
-            // `main()`.
-            return Ok((Vec::new(), None));
-        };
-
-        let player = crate::lua::userdata::LuaPlayer {
-            snapshot,
-            queue: queue.clone(),
-        };
-        let player_ud = lua_vm
-            .create_userdata(player)
-            .map_err(|e| format!("create_userdata(LuaPlayer): {e}"))?;
-        let director = crate::lua::userdata::LuaDirectorHandle {
-            name: actor_name_owned,
-            actor_id: director_actor_id,
-            class_path: class_path_owned,
-            queue: queue.clone(),
-        };
-        let director_ud = lua_vm
-            .create_userdata(director)
-            .map_err(|e| format!("create_userdata(LuaDirectorHandle): {e}"))?;
-
-        let mut mv = MultiValue::new();
-        mv.push_back(Value::UserData(player_ud));
-        mv.push_back(Value::UserData(director_ud));
-        // Meteor inserts `eventName` ahead of the original lparams (see
-        // `LuaEngine.EventStarted` `lparams.Insert(0, ...)`). That's
-        // what surfaces as the third script arg — `triggerName` /
-        // `eventName` depending on the script writer.
-        mv.push_back(Value::String(
-            lua_vm
-                .create_string(&event_name_owned)
-                .map_err(|e| format!("create_string(eventName): {e}"))?,
-        ));
-        for p in &lua_params_owned {
-            let v = match p {
-                LuaParam::Int32(i) => Value::Integer(*i as mlua::Integer),
-                LuaParam::UInt32(u) => Value::Integer(*u as mlua::Integer),
-                LuaParam::String(s) => Value::String(
-                    lua_vm
-                        .create_string(s)
-                        .map_err(|e| format!("create_string(lparam): {e}"))?,
-                ),
-                LuaParam::True => Value::Boolean(true),
-                LuaParam::False => Value::Boolean(false),
-                LuaParam::Nil => Value::Nil,
-                LuaParam::Actor(id) => Value::Integer(*id as mlua::Integer),
-                LuaParam::Type7 { actor_id, .. } => Value::Integer(*actor_id as mlua::Integer),
-                LuaParam::Type9 { item1, .. } => Value::Integer(*item1 as mlua::Integer),
-                LuaParam::Byte(b) => Value::Integer(*b as mlua::Integer),
-                LuaParam::Short(s) => Value::Integer(*s as mlua::Integer),
+        lua_clone.spawn_director_on_event_started(&script_path_clone, |lua_vm, queue| {
+            let player = crate::lua::userdata::LuaPlayer {
+                snapshot,
+                queue: queue.clone(),
             };
-            mv.push_back(v);
-        }
+            let player_ud = lua_vm
+                .create_userdata(player)
+                .map_err(|e| anyhow::anyhow!("create_userdata(LuaPlayer): {e}"))?;
+            let director = crate::lua::userdata::LuaDirectorHandle {
+                name: actor_name_owned,
+                actor_id: director_actor_id,
+                class_path: class_path_owned,
+                queue: queue.clone(),
+            };
+            let director_ud = lua_vm
+                .create_userdata(director)
+                .map_err(|e| anyhow::anyhow!("create_userdata(LuaDirectorHandle): {e}"))?;
 
-        let call_err = f.call::<Value>(mv).err().map(|e| format!("{e}"));
-        let commands = crate::lua::command::CommandQueue::drain(&queue);
-        Ok((commands, call_err))
+            let mut mv = MultiValue::new();
+            mv.push_back(Value::UserData(player_ud));
+            mv.push_back(Value::UserData(director_ud));
+            mv.push_back(Value::String(
+                lua_vm
+                    .create_string(&event_name_owned)
+                    .map_err(|e| anyhow::anyhow!("create_string(eventName): {e}"))?,
+            ));
+            for p in &lua_params_owned {
+                let v = match p {
+                    LuaParam::Int32(i) => Value::Integer(*i as mlua::Integer),
+                    LuaParam::UInt32(u) => Value::Integer(*u as mlua::Integer),
+                    LuaParam::String(s) => Value::String(
+                        lua_vm
+                            .create_string(s)
+                            .map_err(|e| anyhow::anyhow!("create_string(lparam): {e}"))?,
+                    ),
+                    LuaParam::True => Value::Boolean(true),
+                    LuaParam::False => Value::Boolean(false),
+                    LuaParam::Nil => Value::Nil,
+                    LuaParam::Actor(id) => Value::Integer(*id as mlua::Integer),
+                    LuaParam::Type7 { actor_id, .. } => Value::Integer(*actor_id as mlua::Integer),
+                    LuaParam::Type9 { item1, .. } => Value::Integer(*item1 as mlua::Integer),
+                    LuaParam::Byte(b) => Value::Integer(*b as mlua::Integer),
+                    LuaParam::Short(s) => Value::Integer(*s as mlua::Integer),
+                };
+                mv.push_back(v);
+            }
+            Ok(mv)
+        })
     })
     .await;
 
-    let (commands, hook_err) = match result {
-        Ok(Ok((cmds, err))) => (cmds, err),
-        Ok(Err(setup_err)) => {
-            tracing::debug!(
-                error = %setup_err,
-                director = director_actor_id,
-                event = %event_name,
-                "director onEventStarted setup failed",
-            );
-            return;
-        }
+    let partial = match result {
+        Ok(p) => p,
         Err(join_err) => {
             tracing::warn!(
                 error = %join_err,
@@ -738,7 +714,8 @@ async fn dispatch_director_event_started(
             return;
         }
     };
-    if let Some(e) = hook_err {
+    let commands = partial.commands;
+    if let Some(e) = partial.error {
         tracing::debug!(
             error = %e,
             director = director_actor_id,
@@ -747,6 +724,29 @@ async fn dispatch_director_event_started(
         );
     }
     if !commands.is_empty() {
+        // Event-flavoured commands (RunEventFunction / EndEvent /
+        // KickEvent) need to flow through the EventOutbox so their
+        // packets actually reach the client. apply_runtime_lua_commands
+        // knows about non-event variants (quest flag mutates, AddExp,
+        // etc.) but isn't wired to the event bridge.
+        if let Some(player_handle) = registry.get(player_actor_id).await {
+            let event_session_snapshot = {
+                let c = player_handle.character.read().await;
+                c.event_session.clone()
+            };
+            let mut outbox = crate::event::outbox::EventOutbox::new();
+            crate::event::lua_bridge::translate_lua_commands_into_outbox(
+                &commands,
+                &event_session_snapshot,
+                &mut outbox,
+            );
+            for e in outbox.drain() {
+                // Use Box::pin here — `dispatch_event_event` can recurse
+                // into `dispatch_director_event_started` (e.g. a nested
+                // KickEvent re-triggers EventStart on another director).
+                Box::pin(dispatch_event_event(&e, registry, world, db, Some(lua))).await;
+            }
+        }
         crate::runtime::quest_apply::apply_runtime_lua_commands(
             commands,
             registry,

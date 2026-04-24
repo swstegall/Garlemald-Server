@@ -26,18 +26,17 @@ function onBeginLogin(player)
 		end
 	end
 
-	--For Opening. Snap canonical position on first-login / reconnect.
+	--For Opening. Set Director and reset position incase d/c.
 	--`pendingOpenerQuest` covers the first-login path (the AddQuest
 	--above hasn't applied against the snapshot yet); `HasQuest` covers
 	--the reconnect path after the AddQuest has already been persisted.
-	--
-	--OpeningDirector setup is currently disabled: login-director spawn
-	--lands but the director actor is not registered in the zone's
-	--actor registry, so the follow-up EventStart on it fails and the
-	--client stays at "Now Loading…". When the director-zone-registration
-	--gap closes, re-enable the `CreateDirector` → `SetLoginDirector` →
-	--`KickEvent("noticeEvent")` chain under each branch.
 	if ((player:HasQuest(110001) == true or pendingOpenerQuest == 110001) and player:GetZoneID() == 193) then
+		director = player:GetZone():CreateDirector("OpeningDirector", false);
+		player:AddDirector(director);
+		director:StartDirector(true);
+		player:SetLoginDirector(director);
+		player:KickEvent(director, "noticeEvent", true);
+
 		player.positionX = 0.016;
 		player.positionY = 10.35;
 		player.positionZ = -36.91;
@@ -47,6 +46,12 @@ function onBeginLogin(player)
 			player:GetQuest(110001):ClearQuestFlags();
 		end
 	elseif ((player:HasQuest(110005) == true or pendingOpenerQuest == 110005) and player:GetZoneID() == 166) then
+		director = player:GetZone():CreateDirector("OpeningDirector", false);
+		player:AddDirector(director);
+		director:StartDirector(false);
+		player:SetLoginDirector(director);
+		player:KickEvent(director, "noticeEvent", true);
+
 		player.positionX = 369.5434;
 		player.positionY = 4.21;
 		player.positionZ = -706.1074;
@@ -56,6 +61,12 @@ function onBeginLogin(player)
 			player:GetQuest(110005):ClearQuestFlags();
 		end
 	elseif ((player:HasQuest(110009) == true or pendingOpenerQuest == 110009) and player:GetZoneID() == 184) then
+		director = player:GetZone():CreateDirector("OpeningDirector", false);
+		player:AddDirector(director);
+		director:StartDirector(false);
+		player:SetLoginDirector(director);
+		player:KickEvent(director, "noticeEvent", true);
+
 		player.positionX = 5.364327;
 		player.positionY = 196.0;
 		player.positionZ = 133.6561;

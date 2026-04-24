@@ -799,11 +799,32 @@ impl PacketProcessor {
                     });
                     self.world.upsert_session(snap).await;
                 }
+                // Register the director in the zone's actor registry so
+                // the subsequent `event::dispatcher::dispatch_director_event_started`
+                // — triggered when the client fires EventStart on the
+                // director (via the login-bundle KickEvent("noticeEvent"))
+                // — can resolve `zone.core.director(actor_id)`. Without
+                // this, the dispatcher logs "director not on zone" and
+                // the client stays at "Now Loading…" waiting for the
+                // opening cutscene.
+                //
+                // The LuaZone:CreateDirector binding pins the director
+                // local_id to 0, so the actor id is deterministic and
+                // we can round-trip it into the registry idempotently.
+                let director_local_id = director_actor_id & 0x0007_FFFF;
+                if let Some(zone_arc) = self.world.zone(zone_actor_id).await {
+                    let mut zone = zone_arc.write().await;
+                    zone.core.create_director_with_id(
+                        director_local_id,
+                        class_path.clone(),
+                        false,
+                    );
+                }
                 tracing::info!(
                     director = director_actor_id,
                     zone = zone_actor_id,
                     class_path = %class_path,
-                    "CreateDirector applied (will emit director spawn in zone-in bundle)"
+                    "CreateDirector applied (registered in zone; will emit director spawn in zone-in bundle)"
                 );
             }
             LC::EndGuildleve {

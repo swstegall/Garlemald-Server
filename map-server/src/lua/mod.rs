@@ -568,6 +568,83 @@ impl LuaEngine {
         PartialLuaCallResult { commands, error }
     }
 
+    /// Run a director's `onEventStarted(player, director, eventName, ...)`
+    /// hook inside a coroutine so scripts can `callClientFunction(...)`
+    /// (which yields on `_WAIT_EVENT`). If the hook yields, park it in
+    /// the shared scheduler — `EventUpdate` packets from the client
+    /// resume it via [`Self::fire_player_event`]. Returns any commands
+    /// emitted before the first yield / return / error.
+    ///
+    /// The builder closure receives the per-call mlua::Lua (lets callers
+    /// construct `LuaPlayer` / `LuaDirectorHandle` userdata bound to
+    /// the freshly-loaded queue) and returns the MultiValue to hand the
+    /// coroutine on the initial resume.
+    pub fn spawn_director_on_event_started<F>(
+        &self,
+        script_path: &Path,
+        build_args: F,
+    ) -> PartialLuaCallResult
+    where
+        F: FnOnce(&mlua::Lua, &Arc<Mutex<CommandQueue>>) -> Result<MultiValue, anyhow::Error>,
+    {
+        let (lua, queue) = match self.load_script(script_path) {
+            Ok(pair) => pair,
+            Err(e) => {
+                return PartialLuaCallResult {
+                    commands: Vec::new(),
+                    error: Some(e),
+                };
+            }
+        };
+        let globals = lua.globals();
+        let f: mlua::Function = match globals.get("onEventStarted") {
+            Ok(f) => f,
+            Err(_) => {
+                return PartialLuaCallResult {
+                    commands: CommandQueue::drain(&queue),
+                    error: None,
+                };
+            }
+        };
+        let args = match build_args(&lua, &queue) {
+            Ok(mv) => mv,
+            Err(e) => {
+                return PartialLuaCallResult {
+                    commands: CommandQueue::drain(&queue),
+                    error: Some(e),
+                };
+            }
+        };
+        let thread = match lua.create_thread(f) {
+            Ok(t) => t,
+            Err(e) => {
+                return PartialLuaCallResult {
+                    commands: CommandQueue::drain(&queue),
+                    error: Some(anyhow::anyhow!("create_thread(onEventStarted): {e}")),
+                };
+            }
+        };
+        let resume_result = thread.resume::<Value>(args);
+        let commands = CommandQueue::drain(&queue);
+        let (value, error) = match resume_result {
+            Ok(v) => (v, None),
+            Err(e) => (
+                Value::Nil,
+                Some(anyhow::anyhow!("director onEventStarted: {e}")),
+            ),
+        };
+        if matches!(thread.status(), mlua::ThreadStatus::Resumable) {
+            let directive = scheduler::classify_yield(&value);
+            let parked = ParkedCoroutine {
+                lua: lua.clone(),
+                thread,
+                queue,
+            };
+            self.repark(parked, directive);
+        }
+        PartialLuaCallResult { commands, error }
+    }
+
     /// Drive the scheduler forward: resume any parked coroutine whose time
     /// has come. Callers invoke this once per game tick.
     ///

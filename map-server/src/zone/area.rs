@@ -245,6 +245,37 @@ impl AreaCore {
         id
     }
 
+    /// Variant of [`create_director`] that takes an explicit `local_id`
+    /// instead of allocating one. Used by the login-director path: the
+    /// `LuaZone:CreateDirector(...)` binding pins the director's
+    /// `local_id` to 0 so the composite actor id is deterministic
+    /// (`(6 << 28) | (zone << 19) | 0`) and the same id can be used in
+    /// both the zone-in spawn packets and the player's `ScriptBind`
+    /// LuaParam list. Returns the composite actor id; if a director
+    /// with the same id is already registered, the existing id is
+    /// returned unchanged (idempotent for reconnect flows).
+    pub fn create_director_with_id(
+        &mut self,
+        local_id: u32,
+        script_path: impl Into<String>,
+        has_content_group: bool,
+    ) -> u32 {
+        let director = crate::director::Director::new(
+            local_id,
+            self.actor_id,
+            script_path,
+            has_content_group,
+        );
+        let id = director.actor_id;
+        self.directors.entry(id).or_insert(director);
+        // Keep the allocator walking forward so future
+        // `create_director` (without explicit id) calls don't collide.
+        if self.next_director_id <= local_id {
+            self.next_director_id = local_id.saturating_add(1);
+        }
+        id
+    }
+
     pub fn director(&self, actor_id: u32) -> Option<&crate::director::Director> {
         self.directors.get(&actor_id)
     }
