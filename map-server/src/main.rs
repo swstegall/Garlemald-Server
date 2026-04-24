@@ -315,5 +315,5 @@ async fn main() -> Result<()> {
         }
     });
 
-    server::run(config, db, world, registry, lua).await
+    server::run(config, db, world, registry, lua, cmd).await
 }

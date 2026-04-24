@@ -27,6 +27,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 
+use crate::command_processor::CommandProcessor;
 use crate::config::Config;
 use crate::data::ClientHandle;
 use crate::database::Database;
@@ -44,6 +45,7 @@ pub async fn run(
     world: Arc<WorldManager>,
     registry: Arc<ActorRegistry>,
     lua: Arc<LuaEngine>,
+    cmd: Arc<CommandProcessor>,
 ) -> Result<()> {
     let addr = format!("{}:{}", config.bind_ip(), config.port());
     let listener = TcpListener::bind(&addr)
@@ -56,6 +58,7 @@ pub async fn run(
         world,
         registry,
         lua: Some(lua),
+        cmd: Some(cmd),
     });
 
     loop {

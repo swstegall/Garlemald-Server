@@ -2,64 +2,69 @@ require("global");
 
 local initClassItems, initRaceItems;
 
-function onBeginLogin(player)		
-	--New character, set the initial quest
+function onBeginLogin(player)
+	--New character, set the initial quest. LuaPlayer's snapshot of
+	--active quests is captured once at the top of this hook, so a
+	--fresh `player:HasQuest(110001)` check below cannot see the quest
+	--we just queued via AddQuest — track the pending add locally and
+	--fold it into the director-branch gate.
+	local pendingOpenerQuest = 0;
 	if (player:GetPlayTime(false) == 0) then
 		initialTown = player:GetInitialTown();
 		if (initialTown == 1 and player:HasQuest(110001) == false) then
-			--player:AddQuest(110001);
+			player:AddQuest(110001);
 			player:SetHomePoint(1280001);
+			pendingOpenerQuest = 110001;
 		elseif (initialTown == 2 and player:HasQuest(110005) == false) then
-			--player:AddQuest(110005);
+			player:AddQuest(110005);
 			player:SetHomePoint(1280061);
+			pendingOpenerQuest = 110005;
 		elseif (initialTown == 3 and player:HasQuest(110009) == false) then
-			--player:AddQuest(110009);
+			player:AddQuest(110009);
 			player:SetHomePoint(1280031);
-		end		
-		
+			pendingOpenerQuest = 110009;
+		end
 	end
 
-	--For Opening. Set Director and reset position incase d/c
-	if (player:HasQuest(110001) == true and player:GetZoneID() == 193) then
-		director = player:GetZone():CreateDirector("OpeningDirector", false);		
-		player:AddDirector(director);
-		director:StartDirector(true);
-		player:SetLoginDirector(director);		
-		player:KickEvent(director, "noticeEvent", true);
-				
+	--For Opening. Snap canonical position on first-login / reconnect.
+	--`pendingOpenerQuest` covers the first-login path (the AddQuest
+	--above hasn't applied against the snapshot yet); `HasQuest` covers
+	--the reconnect path after the AddQuest has already been persisted.
+	--
+	--OpeningDirector setup is currently disabled: login-director spawn
+	--lands but the director actor is not registered in the zone's
+	--actor registry, so the follow-up EventStart on it fails and the
+	--client stays at "Now Loading…". When the director-zone-registration
+	--gap closes, re-enable the `CreateDirector` → `SetLoginDirector` →
+	--`KickEvent("noticeEvent")` chain under each branch.
+	if ((player:HasQuest(110001) == true or pendingOpenerQuest == 110001) and player:GetZoneID() == 193) then
 		player.positionX = 0.016;
 		player.positionY = 10.35;
 		player.positionZ = -36.91;
 		player.rotation = 0.025;
-		player:GetQuest(110001):ClearQuestData();
-		player:GetQuest(110001):ClearQuestFlags();
-	elseif (player:HasQuest(110005) == true and player:GetZoneID() == 166) then 
-		director = player:GetZone():CreateDirector("OpeningDirector", false);		
-		player:AddDirector(director);
-		director:StartDirector(false);		
-		player:SetLoginDirector(director);		
-		player:KickEvent(director, "noticeEvent", true);
-		
+		if (player:HasQuest(110001) == true) then
+			player:GetQuest(110001):ClearQuestData();
+			player:GetQuest(110001):ClearQuestFlags();
+		end
+	elseif ((player:HasQuest(110005) == true or pendingOpenerQuest == 110005) and player:GetZoneID() == 166) then
 		player.positionX = 369.5434;
 		player.positionY = 4.21;
 		player.positionZ = -706.1074;
 		player.rotation = -1.26721;
-		player:GetQuest(110005):ClearQuestData();
-		player:GetQuest(110005):ClearQuestFlags();
-	elseif (player:HasQuest(110009) == true and player:GetZoneID() == 184) then
-		--director = player:GetZone():CreateDirector("OpeningDirector", false);		
-		--player:AddDirector(director);
-		--director:StartDirector(false);		
-		--player:SetLoginDirector(director);		
-		--player:KickEvent(director, "noticeEvent", true);
-		--
+		if (player:HasQuest(110005) == true) then
+			player:GetQuest(110005):ClearQuestData();
+			player:GetQuest(110005):ClearQuestFlags();
+		end
+	elseif ((player:HasQuest(110009) == true or pendingOpenerQuest == 110009) and player:GetZoneID() == 184) then
 		player.positionX = 5.364327;
 		player.positionY = 196.0;
 		player.positionZ = 133.6561;
 		player.rotation = -2.849384;
-		player:GetQuest(110009):ClearQuestData();
-		player:GetQuest(110009):ClearQuestFlags();
-	end	
+		if (player:HasQuest(110009) == true) then
+			player:GetQuest(110009):ClearQuestData();
+			player:GetQuest(110009):ClearQuestFlags();
+		end
+	end
 end
 
 function onLogin(player)

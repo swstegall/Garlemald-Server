@@ -1504,6 +1504,7 @@ async fn quest_set_enpc_emits_event_status_and_quest_graphic_packets() {
         world: world.clone(),
         registry: registry.clone(),
         lua: Some(lua.clone()),
+            cmd: None,
     };
 
     // Drive the apply path the way the real processor does when it
@@ -3283,6 +3284,7 @@ async fn spawn_my_retainer_populates_session_snapshot() {
         world: world.clone(),
         registry: registry.clone(),
         lua: Some(lua.clone()),
+            cmd: None,
     };
     let handle = registry.get(7).await.expect("player handle");
 
@@ -3392,6 +3394,7 @@ async fn spawn_my_retainer_sends_spawn_bundle_and_despawn_sends_remove() {
         world: world.clone(),
         registry: registry.clone(),
         lua: Some(lua.clone()),
+            cmd: None,
     };
     let handle = registry.get(8).await.expect("player handle");
 
@@ -3619,6 +3622,7 @@ async fn set_sleeping_snaps_to_bed_when_in_inn_room() {
         world: world.clone(),
         registry: registry.clone(),
         lua: Some(lua.clone()),
+            cmd: None,
     };
     let handle = registry.get(42).await.unwrap();
 
@@ -3710,6 +3714,7 @@ async fn set_sleeping_no_ops_outside_inn_rooms() {
         world: world.clone(),
         registry: registry.clone(),
         lua: Some(lua.clone()),
+            cmd: None,
     };
     let handle = registry.get(7).await.unwrap();
 
@@ -3768,6 +3773,7 @@ async fn start_dream_sets_session_id_then_end_clears_it() {
         world: world.clone(),
         registry: registry.clone(),
         lua: Some(lua),
+        cmd: None,
     };
     let handle = registry.get(13).await.unwrap();
 
@@ -3832,6 +3838,7 @@ async fn logout_command_emits_logout_packet_to_owner_session() {
         world: world.clone(),
         registry: registry.clone(),
         lua: Some(lua),
+        cmd: None,
     };
     let handle = registry.get(33).await.unwrap();
 
@@ -3895,6 +3902,7 @@ async fn quitgame_command_emits_quit_packet_to_owner_session() {
         world: world.clone(),
         registry: registry.clone(),
         lua: Some(lua),
+        cmd: None,
     };
     let handle = registry.get(34).await.unwrap();
 
@@ -4102,6 +4110,7 @@ async fn issue_chocobo_lua_command_mirrors_state() {
         world: world.clone(),
         registry: registry.clone(),
         lua: Some(lua.clone()),
+            cmd: None,
     };
     let handle = registry.get(55).await.unwrap();
     processor
@@ -5603,6 +5612,7 @@ async fn full_leve_main_coroutine_sequence_drains_through_dispatcher() {
         world: world.clone(),
         registry: registry.clone(),
         lua: Some(lua),
+        cmd: None,
     };
     let handle = registry.get(190).await.unwrap();
 
@@ -5766,6 +5776,7 @@ async fn abandon_guildleve_emits_abandon_message_and_grants_no_seals() {
         world: world.clone(),
         registry: registry.clone(),
         lua: Some(lua),
+        cmd: None,
     };
     let handle = registry.get(191).await.unwrap();
     processor
@@ -5928,6 +5939,7 @@ async fn director_main_coroutine_wait_then_end_guildleve_drains_through_ticker()
         world: world.clone(),
         registry: registry.clone(),
         lua: Some(lua.clone()),
+            cmd: None,
     };
     let handle = registry.get(192).await.unwrap();
 
@@ -6202,6 +6214,7 @@ async fn lua_end_guildleve_command_drains_through_dispatcher_and_grants_seals() 
         world: world.clone(),
         registry: registry.clone(),
         lua: Some(lua),
+        cmd: None,
     };
     let handle = registry.get(185).await.unwrap();
 
@@ -6379,6 +6392,7 @@ async fn send_mount_appearance_broadcasts_to_nearby_players() {
         world: world.clone(),
         registry: registry.clone(),
         lua: Some(lua.clone()),
+            cmd: None,
     };
     let handle = registry.get(1).await.unwrap();
     processor
@@ -7159,6 +7173,7 @@ async fn join_gc_sets_chara_state_and_db() {
         world: world.clone(),
         registry: registry.clone(),
         lua: Some(lua.clone()),
+            cmd: None,
     };
     let handle = registry.get(88).await.unwrap();
 
@@ -7290,6 +7305,7 @@ async fn promote_gc_happy_path_spends_seals_and_bumps_rank() {
         world: world.clone(),
         registry: registry.clone(),
         lua: Some(lua),
+        cmd: None,
     };
     let handle = registry.get(171).await.unwrap();
     processor
@@ -7475,6 +7491,7 @@ async fn promote_gc_salute_broadcasts_to_nearby_player() {
         world: world.clone(),
         registry: registry.clone(),
         lua: Some(lua),
+        cmd: None,
     };
     let handle = registry.get(175).await.unwrap();
     processor
@@ -7573,6 +7590,7 @@ async fn promote_gc_refuses_when_seals_below_cost() {
         world: world.clone(),
         registry: registry.clone(),
         lua: Some(lua),
+        cmd: None,
     };
     let handle = registry.get(172).await.unwrap();
     processor
@@ -7662,6 +7680,7 @@ async fn promote_gc_refuses_when_not_enlisted_in_target_gc() {
         world: world.clone(),
         registry: registry.clone(),
         lua: Some(lua),
+        cmd: None,
     };
     let handle = registry.get(173).await.unwrap();
     processor
@@ -7746,6 +7765,7 @@ async fn promote_gc_refuses_at_story_rank_cap() {
         world: world.clone(),
         registry: registry.clone(),
         lua: Some(lua),
+        cmd: None,
     };
     let handle = registry.get(174).await.unwrap();
     processor
@@ -7835,6 +7855,7 @@ async fn promote_gc_refuses_at_sergeant_tier_shift_without_quest_completed() {
         world: world.clone(),
         registry: registry.clone(),
         lua: Some(lua),
+        cmd: None,
     };
     let handle = registry.get(177).await.unwrap();
     processor
@@ -7921,6 +7942,7 @@ async fn promote_gc_passes_sergeant_tier_shift_when_quest_completed() {
         world: world.clone(),
         registry: registry.clone(),
         lua: Some(lua),
+        cmd: None,
     };
     let handle = registry.get(178).await.unwrap();
     processor
@@ -8930,6 +8952,7 @@ async fn spawn_my_retainer_records_meeting_group_id_on_snapshot() {
         world: world.clone(),
         registry: registry.clone(),
         lua: None,
+        cmd: None,
     };
     let handle = registry.get(90).await.expect("player handle");
 
@@ -9157,6 +9180,7 @@ async fn processor_rename_retainer_persists() {
         world: world.clone(),
         registry: registry.clone(),
         lua: None,
+        cmd: None,
     };
     let handle = registry.get(95).await.expect("player handle");
     processor

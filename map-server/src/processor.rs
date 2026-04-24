@@ -63,6 +63,12 @@ pub struct PacketProcessor {
     /// Optional — when present, the event dispatcher calls
     /// `onEventStarted` / `isObjectivesComplete` / etc. on real scripts.
     pub lua: Option<Arc<LuaEngine>>,
+    /// Optional — when present, `!command` chat messages dispatch into
+    /// the same typed command shim the stdin console reader uses, so
+    /// in-game chat becomes an auxiliary GM console (useful when the
+    /// map-server is launched with stdin redirected to /dev/null, which
+    /// is the common case for `run-all.sh`-backgrounded runs).
+    pub cmd: Option<Arc<crate::command_processor::CommandProcessor>>,
 }
 
 /// Derive a deterministic `group_id` for the retainer-meeting group
@@ -3625,16 +3631,34 @@ impl PacketProcessor {
             return Ok(());
         };
 
-        // GM `!command` shortcut — eat the message on match.
+        // GM `!command` shortcut — eat the message on match. When we
+        // have a CommandProcessor handle, dispatch the message verbatim
+        // through the same typed shim the stdin console reader uses.
+        // This turns in-game chat into an auxiliary GM console — useful
+        // since `run-all.sh`-backgrounded map-servers have stdin tied
+        // to /dev/null so the stdin path is dead in practice.
         if pkt.message.starts_with('!') {
-            tracing::debug!(
+            let line = pkt.message[1..].to_string();
+            tracing::info!(
                 session = session_id,
-                cmd = %pkt.message,
-                "gm command prefix (Lua runner pending)",
+                cmd = %line,
+                "gm command from chat",
             );
-            // Phase 7d stub — the Lua gm_command runner already exists
-            // in `lua::gm_command`; hook it up once the LuaEngine is
-            // wired into PacketProcessor in the cross-cutting sprint.
+            if let Some(cmd) = &self.cmd {
+                match cmd.run(&line).await {
+                    Ok(response) if !response.is_empty() => {
+                        tracing::info!(%response, "command result");
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::warn!(error = %e, "gm command failed");
+                    }
+                }
+            } else {
+                tracing::warn!(
+                    "gm command requested via chat but CommandProcessor is not wired",
+                );
+            }
             return Ok(());
         }
 

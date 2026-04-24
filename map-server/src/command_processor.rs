@@ -572,24 +572,48 @@ impl CommandProcessor {
             return format!("{name} is not online");
         };
         // Persist destination + base position on CharaState so the
-        // next zone-in bundle reads them. Full DoZoneChange packet
-        // emission requires the session + client handles; this GM
-        // stub stops at mutating server-side state so tests can
-        // round-trip.
+        // next zone-in bundle reads them.
+        let rotation;
+        let current_zone_id;
+        let actor_id = handle.actor_id;
+        let session_id = handle.session_id;
         {
             let mut c = handle.character.write().await;
+            current_zone_id = c.base.zone_id;
+            rotation = c.base.rotation;
             c.base.zone_id = zone_id;
             c.base.position_x = x;
             c.base.position_y = y;
             c.base.position_z = z;
         }
-        if let Some(mut session) = self.world.session(handle.session_id).await {
+        if let Some(mut session) = self.world.session(session_id).await {
             session.destination_zone_id = zone_id;
             session.destination_x = x;
             session.destination_y = y;
             session.destination_z = z;
             session.destination_spawn_type = 2; // retail "warp by gm" code
             self.world.upsert_session(session).await;
+        }
+        // Same-zone warp: emit a SetActorPosition packet so the client
+        // actually moves. Cross-zone warp needs a full DoZoneChange
+        // flow the caller can drive by logging out + logging back in.
+        // `spawn_type=2` matches the retail "warp-by-GM" spawn code;
+        // `is_zoning_player=false` because we're not going through the
+        // loading screen. (Cross-zone variant left as a follow-up.)
+        if current_zone_id == zone_id {
+            if let Some(client) = self.world.client(session_id).await {
+                let pkt = crate::packets::send::build_set_actor_position(
+                    actor_id,
+                    actor_id as i32,
+                    x,
+                    y,
+                    z,
+                    rotation,
+                    2,
+                    false,
+                );
+                client.send_bytes(pkt.to_bytes()).await;
+            }
         }
         format!(
             "warped {name} to zone {zone_id} at ({x:.2}, {y:.2}, {z:.2})"
