@@ -126,6 +126,12 @@ pub struct SpawnedRetainer {
     /// can keep the flag alongside the other summon state without a
     /// second HashMap.
     pub sent_spawn_packets: bool,
+    /// ID of the `RetainerMeetingRelationGroup` that binds the
+    /// player + retainer for the duration of the summon. `0` when
+    /// the group hasn't been instantiated yet (processor sets it on
+    /// a successful spawn; despawn reads it back to emit the
+    /// matching `GroupDeleted` event). Tier 4 #14 B.
+    pub group_id: u64,
 }
 
 #[derive(Debug, Clone)]

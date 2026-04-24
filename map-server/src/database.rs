@@ -3293,7 +3293,9 @@ impl Database {
             .call_db(move |c| {
                 let v = c
                     .query_row(
-                        r"SELECT sr.id, sr.name, sr.actorClassId, sr.cdIDOffset,
+                        r"SELECT sr.id,
+                                 COALESCE(NULLIF(cr.customName, ''), sr.name) AS displayName,
+                                 sr.actorClassId, sr.cdIDOffset,
                                  sr.placeName, sr.conditions, sr.level,
                                  COALESCE(ac.classPath, '')
                           FROM characters_retainers cr
@@ -3419,6 +3421,42 @@ impl Database {
                     r"DELETE FROM characters_retainers
                       WHERE characterId = :cid AND retainerId = :rid",
                     named_params! { ":cid": chara_id, ":rid": retainer_id },
+                )?;
+                Ok(n)
+            })
+            .await?;
+        Ok(affected > 0)
+    }
+
+    /// Tier 4 #14 E — rename a hired retainer. Writes to the
+    /// per-character `customName` column on `characters_retainers`
+    /// (added by seed 050) rather than mutating the shared
+    /// `server_retainers.name` template row, so a rename by one
+    /// owner doesn't leak into another owner who hired the same
+    /// template id. Also clears `doRename = 0` on success, matching
+    /// Meteor's post-rename reset that suppresses the "rename
+    /// available" UI hint once used.
+    ///
+    /// Returns `Ok(true)` when a row was updated, `Ok(false)` when
+    /// the `(character, retainer)` pair isn't hired (no-op).
+    pub async fn rename_retainer(
+        &self,
+        chara_id: u32,
+        retainer_id: u32,
+        new_name: String,
+    ) -> Result<bool> {
+        let affected = self
+            .conn
+            .call_db(move |c| {
+                let n = c.execute(
+                    r"UPDATE characters_retainers
+                      SET customName = :name, doRename = 0
+                      WHERE characterId = :cid AND retainerId = :rid",
+                    named_params! {
+                        ":name": new_name,
+                        ":cid": chara_id,
+                        ":rid": retainer_id,
+                    },
                 )?;
                 Ok(n)
             })

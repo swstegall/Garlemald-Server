@@ -3440,10 +3440,12 @@ async fn spawn_my_retainer_sends_spawn_bundle_and_despawn_sends_remove() {
     while let Ok(p) = rx.try_recv() {
         despawn_packets.push(p);
     }
+    // Post-Tier 4 #14 B: despawn now emits RemoveActor + DeleteGroup
+    // (the retainer-meeting relation group) = exactly 2 packets.
     assert_eq!(
         despawn_packets.len(),
-        1,
-        "despawn should emit exactly one packet (RemoveActor)",
+        2,
+        "despawn should emit RemoveActor + DeleteGroup",
     );
     assert!(
         world.session(8).await.unwrap().spawned_retainer.is_none(),
@@ -8251,6 +8253,7 @@ async fn lua_retainer_add_bazaar_item_binding_queues_command() {
         position: (0.0, 0.0, 0.0),
         rotation: 0.0,
         queue: queue.clone(),
+        player_actor_id: 0,
     };
 
     lua.globals().set("retainer", retainer).unwrap();
@@ -8826,6 +8829,7 @@ async fn lua_retainer_add_item_emits_retainer_command_variant() {
         position: (0.0, 0.0, 0.0),
         rotation: 0.0,
         queue: queue.clone(),
+        player_actor_id: 0,
     };
     lua.globals().set("myretainer", retainer).unwrap();
 
@@ -8857,4 +8861,315 @@ async fn lua_retainer_add_item_emits_retainer_command_variant() {
     }
 
     let _ = std::fs::remove_file(&probe);
+}
+
+// ---------------------------------------------------------------------------
+// Retainer — Tier 4 #14 B (meeting group) + #14 E (rename)
+// ---------------------------------------------------------------------------
+
+/// Tier 4 #14 B smoke: a successful `SpawnMyRetainer` stamps a
+/// non-zero `group_id` on the session's `SpawnedRetainer` snapshot,
+/// and `DespawnMyRetainer` clears the snapshot entirely.
+///
+/// The group-packet fan-out itself is covered by the existing
+/// `spawn_my_retainer_sends_spawn_bundle_and_despawn_sends_remove`
+/// test (updated to assert 2 despawn packets = RemoveActor +
+/// DeleteGroup post-#14 B). This test narrows in on the snapshot
+/// lifecycle so a future regression that forgets to persist the
+/// group id surfaces with a targeted failure.
+#[tokio::test]
+async fn spawn_my_retainer_records_meeting_group_id_on_snapshot() {
+    use crate::data::{ClientHandle, Session as MapSession};
+    use crate::lua::LuaCommandKind as LuaCommand;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use common::db::ConnCallExt;
+    use tokio::sync::mpsc;
+
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (90, 0, 0, 0, 'Meeting')",
+                [],
+            )?;
+            c.execute(
+                r"INSERT OR IGNORE INTO characters_retainers (characterId, retainerId, doRename)
+                  VALUES (90, 1001, 0)",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let character = Character::new(90);
+    registry
+        .insert(ActorHandle::new(90, ActorKindTag::Player, 180, 90, character))
+        .await;
+
+    // Wire a client so the spawn/meeting packets don't drop silently.
+    let (tx, _rx) = mpsc::channel::<Vec<u8>>(64);
+    world.register_client(90, ClientHandle::new(90, tx)).await;
+    world
+        .upsert_session(MapSession {
+            id: 90,
+            current_zone_id: 180,
+            ..MapSession::default()
+        })
+        .await;
+
+    let processor = crate::processor::PacketProcessor {
+        db: db.clone(),
+        world: world.clone(),
+        registry: registry.clone(),
+        lua: None,
+    };
+    let handle = registry.get(90).await.expect("player handle");
+
+    processor
+        .apply_login_lua_command(
+            &handle,
+            LuaCommand::SpawnMyRetainer {
+                player_id: 90,
+                bell_actor_id: 0,
+                bell_position: (0.0, 0.0, 0.0),
+                retainer_index: 1,
+            },
+        )
+        .await;
+
+    let snap = world
+        .session(90)
+        .await
+        .unwrap()
+        .spawned_retainer
+        .expect("retainer spawned");
+    assert_ne!(snap.group_id, 0, "meeting group id should be non-zero after spawn");
+
+    processor
+        .apply_login_lua_command(&handle, LuaCommand::DespawnMyRetainer { player_id: 90 })
+        .await;
+    assert!(
+        world.session(90).await.unwrap().spawned_retainer.is_none(),
+        "snapshot cleared after despawn",
+    );
+}
+
+/// Tier 4 #14 E — `rename_retainer` writes the `customName`
+/// column, and a subsequent `load_retainer` returns the new name via
+/// `COALESCE(NULLIF(customName, ''), sr.name)`. Verifies both the DB
+/// side and the read-back path.
+#[tokio::test]
+async fn rename_retainer_persists_and_load_returns_custom_name() {
+    use common::db::ConnCallExt;
+
+    let db = crate::database::Database::open(tempdb())
+        .await
+        .expect("db stub");
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (91, 0, 0, 0, 'Renamer')",
+                [],
+            )?;
+            c.execute(
+                r"INSERT OR IGNORE INTO characters_retainers
+                    (characterId, retainerId, doRename)
+                  VALUES (91, 1001, 1)",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    // Default name comes from `server_retainers.name` (tutorial
+    // retainer 1001 = "Wienta").
+    let before = db.load_retainer(91, 1).await.unwrap().expect("exists");
+    assert_eq!(before.name, "Wienta");
+
+    let renamed = db
+        .rename_retainer(91, 1001, "Nicknaming".to_string())
+        .await
+        .unwrap();
+    assert!(renamed);
+
+    let after = db.load_retainer(91, 1).await.unwrap().expect("exists");
+    assert_eq!(after.name, "Nicknaming", "load should return custom name");
+
+    // `doRename` should have been cleared on success so the UI
+    // hint stops showing.
+    let do_rename: i64 = db
+        .conn_for_test()
+        .call_db(|c| {
+            let v: i64 = c.query_row(
+                r"SELECT doRename FROM characters_retainers
+                  WHERE characterId = 91 AND retainerId = 1001",
+                [],
+                |r| r.get(0),
+            )?;
+            Ok(v)
+        })
+        .await
+        .unwrap();
+    assert_eq!(do_rename, 0, "doRename should clear on successful rename");
+}
+
+/// Renaming a retainer the character never hired no-ops (no row
+/// updated). Guards against accidental creation of phantom ownership
+/// rows on a typo'd retainer id.
+#[tokio::test]
+async fn rename_retainer_no_ops_when_not_hired() {
+    use common::db::ConnCallExt;
+
+    let db = crate::database::Database::open(tempdb())
+        .await
+        .expect("db stub");
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (92, 0, 0, 0, 'UnHired')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let r = db
+        .rename_retainer(92, 1001, "Bob".to_string())
+        .await
+        .unwrap();
+    assert!(!r, "no ownership row → no update");
+}
+
+/// Rename is scoped per character. Two players who both hired
+/// retainer template 1001 can give it different names without
+/// cross-contaminating.
+#[tokio::test]
+async fn rename_retainer_is_per_character() {
+    use common::db::ConnCallExt;
+
+    let db = crate::database::Database::open(tempdb())
+        .await
+        .expect("db stub");
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (93, 0, 0, 0, 'Alice')",
+                [],
+            )?;
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (94, 0, 0, 0, 'Bob')",
+                [],
+            )?;
+            c.execute(
+                r"INSERT OR IGNORE INTO characters_retainers
+                    (characterId, retainerId, doRename)
+                  VALUES (93, 1001, 1), (94, 1001, 1)",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    db.rename_retainer(93, 1001, "AliceRetainer".to_string())
+        .await
+        .unwrap();
+    // Bob's retainer should still read Wienta since Alice's rename
+    // only touched row (93, 1001).
+    let bobs = db.load_retainer(94, 1).await.unwrap().expect("exists");
+    assert_eq!(bobs.name, "Wienta", "Bob's retainer untouched by Alice's rename");
+
+    db.rename_retainer(94, 1001, "BobRetainer".to_string())
+        .await
+        .unwrap();
+    let alice_after = db.load_retainer(93, 1).await.unwrap().expect("exists");
+    let bob_after = db.load_retainer(94, 1).await.unwrap().expect("exists");
+    assert_eq!(alice_after.name, "AliceRetainer");
+    assert_eq!(bob_after.name, "BobRetainer");
+}
+
+/// End-to-end via the processor: emit `LuaCommand::RenameRetainer`
+/// (the same variant `retainer:Rename(name)` Lua binding produces);
+/// the processor drains it through `apply_rename_retainer`.
+#[tokio::test]
+async fn processor_rename_retainer_persists() {
+    use crate::data::{ClientHandle, Session as MapSession};
+    use crate::lua::LuaCommandKind as LuaCommand;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use common::db::ConnCallExt;
+    use tokio::sync::mpsc;
+
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (95, 0, 0, 0, 'Drainer')",
+                [],
+            )?;
+            c.execute(
+                r"INSERT OR IGNORE INTO characters_retainers
+                    (characterId, retainerId, doRename)
+                  VALUES (95, 1002, 1)",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let character = Character::new(95);
+    registry
+        .insert(ActorHandle::new(95, ActorKindTag::Player, 180, 95, character))
+        .await;
+    let (tx, _rx) = mpsc::channel::<Vec<u8>>(64);
+    world.register_client(95, ClientHandle::new(95, tx)).await;
+    world
+        .upsert_session(MapSession {
+            id: 95,
+            current_zone_id: 180,
+            ..MapSession::default()
+        })
+        .await;
+
+    let processor = crate::processor::PacketProcessor {
+        db: db.clone(),
+        world: world.clone(),
+        registry: registry.clone(),
+        lua: None,
+    };
+    let handle = registry.get(95).await.expect("player handle");
+    processor
+        .apply_login_lua_command(
+            &handle,
+            LuaCommand::RenameRetainer {
+                player_id: 95,
+                retainer_id: 1002,
+                new_name: "Renamed".to_string(),
+            },
+        )
+        .await;
+
+    let after = db.load_retainer(95, 1).await.unwrap().expect("exists");
+    assert_eq!(after.name, "Renamed");
 }

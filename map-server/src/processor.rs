@@ -65,6 +65,65 @@ pub struct PacketProcessor {
     pub lua: Option<Arc<LuaEngine>>,
 }
 
+/// Derive a deterministic `group_id` for the retainer-meeting group
+/// that binds a spawned retainer to its owning player. Since the
+/// retainer actor id is already composite-unique via the
+/// `(4 << 28) | (zone << 19) | local_id` formula in
+/// `apply_spawn_my_retainer`, lifting it into u64 gives us a
+/// collision-free id without a separate allocator. Tier 4 #14 B.
+fn retainer_meeting_group_id(retainer_actor_id: u32) -> u64 {
+    // Top 32 bits carry a sentinel so a future audit can tell
+    // "this is a retainer-meeting group id" at a glance without
+    // needing the surrounding context.
+    (0x5200_0000u64 << 32) | retainer_actor_id as u64
+}
+
+/// One-off [`GroupResolver`](crate::group::GroupResolver) for a
+/// single retainer-meeting group. The group is short-lived (created
+/// on `SpawnMyRetainer`, destroyed on `DespawnMyRetainer`) so we
+/// don't bother registering it with `WorldManager`; the processor
+/// constructs a resolver per dispatch instead.
+struct RetainerMeetingResolver {
+    group_id: u64,
+    player_actor_id: u32,
+    player_name: String,
+    retainer_actor_id: u32,
+    retainer_name: String,
+}
+
+impl crate::group::GroupResolver for RetainerMeetingResolver {
+    fn members(&self, group_id: u64) -> Option<Vec<u32>> {
+        if group_id == self.group_id {
+            Some(vec![self.player_actor_id, self.retainer_actor_id])
+        } else {
+            None
+        }
+    }
+    fn kind(&self, group_id: u64) -> Option<crate::group::GroupKind> {
+        if group_id == self.group_id {
+            Some(crate::group::GroupKind::Retainer)
+        } else {
+            None
+        }
+    }
+    fn type_id(&self, group_id: u64) -> Option<crate::group::GroupTypeId> {
+        if group_id == self.group_id {
+            Some(crate::group::GroupTypeId::RETAINER)
+        } else {
+            None
+        }
+    }
+    fn name_of(&self, actor_id: u32) -> String {
+        if actor_id == self.player_actor_id {
+            self.player_name.clone()
+        } else if actor_id == self.retainer_actor_id {
+            self.retainer_name.clone()
+        } else {
+            String::new()
+        }
+    }
+}
+
 impl PacketProcessor {
     pub async fn process_packet(
         &self,
@@ -1198,6 +1257,13 @@ impl PacketProcessor {
             } => {
                 self.apply_dismiss_my_retainer(player_id, retainer_id).await;
             }
+            LC::RenameRetainer {
+                player_id,
+                retainer_id,
+                new_name,
+            } => {
+                self.apply_rename_retainer(player_id, retainer_id, new_name).await;
+            }
             LC::AddRetainerBazaarItem {
                 retainer_id,
                 item_id,
@@ -1424,6 +1490,53 @@ impl PacketProcessor {
             );
         }
 
+        // Tier 4 #14 B — instantiate the `RetainerMeetingRelationGroup`
+        // that binds this player to their summoned retainer for the
+        // duration of the bell session. The group id is derived
+        // deterministically from the composite retainer actor id so
+        // two independent summons in parallel zones don't collide.
+        // Dispatched through the shared group dispatcher so the
+        // Header / Begin / MembersX02 / End bundle lands on the
+        // owning client matching the pattern used for parties.
+        let group_id = retainer_meeting_group_id(retainer_actor_id);
+        {
+            use crate::group::{GroupKind, GroupTypeId, RetainerMeetingRelationGroup};
+            use crate::group::outbox::{GroupEvent, GroupOutbox};
+            let mut outbox = GroupOutbox::new();
+            let _group = RetainerMeetingRelationGroup::new(
+                group_id,
+                handle.actor_id,
+                retainer_actor_id,
+                &mut outbox,
+            );
+            let resolver = RetainerMeetingResolver {
+                group_id,
+                player_actor_id: handle.actor_id,
+                player_name: {
+                    let c = handle.character.read().await;
+                    c.base.actor_name.clone()
+                },
+                retainer_actor_id,
+                retainer_name: template.name.clone(),
+            };
+            for event in outbox.drain() {
+                // Stamp the kind up front so `dispatch_group_event`
+                // doesn't fall back to `Party` when the roster
+                // branch queries `resolver.kind`.
+                if let GroupEvent::GroupCreated { kind, type_id, .. } = &event {
+                    debug_assert_eq!(*kind, GroupKind::Retainer);
+                    debug_assert_eq!(*type_id, GroupTypeId::RETAINER);
+                }
+                crate::group::dispatch_group_event(
+                    &event,
+                    &self.registry,
+                    &self.world,
+                    &resolver,
+                )
+                .await;
+            }
+        }
+
         let Some(mut session) = self.world.session(session_id).await else {
             return;
         };
@@ -1436,9 +1549,11 @@ impl PacketProcessor {
             position: (pos_x, by, pos_z),
             rotation,
             sent_spawn_packets: true,
+            group_id,
         });
         self.world.upsert_session(session).await;
-        let _ = bell_actor_id; // reserved for the bell → RetainerMeetingRelationGroup member packet (group.rs port deferred)
+        let _ = bell_actor_id; // bell is the UI-side click source; the
+        // relation-group is player↔retainer, not player↔bell.
         tracing::info!(
             player = player_id,
             idx = retainer_index,
@@ -1446,7 +1561,8 @@ impl PacketProcessor {
             actor_id = format!("0x{:08X}", retainer_actor_id),
             name = %template.name,
             class_path = %template.class_path,
-            "SpawnMyRetainer applied (live actor packets sent to owner session)",
+            group_id = format!("0x{:016X}", group_id),
+            "SpawnMyRetainer applied (live actor + meeting group packets sent to owner session)",
         );
     }
 
@@ -1475,10 +1591,49 @@ impl PacketProcessor {
             sub.set_target_id(session_id);
             client.send_bytes(sub.to_bytes()).await;
         }
+        // Tier 4 #14 B — tear down the `RetainerMeetingRelationGroup`
+        // so the client's group table stops tracking the now-absent
+        // retainer. Skip when the spawn never actually created a
+        // group (group_id == 0).
+        if let Some(snap) = &despawned
+            && snap.group_id != 0
+        {
+            use crate::group::RetainerMeetingRelationGroup;
+            use crate::group::outbox::GroupOutbox;
+            let mut outbox = GroupOutbox::new();
+            let mut group = RetainerMeetingRelationGroup::new(
+                snap.group_id,
+                player_id,
+                snap.actor_id,
+                &mut outbox,
+            );
+            // `RetainerMeetingRelationGroup::new` pushed a
+            // `GroupCreated` event we don't care about here — drop
+            // it by draining before `delete`.
+            let _ = outbox.drain();
+            group.delete(&mut outbox);
+            let resolver = RetainerMeetingResolver {
+                group_id: snap.group_id,
+                player_actor_id: player_id,
+                player_name: String::new(),
+                retainer_actor_id: snap.actor_id,
+                retainer_name: snap.name.clone(),
+            };
+            for event in outbox.drain() {
+                crate::group::dispatch_group_event(
+                    &event,
+                    &self.registry,
+                    &self.world,
+                    &resolver,
+                )
+                .await;
+            }
+        }
         tracing::info!(
             player = player_id,
             had = despawned.is_some(),
             actor_id = ?despawned.as_ref().map(|s| format!("0x{:08X}", s.actor_id)),
+            group_id = ?despawned.as_ref().map(|s| format!("0x{:016X}", s.group_id)),
             "DespawnMyRetainer applied",
         );
     }
@@ -2520,6 +2675,78 @@ impl PacketProcessor {
             deleted,
             "DismissMyRetainer applied",
         );
+    }
+
+    /// Tier 4 #14 E — persist a retainer rename via
+    /// [`Database::rename_retainer`] (writes the per-character
+    /// `customName` column). If the renamed retainer is currently
+    /// spawned, also refresh the in-memory `SpawnedRetainer.name`
+    /// so the same session's future reads (e.g. the
+    /// `GetSpawnedRetainer():GetName()` chain) see the new name
+    /// without a re-summon.
+    async fn apply_rename_retainer(
+        &self,
+        player_id: u32,
+        retainer_id: u32,
+        new_name: String,
+    ) {
+        if new_name.trim().is_empty() {
+            tracing::debug!(
+                player = player_id,
+                retainer_id,
+                "RenameRetainer: empty name rejected",
+            );
+            return;
+        }
+        match self
+            .db
+            .rename_retainer(player_id, retainer_id, new_name.clone())
+            .await
+        {
+            Ok(true) => tracing::info!(
+                player = player_id,
+                retainer_id,
+                new_name = %new_name,
+                "RenameRetainer applied",
+            ),
+            Ok(false) => {
+                tracing::info!(
+                    player = player_id,
+                    retainer_id,
+                    "RenameRetainer: no ownership row — retainer not hired",
+                );
+                return;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    player = player_id,
+                    retainer_id,
+                    err = %e,
+                    "RenameRetainer: DB update failed",
+                );
+                return;
+            }
+        }
+
+        // Refresh the session's live snapshot if this retainer is
+        // currently out. Otherwise nothing to do — subsequent
+        // `SpawnMyRetainer` calls will re-read via `load_retainer`,
+        // which now COALESCEs in the `customName`.
+        let Some(handle) = self.registry.get(player_id).await else {
+            return;
+        };
+        let session_id = handle.session_id;
+        if session_id == 0 {
+            return;
+        }
+        if let Some(mut session) = self.world.session(session_id).await {
+            if let Some(r) = session.spawned_retainer.as_mut()
+                && r.retainer_id == retainer_id
+            {
+                r.name = new_name;
+                self.world.upsert_session(session).await;
+            }
+        }
     }
 
     // =======================================================================

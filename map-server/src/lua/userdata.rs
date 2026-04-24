@@ -873,6 +873,7 @@ impl UserData for LuaPlayer {
                     position: r.position,
                     rotation: r.rotation,
                     queue: this.queue.clone(),
+                    player_actor_id: this.snapshot.actor_id,
                 }))
         });
 
@@ -1974,6 +1975,13 @@ pub struct LuaRetainer {
     pub position: (f32, f32, f32),
     pub rotation: f32,
     pub queue: Arc<Mutex<CommandQueue>>,
+    /// Actor id of the owning player — threaded through so per-
+    /// character mutations (`Rename`, retainer inventory writes) can
+    /// key correctly. `0` in contexts where no player is attached
+    /// (currently only the unit-test seed in
+    /// `lua_retainer_add_item_emits_retainer_command_variant`,
+    /// which doesn't exercise the `Rename` path).
+    pub player_actor_id: u32,
 }
 
 impl UserData for LuaRetainer {
@@ -2014,6 +2022,28 @@ impl UserData for LuaRetainer {
                 inventory_snapshot: Vec::new(),
                 is_retainer: true,
             })
+        });
+        // `retainer:Rename(newName)` — per-character retainer
+        // rename. Emits [`LuaCommand::RenameRetainer`] which the
+        // processor drains through `Database::rename_retainer`
+        // (writes the `customName` column on `characters_retainers`
+        // rather than mutating `server_retainers.name`). Tier 4
+        // #14 E.
+        methods.add_method("Rename", |_, this, new_name: String| {
+            if this.player_actor_id == 0 {
+                // No owning player — skip rather than write a
+                // garbage row. Hits the fresh-unit-test path only.
+                return Ok(());
+            }
+            push(
+                &this.queue,
+                LuaCommand::RenameRetainer {
+                    player_id: this.player_actor_id,
+                    retainer_id: this.retainer_id,
+                    new_name,
+                },
+            );
+            Ok(())
         });
         // `retainer:AddBazaarItem(itemId, qty, quality, priceGil)` —
         // list a stack of `itemId` at `priceGil` gil per unit in the

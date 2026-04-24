@@ -321,6 +321,14 @@ pub enum LuaCommand {
         player_id: u32,
         retainer_id: u32,
     },
+    /// `retainer:Rename(newName)` — per-character retainer rename
+    /// (writes `characters_retainers.customName`, not the shared
+    /// `server_retainers.name`). Tier 4 #14 E.
+    RenameRetainer {
+        player_id: u32,
+        retainer_id: u32,
+        new_name: String,
+    },
     /// `player:SetSleeping()` — snap the player's transform to the
     /// bed of whatever inn room they're currently in (Limsa /
     /// Gridania / Ul'dah — three rooms per inn). Called from

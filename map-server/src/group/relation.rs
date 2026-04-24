@@ -229,6 +229,19 @@ impl RetainerMeetingRelationGroup {
         b.class_id = 0x83;
         vec![a, b]
     }
+
+    /// Queue a `GroupDeleted` event so the dispatcher fans
+    /// `DeleteGroup` to both members. Mirrors [`RelationGroup::delete`]
+    /// and [`TradeGroup::delete`]; required by
+    /// `apply_despawn_my_retainer` when the owner dismisses the
+    /// summoned retainer.
+    pub fn delete(&mut self, outbox: &mut GroupOutbox) {
+        outbox.push(GroupEvent::GroupDeleted {
+            group_id: self.group_id,
+            kind: GroupKind::Retainer,
+            former_members: vec![self.player_actor_id, self.retainer_actor_id],
+        });
+    }
 }
 
 fn build_two_member_list(

@@ -243,6 +243,7 @@ CREATE TABLE IF NOT EXISTS characters_retainers (
     characterId INTEGER NOT NULL,
     retainerId  INTEGER NOT NULL,
     doRename    INTEGER NOT NULL DEFAULT 0,
+    customName  TEXT    DEFAULT NULL,
     PRIMARY KEY (characterId, retainerId)
 );
 
