@@ -2275,6 +2275,43 @@ pub async fn apply_quest_on_notice(
         );
     }
     if !result.commands.is_empty() {
+        // The quest's `onNotice` hook is what kicks the per-city intro
+        // cutscene — `callClientFunction(player, "delegateEvent", player,
+        // quest, "processTtrNomal001withHQ")` becomes a
+        // `LuaCommand::RunEventFunction` and `player:EndEvent()` becomes
+        // a `LuaCommand::EndEvent`. Both are event-flavoured: they have
+        // no arm in `apply_runtime_lua_command` and would be silently
+        // logged as "unhandled" — the cutscene packets would never reach
+        // the client and the player would sit at "Now Loading" forever.
+        // Translate them into the EventOutbox first (using the player's
+        // EventSession for the in-flight event_owner / event_name /
+        // event_type that the bridge needs), drain through
+        // `dispatch_event_event` to actually emit the
+        // `RunEventFunctionPacket` / `EndEventPacket`, then fall through
+        // to the runtime apply for non-event commands. Mirrors the
+        // pattern in `event::dispatcher::dispatch_director_event_started`.
+        let event_session_snapshot = {
+            let c = handle.character.read().await;
+            c.event_session.clone()
+        };
+        let mut outbox = crate::event::outbox::EventOutbox::new();
+        crate::event::lua_bridge::translate_lua_commands_into_outbox(
+            &result.commands,
+            &event_session_snapshot,
+            &mut outbox,
+        );
+        for e in outbox.drain() {
+            // Box::pin matches the recursion-guard already used below.
+            Box::pin(crate::event::dispatcher::dispatch_event_event(
+                &e,
+                registry,
+                world,
+                db,
+                Some(lua),
+            ))
+            .await;
+        }
+
         // `apply_runtime_lua_commands` → ... → `apply_quest_on_notice`
         // is a potential recursion cycle (an `onNotice` hook could emit
         // another `QuestOnNotice`). Box the future so the compiler
