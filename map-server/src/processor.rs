@@ -1134,6 +1134,21 @@ impl PacketProcessor {
                 )
                 .await;
             }
+            LC::AddItemToRetainer {
+                retainer_id,
+                item_package,
+                item_id,
+                quantity,
+            } => {
+                crate::runtime::quest_apply::apply_add_item_to_retainer(
+                    retainer_id,
+                    item_package,
+                    item_id,
+                    quantity,
+                    &self.db,
+                )
+                .await;
+            }
             LC::SendMessage {
                 actor_id,
                 message_type,

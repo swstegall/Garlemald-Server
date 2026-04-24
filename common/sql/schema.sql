@@ -259,6 +259,21 @@ CREATE TABLE IF NOT EXISTS characters_retainer_bazaar (
 CREATE INDEX IF NOT EXISTS idx_retainer_bazaar_retainer
     ON characters_retainer_bazaar (retainerId);
 
+-- Retainer's personal (non-bazaar) inventory. Parallels
+-- `characters_inventory` for players but keyed by `retainerId` so
+-- retainer storage can't conflate with a player whose `characterId`
+-- happens to match a retainer template id. Tier 4 #14 C.
+CREATE TABLE IF NOT EXISTS characters_retainer_inventory (
+    retainerId   INTEGER NOT NULL,
+    serverItemId INTEGER NOT NULL,
+    itemPackage  INTEGER NOT NULL DEFAULT 0,
+    slot         INTEGER NOT NULL,
+    PRIMARY KEY (retainerId, serverItemId)
+);
+
+CREATE INDEX IF NOT EXISTS idx_retainer_inventory_retainer
+    ON characters_retainer_inventory (retainerId);
+
 CREATE TABLE IF NOT EXISTS characters_linkshells (
     characterId INTEGER NOT NULL,
     linkshellId INTEGER NOT NULL,

@@ -1203,6 +1203,7 @@ impl UserData for LuaPlayer {
                 package_code: pkg_code,
                 queue: this.queue.clone(),
                 inventory_snapshot: this.snapshot.inventory.clone(),
+                is_retainer: false,
             };
             lua.create_userdata(pkg)
         });
@@ -1996,13 +1997,11 @@ impl UserData for LuaRetainer {
         // `:RemoveItemAtSlot(slot, qty)` as with a player package.
         methods.add_method("GetItemPackage", |_, this, pkg_code: u16| {
             Ok(LuaItemPackage {
-                // Retainer actor id isn't allocated on our side yet
-                // (the live-spawn path is deferred); use the
-                // retainer_id as a stable stand-in so emitted
-                // `AddItem` commands carry a non-zero owner that
-                // the processor can recognise as "retainer" and
-                // route separately once the retainer-inventory
-                // pipeline lands.
+                // `owner_actor_id` carries the retainer_id so the
+                // emitted `AddItemToRetainer` command keys correctly
+                // into `characters_retainer_inventory`. The
+                // `is_retainer: true` flag is what actually toggles
+                // the command variant in `AddItem` below.
                 owner_actor_id: this.retainer_id,
                 package_code: pkg_code,
                 queue: this.queue.clone(),
@@ -2013,6 +2012,7 @@ impl UserData for LuaRetainer {
                 // bazaar-side scripts safe until the live pipeline
                 // lands.
                 inventory_snapshot: Vec::new(),
+                is_retainer: true,
             })
         });
         // `retainer:AddBazaarItem(itemId, qty, quality, priceGil)` —
@@ -2076,6 +2076,13 @@ pub struct LuaItemPackage {
     /// `HasItem == false` (matches the conservative C# default of
     /// "missing item").
     pub inventory_snapshot: Vec<(u32, i32)>,
+    /// `true` when the owning handle is a [`LuaRetainer`], `false`
+    /// when it's a [`LuaPlayer`]. Routes `AddItem` through
+    /// [`LuaCommand::AddItemToRetainer`] (Tier 4 #14 C) instead of
+    /// `LuaCommand::AddItem` so retainer inventory lands in the
+    /// dedicated `characters_retainer_inventory` table rather than
+    /// colliding into `characters_inventory` under the retainer id.
+    pub is_retainer: bool,
 }
 
 impl UserData for LuaItemPackage {
@@ -2090,15 +2097,27 @@ impl UserData for LuaItemPackage {
                 Some(Value::Integer(q)) => q as i32,
                 _ => 1,
             };
-            push(
-                &this.queue,
+            // Retainer-owned packages emit the dedicated retainer
+            // variant so the DB write lands in
+            // `characters_retainer_inventory` keyed by
+            // `(retainerId, serverItemId)`, not conflated into the
+            // player-scoped `characters_inventory` table.
+            let cmd = if this.is_retainer {
+                LuaCommand::AddItemToRetainer {
+                    retainer_id: this.owner_actor_id,
+                    item_package: this.package_code,
+                    item_id: catalog as u32,
+                    quantity: qty,
+                }
+            } else {
                 LuaCommand::AddItem {
                     actor_id: this.owner_actor_id,
                     item_package: this.package_code,
                     item_id: catalog as u32,
                     quantity: qty,
-                },
-            );
+                }
+            };
+            push(&this.queue, cmd);
             Ok(())
         });
         methods.add_method("AddItems", |_, this, items: mlua::Table| {

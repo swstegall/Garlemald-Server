@@ -8624,3 +8624,237 @@ async fn regional_leve_progress_short_circuits_without_catalog() {
     assert!(fc.is_empty());
     assert!(bc.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// Retainer inventory live mutation — Tier 4 #14 C
+// ---------------------------------------------------------------------------
+
+/// `apply_add_item_to_retainer` creates a fresh stack in
+/// `characters_retainer_inventory` and merges a subsequent call for
+/// the same `(item, quality)` in place, mirroring
+/// `add_harvest_item`'s behaviour on the player side but keyed by
+/// `retainerId` rather than `characterId`.
+#[tokio::test]
+async fn apply_add_item_to_retainer_creates_and_merges_stack() {
+    use crate::runtime::quest_apply::apply_add_item_to_retainer;
+    use common::db::ConnCallExt;
+
+    let db = crate::database::Database::open(tempdb())
+        .await
+        .expect("db stub");
+
+    // First add — seeds a fresh stack.
+    apply_add_item_to_retainer(1001, crate::inventory::PKG_NORMAL, 10_001_006, 3, &db).await;
+    let (rows_after_first, qty_after_first): (i64, i32) = db
+        .conn_for_test()
+        .call_db(|c| {
+            let n: i64 = c.query_row(
+                r"SELECT COUNT(*) FROM characters_retainer_inventory
+                  WHERE retainerId = 1001 AND itemPackage = 0",
+                [],
+                |r| r.get(0),
+            )?;
+            let q: i32 = c.query_row(
+                r"SELECT si.quantity
+                  FROM characters_retainer_inventory ri
+                  INNER JOIN server_items si ON ri.serverItemId = si.id
+                  WHERE ri.retainerId = 1001 AND ri.itemPackage = 0
+                  LIMIT 1",
+                [],
+                |r| r.get(0),
+            )?;
+            Ok((n, q))
+        })
+        .await
+        .unwrap();
+    assert_eq!(rows_after_first, 1);
+    assert_eq!(qty_after_first, 3);
+
+    // Second add, same item — merges into the existing stack.
+    apply_add_item_to_retainer(1001, crate::inventory::PKG_NORMAL, 10_001_006, 2, &db).await;
+    let (rows_after_second, qty_after_second): (i64, i32) = db
+        .conn_for_test()
+        .call_db(|c| {
+            let n: i64 = c.query_row(
+                r"SELECT COUNT(*) FROM characters_retainer_inventory
+                  WHERE retainerId = 1001 AND itemPackage = 0",
+                [],
+                |r| r.get(0),
+            )?;
+            let q: i32 = c.query_row(
+                r"SELECT si.quantity
+                  FROM characters_retainer_inventory ri
+                  INNER JOIN server_items si ON ri.serverItemId = si.id
+                  WHERE ri.retainerId = 1001 AND ri.itemPackage = 0
+                  LIMIT 1",
+                [],
+                |r| r.get(0),
+            )?;
+            Ok((n, q))
+        })
+        .await
+        .unwrap();
+    assert_eq!(rows_after_second, 1, "merge should not spill into a new row");
+    assert_eq!(qty_after_second, 5);
+
+    // Third add — different item — spills into a new slot.
+    apply_add_item_to_retainer(1001, crate::inventory::PKG_NORMAL, 10_009_104, 4, &db).await;
+    let rows_after_third: i64 = db
+        .conn_for_test()
+        .call_db(|c| {
+            let n: i64 = c.query_row(
+                r"SELECT COUNT(*) FROM characters_retainer_inventory
+                  WHERE retainerId = 1001 AND itemPackage = 0",
+                [],
+                |r| r.get(0),
+            )?;
+            Ok(n)
+        })
+        .await
+        .unwrap();
+    assert_eq!(rows_after_third, 2);
+}
+
+/// Retainer inventory must not conflate with a player whose
+/// `characterId` happens to equal the retainer id. Add an item to
+/// retainer 1001's inventory, then inspect both tables: the write
+/// should land only in `characters_retainer_inventory`, not in
+/// `characters_inventory`.
+#[tokio::test]
+async fn retainer_inventory_does_not_conflate_with_characters_inventory() {
+    use crate::runtime::quest_apply::apply_add_item_to_retainer;
+    use common::db::ConnCallExt;
+
+    let db = crate::database::Database::open(tempdb())
+        .await
+        .expect("db stub");
+
+    apply_add_item_to_retainer(1001, crate::inventory::PKG_NORMAL, 10_001_006, 7, &db).await;
+
+    let (retainer_rows, character_rows): (i64, i64) = db
+        .conn_for_test()
+        .call_db(|c| {
+            let rr: i64 = c.query_row(
+                r"SELECT COUNT(*) FROM characters_retainer_inventory WHERE retainerId = 1001",
+                [],
+                |r| r.get(0),
+            )?;
+            let cr: i64 = c.query_row(
+                r"SELECT COUNT(*) FROM characters_inventory WHERE characterId = 1001",
+                [],
+                |r| r.get(0),
+            )?;
+            Ok((rr, cr))
+        })
+        .await
+        .unwrap();
+    assert_eq!(retainer_rows, 1, "retainer table should carry the row");
+    assert_eq!(character_rows, 0, "character table must not be polluted");
+}
+
+/// End-to-end via the runtime drain: a Lua script emits
+/// `LuaCommand::AddItemToRetainer` (the same variant the
+/// `retainer:GetItemPackage(0):AddItem(...)` chain produces); the
+/// drain persists it through `apply_add_item_to_retainer`.
+#[tokio::test]
+async fn runtime_drain_add_item_to_retainer_persists() {
+    use crate::lua::LuaCommandKind;
+    use crate::runtime::quest_apply::apply_runtime_lua_commands;
+    use common::db::ConnCallExt;
+
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    let registry = Arc::new(ActorRegistry::new());
+    let world = Arc::new(WorldManager::new());
+
+    let cmds = vec![LuaCommandKind::AddItemToRetainer {
+        retainer_id: 1002,
+        item_package: crate::inventory::PKG_NORMAL,
+        item_id: 10_008_007, // walnut log
+        quantity: 5,
+    }];
+    apply_runtime_lua_commands(cmds, &registry, &db, &world, None).await;
+
+    let qty: i32 = db
+        .conn_for_test()
+        .call_db(|c| {
+            let q: i32 = c.query_row(
+                r"SELECT si.quantity
+                  FROM characters_retainer_inventory ri
+                  INNER JOIN server_items si ON ri.serverItemId = si.id
+                  WHERE ri.retainerId = 1002 AND si.itemId = 10008007",
+                [],
+                |r| r.get(0),
+            )?;
+            Ok(q)
+        })
+        .await
+        .unwrap();
+    assert_eq!(qty, 5);
+}
+
+/// Lua binding end-to-end: evaluate a small Lua snippet that
+/// constructs a `LuaItemPackage` via the `LuaRetainer` path and
+/// calls `:AddItem(...)`. The emitted command should be the
+/// `AddItemToRetainer` variant, not `AddItem` — confirming
+/// `LuaItemPackage::is_retainer` routes correctly.
+#[tokio::test]
+async fn lua_retainer_add_item_emits_retainer_command_variant() {
+    use crate::lua::command::CommandQueue;
+    use crate::lua::userdata::LuaRetainer;
+    use crate::lua::{LuaCommandKind, LuaEngine};
+
+    let script_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .join("scripts/lua");
+    let engine = LuaEngine::new(&script_root);
+    let probe = script_root.join("commands/__probe_retainer_add.lua");
+    std::fs::write(&probe, "").unwrap();
+    let (lua, _queue) = engine.load_script(&probe).expect("load probe");
+
+    // Build a LuaRetainer handle pointing at retainer 1003 with a
+    // fresh command queue.
+    let queue = CommandQueue::new();
+    let retainer = LuaRetainer {
+        retainer_id: 1003,
+        actor_class_id: 3_001_103,
+        name: "Lyngsath".to_string(),
+        position: (0.0, 0.0, 0.0),
+        rotation: 0.0,
+        queue: queue.clone(),
+    };
+    lua.globals().set("myretainer", retainer).unwrap();
+
+    // Script: open the NORMAL package on the retainer, add 2 Walnut
+    // Logs (catalog id 10008007).
+    lua.load(
+        r#"
+        myretainer:GetItemPackage(0):AddItem(10008007, 2)
+        "#,
+    )
+    .exec()
+    .unwrap();
+
+    let cmds = CommandQueue::drain(&queue);
+    assert_eq!(cmds.len(), 1, "one AddItemToRetainer expected");
+    match &cmds[0] {
+        LuaCommandKind::AddItemToRetainer {
+            retainer_id,
+            item_package,
+            item_id,
+            quantity,
+        } => {
+            assert_eq!(*retainer_id, 1003);
+            assert_eq!(*item_package, 0);
+            assert_eq!(*item_id, 10_008_007);
+            assert_eq!(*quantity, 2);
+        }
+        other => panic!("expected AddItemToRetainer, got {other:?}"),
+    }
+
+    let _ = std::fs::remove_file(&probe);
+}

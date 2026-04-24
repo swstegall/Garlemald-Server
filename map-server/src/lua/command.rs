@@ -105,6 +105,23 @@ pub enum LuaCommand {
         item_id: u32,
         quantity: i32,
     },
+    /// `retainer:GetItemPackage(code):AddItem(id, qty)` — adds a stack
+    /// to a retainer's personal inventory (not the bazaar). Routes
+    /// through a dedicated DB table keyed by `(retainerId,
+    /// serverItemId)` rather than `characters_inventory`, so retainer
+    /// and player inventories stay logically disjoint.
+    ///
+    /// Emitted by [`LuaItemPackage`] when `is_retainer == true` (set
+    /// by [`LuaRetainer::GetItemPackage`]). Tier 4 #14 C.
+    ///
+    /// [`LuaItemPackage`]: crate::lua::userdata::LuaItemPackage
+    /// [`LuaRetainer::GetItemPackage`]: crate::lua::userdata::LuaRetainer
+    AddItemToRetainer {
+        retainer_id: u32,
+        item_package: u16,
+        item_id: u32,
+        quantity: i32,
+    },
     RemoveItem {
         actor_id: u32,
         item_package: u16,

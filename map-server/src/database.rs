@@ -1245,6 +1245,109 @@ impl Database {
         Ok(total)
     }
 
+    /// Tier 4 #14 C — grant a stack to `retainer_id`'s personal
+    /// inventory. Parallels [`Database::add_harvest_item`] but writes
+    /// to `characters_retainer_inventory` (keyed by `retainerId`)
+    /// rather than `characters_inventory` (keyed by `characterId`),
+    /// so retainer storage and player inventory stay logically
+    /// disjoint.
+    ///
+    /// Merges an existing partial stack of the same `(item_id,
+    /// quality, package)` when one exists; spills to a new row with
+    /// the next free slot otherwise. Quantity clamps to ≥ 0 on
+    /// negative delta (matches the player-side behaviour, though
+    /// retainer scripts never legitimately pass a negative).
+    pub async fn add_retainer_inventory_item(
+        &self,
+        retainer_id: u32,
+        item_catalog_id: u32,
+        delta: i32,
+        quality: u8,
+        item_package: u16,
+    ) -> Result<i32> {
+        if delta <= 0 || item_catalog_id == 0 {
+            return Ok(0);
+        }
+        let total = self
+            .conn
+            .call_db(move |c| {
+                let tx = c.transaction()?;
+                let existing: Option<(i64, i32, i32)> = tx
+                    .query_row(
+                        r"SELECT si.id, si.quantity, ri.slot
+                          FROM characters_retainer_inventory ri
+                          INNER JOIN server_items si ON ri.serverItemId = si.id
+                          WHERE ri.retainerId = :rid
+                            AND ri.itemPackage = :pkg
+                            AND si.itemId = :iid
+                            AND si.quality = :q",
+                        named_params! {
+                            ":rid": retainer_id,
+                            ":pkg": item_package as i64,
+                            ":iid": item_catalog_id,
+                            ":q": quality as i64,
+                        },
+                        |r| Ok((
+                            r.get::<_, i64>(0)?,
+                            r.get::<_, i32>(1)?,
+                            r.get::<_, i32>(2)?,
+                        )),
+                    )
+                    .optional()?;
+                let new_total = match existing {
+                    Some((sid, qty, _slot)) => {
+                        let updated = qty.saturating_add(delta).max(0);
+                        tx.execute(
+                            "UPDATE server_items SET quantity = :q WHERE id = :id",
+                            named_params! { ":q": updated, ":id": sid },
+                        )?;
+                        updated
+                    }
+                    None => {
+                        let seed = delta.max(0);
+                        tx.execute(
+                            r"INSERT INTO server_items (itemId, quantity, quality)
+                              VALUES (:iid, :q, :qual)",
+                            named_params! {
+                                ":iid": item_catalog_id,
+                                ":q": seed,
+                                ":qual": quality as i64,
+                            },
+                        )?;
+                        let sid = tx.last_insert_rowid();
+                        let next_slot: i32 = tx
+                            .query_row(
+                                r"SELECT COALESCE(MAX(slot), -1) + 1
+                                  FROM characters_retainer_inventory
+                                  WHERE retainerId = :rid AND itemPackage = :pkg",
+                                named_params! {
+                                    ":rid": retainer_id,
+                                    ":pkg": item_package as i64,
+                                },
+                                |r| r.get::<_, i32>(0),
+                            )
+                            .unwrap_or(0);
+                        tx.execute(
+                            r"INSERT INTO characters_retainer_inventory
+                                (retainerId, itemPackage, serverItemId, slot)
+                              VALUES (:rid, :pkg, :sid, :slot)",
+                            named_params! {
+                                ":rid": retainer_id,
+                                ":pkg": item_package as i64,
+                                ":sid": sid,
+                                ":slot": next_slot,
+                            },
+                        )?;
+                        seed
+                    }
+                };
+                tx.commit()?;
+                Ok(new_total)
+            })
+            .await?;
+        Ok(total)
+    }
+
     pub async fn load_global_status_effect_list(&self) -> Result<HashMap<u32, StatusEffectDef>> {
         let rows = self
             .conn

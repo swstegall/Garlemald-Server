@@ -181,6 +181,15 @@ pub async fn apply_runtime_lua_command(
             }
             true
         }
+        LC::AddItemToRetainer {
+            retainer_id,
+            item_package,
+            item_id,
+            quantity,
+        } => {
+            apply_add_item_to_retainer(retainer_id, item_package, item_id, quantity, db).await;
+            true
+        }
         LC::QuestOnNotice { player_id, quest_id } => {
             apply_quest_on_notice(player_id, quest_id, registry, db, world, lua).await;
             true
@@ -1438,6 +1447,69 @@ async fn advance_regional_leves(
         }
     }
     completed
+}
+
+/// Tier 4 #14 C — grant a stack to a retainer's personal
+/// inventory. Parallel to [`apply_add_item`] (the player-scoped
+/// variant) but routes to
+/// [`Database::add_retainer_inventory_item`] so the write lands in
+/// `characters_retainer_inventory` rather than
+/// `characters_inventory`.
+///
+/// Silently no-ops for:
+///  * non-NORMAL packages — retainer bazaar adds go through the
+///    dedicated `AddRetainerBazaarItem` command + `add_retainer_bazaar_item`
+///    DB helper, not this path.
+///  * zero or negative quantity — mirrors the player-side behaviour.
+///  * item id 0.
+pub async fn apply_add_item_to_retainer(
+    retainer_id: u32,
+    item_package: u16,
+    item_id: u32,
+    quantity: i32,
+    db: &Database,
+) {
+    if quantity <= 0 || item_id == 0 {
+        return;
+    }
+    // Non-NORMAL packages on a retainer are unexpected today; the
+    // only script path that reaches here is
+    // `retainer:GetItemPackage(0):AddItem(...)` which always uses
+    // INVENTORY_NORMAL = 0. Log + bail so a future Lua typo surfaces
+    // visibly.
+    if item_package != crate::inventory::PKG_NORMAL {
+        tracing::debug!(
+            retainer = retainer_id,
+            package = item_package,
+            item = item_id,
+            qty = quantity,
+            "AddItemToRetainer: non-NORMAL packages not implemented — logging only",
+        );
+        return;
+    }
+    match db
+        .add_retainer_inventory_item(retainer_id, item_id, quantity, 1, item_package)
+        .await
+    {
+        Ok(total) => {
+            tracing::info!(
+                retainer = retainer_id,
+                item = item_id,
+                delta = quantity,
+                total,
+                "AddItemToRetainer applied",
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                retainer = retainer_id,
+                item = item_id,
+                delta = quantity,
+                err = %e,
+                "AddItemToRetainer: DB persist failed",
+            );
+        }
+    }
 }
 
 pub async fn apply_add_gil(actor_id: u32, amount: i32, db: &Database) {
