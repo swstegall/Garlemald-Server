@@ -3642,6 +3642,25 @@ impl PacketProcessor {
             .world
             .seamless_check(actor_id, session_id, Vector3::new(pkt.x, pkt.y, pkt.z))
             .await;
+
+        // 4. Proximity-push dispatch. Walk active quests, find any
+        //    push-enabled ENPC inside trigger radius, fire the quest's
+        //    `onPush` hook once. This is the 1.x mechanism that lets
+        //    the player advance the boat-interior tutorial chain by
+        //    just walking up to Rostnsthal / the EXIT_TRIGGER door
+        //    instead of having to press an interact key whose
+        //    synthetic equivalent doesn't reliably fire `EventStart`
+        //    on this Wine setup.
+        crate::runtime::quest_apply::check_quest_proximity_pushes(
+            actor_id,
+            (pkt.x, pkt.y, pkt.z),
+            &self.registry,
+            &self.db,
+            &self.world,
+            self.lua.as_ref(),
+        )
+        .await;
+
         Ok(())
     }
 

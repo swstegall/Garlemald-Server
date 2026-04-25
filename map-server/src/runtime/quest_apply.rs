@@ -2379,6 +2379,326 @@ pub async fn apply_quest_on_notice(
     }
 }
 
+/// Proximity-push dispatcher: walk the player's active quests, find
+/// any push-enabled ENPC the quest registered via `quest:SetENpc(...,
+/// canPush=true)`, look up its actor in the same zone, compute the
+/// distance to the player, and if it's inside the trigger radius fire
+/// `onPush(player, quest, npc)` once. The hook's emitted commands
+/// (typically `callClientFunction("delegateEvent", "processTtr...") +
+/// player:EndEvent()`) flow through the same EventOutbox bridge that
+/// `talkto` uses.
+///
+/// Tracking the already-fired pushes lives on the per-quest
+/// `QuestState::recently_pushed` set: without it, the hook would re-
+/// fire on every inbound `0x00CA UpdatePlayerPosition` packet (~3 per
+/// second), spamming the client with the same cutscene call. The set
+/// is cleared on every `begin_sequence_swap` so a new sequence can
+/// re-arm pushes for the same NPCs.
+///
+/// Trigger radius is hardcoded at 3.0 world units — matches the
+/// 1.x-era retail observed value (most NPC-side `pushOffsetXZ` values
+/// in the spawn data sit between 2 and 4 units).
+#[allow(clippy::too_many_arguments)]
+pub async fn check_quest_proximity_pushes(
+    player_id: u32,
+    pos: (f32, f32, f32),
+    registry: &ActorRegistry,
+    db: &Database,
+    world: &WorldManager,
+    lua: Option<&Arc<LuaEngine>>,
+) {
+    let Some(lua) = lua else { return };
+    let Some(handle) = registry.get(player_id).await else {
+        return;
+    };
+    if !matches!(handle.kind, ActorKindTag::Player) {
+        return;
+    }
+
+    // Snapshot the (quest_id, push-enabled class_ids, recently_pushed
+    // set) tuples so we can iterate without holding the character
+    // write lock across `await` points.
+    let quest_pushes: Vec<(u32, Vec<u32>)> = {
+        let c = handle.character.read().await;
+        c.quest_journal
+            .slots
+            .iter()
+            .flatten()
+            .map(|q| {
+                let to_check: Vec<u32> = q
+                    .state
+                    .current
+                    .values()
+                    .filter(|e| e.is_push_enabled && !q.state.recently_pushed.contains(&e.actor_class_id))
+                    .map(|e| e.actor_class_id)
+                    .collect();
+                (q.quest_id(), to_check)
+            })
+            .filter(|(_, v)| !v.is_empty())
+            .collect()
+    };
+    if quest_pushes.is_empty() {
+        return;
+    }
+
+    let zone_id = {
+        let c = handle.character.read().await;
+        c.base.zone_id
+    };
+    let zone_actors = registry.actors_in_zone(zone_id).await;
+
+    const TRIGGER_RADIUS: f32 = 3.0;
+    let trigger_radius_sq = TRIGGER_RADIUS * TRIGGER_RADIUS;
+
+    for (quest_id, class_ids) in quest_pushes {
+        for class_id in class_ids {
+            // Find the NPC's live actor in this zone with matching class.
+            let mut npc_handle = None;
+            for h in &zone_actors {
+                let m = {
+                    let c = h.character.read().await;
+                    c.chara.actor_class_id == class_id
+                };
+                if m {
+                    npc_handle = Some(h.clone());
+                    break;
+                }
+            }
+            let Some(npc_handle) = npc_handle else { continue };
+
+            let npc_spec = {
+                let c = npc_handle.character.read().await;
+                let dx = pos.0 - c.base.position_x;
+                let dz = pos.2 - c.base.position_z;
+                let dist_sq = dx * dx + dz * dz;
+                if dist_sq > trigger_radius_sq {
+                    continue;
+                }
+                crate::lua::LuaNpcSpec {
+                    actor_id: c.base.actor_id,
+                    name: c.base.actor_name.clone(),
+                    class_name: c.base.class_name.clone(),
+                    class_path: c.base.class_path.clone(),
+                    unique_id: String::new(),
+                    zone_id: c.base.zone_id,
+                    zone_name: String::new(),
+                    state: c.base.current_main_state,
+                    pos: (c.base.position_x, c.base.position_y, c.base.position_z),
+                    rotation: c.base.rotation,
+                    actor_class_id: c.chara.actor_class_id,
+                    quest_graphic: 0,
+                }
+            };
+
+            // Mark as pushed BEFORE firing the hook — if the hook
+            // somehow re-enters this path (recursive event dispatch),
+            // we don't want a double-fire.
+            {
+                let mut c = handle.character.write().await;
+                if let Some(q) = c.quest_journal.get_mut(quest_id) {
+                    q.state.recently_pushed.insert(class_id);
+                }
+            }
+
+            tracing::info!(
+                player = player_id,
+                quest = quest_id,
+                npc_class = class_id,
+                "proximity push triggered",
+            );
+
+            fire_quest_on_push_via_command(
+                &handle,
+                quest_id,
+                npc_spec,
+                registry,
+                db,
+                world,
+                Some(lua),
+            )
+            .await;
+        }
+    }
+}
+
+/// Fire a quest's `onPush(player, quest, npc)` hook. Mirrors
+/// `fire_quest_on_talk_via_command` exactly — the only difference is
+/// the hook name. Both run the script, bridge event-flavoured
+/// commands into the EventOutbox, drain the rest via runtime apply,
+/// and auto-resume any `_WAIT_EVENT`-parked coroutine so
+/// `player:EndEvent()` after `callClientFunction` doesn't stall.
+#[allow(clippy::too_many_arguments)]
+pub async fn fire_quest_on_push_via_command(
+    handle: &ActorHandle,
+    quest_id: u32,
+    npc_spec: crate::lua::LuaNpcSpec,
+    registry: &ActorRegistry,
+    db: &Database,
+    world: &WorldManager,
+    lua: Option<&Arc<LuaEngine>>,
+) {
+    fire_quest_npc_hook_via_command(handle, quest_id, "onPush", npc_spec, registry, db, world, lua)
+        .await;
+}
+
+/// Shared backend for `fire_quest_on_talk_via_command` and
+/// `fire_quest_on_push_via_command` — runs the named hook with a
+/// `(player, quest, npc)` arg list and drains commands through the
+/// event-outbox + runtime-apply pipelines. Auto-resumes parked
+/// `_WAIT_EVENT` coroutines.
+#[allow(clippy::too_many_arguments)]
+async fn fire_quest_npc_hook_via_command(
+    handle: &ActorHandle,
+    quest_id: u32,
+    hook_name: &'static str,
+    npc_spec: crate::lua::LuaNpcSpec,
+    registry: &ActorRegistry,
+    db: &Database,
+    world: &WorldManager,
+    lua: Option<&Arc<LuaEngine>>,
+) {
+    let Some(lua) = lua else { return };
+    if !matches!(handle.kind, ActorKindTag::Player) {
+        return;
+    }
+    let Some(script_name) = lua.catalogs().quest_script_name(quest_id) else {
+        return;
+    };
+    let script_path = lua.resolver().quest(&script_name);
+    if !script_path.exists() {
+        return;
+    }
+
+    let (snapshot, quest_handle) = {
+        let c = handle.character.read().await;
+        if !c.quest_journal.has(quest_id) {
+            return;
+        }
+        let snap = crate::lua::userdata::PlayerSnapshot {
+            actor_id: c.base.actor_id,
+            name: c.base.actor_name.clone(),
+            zone_id: c.base.zone_id,
+            pos: (c.base.position_x, c.base.position_y, c.base.position_z),
+            rotation: c.base.rotation,
+            state: c.base.current_main_state,
+            hp: c.chara.hp,
+            max_hp: c.chara.max_hp,
+            mp: c.chara.mp,
+            max_mp: c.chara.max_mp,
+            tp: c.chara.tp,
+            active_quests: c
+                .quest_journal
+                .slots
+                .iter()
+                .flatten()
+                .map(|q| q.quest_id())
+                .collect(),
+            active_quest_states: c
+                .quest_journal
+                .slots
+                .iter()
+                .flatten()
+                .map(|q| crate::lua::QuestStateSnapshot {
+                    quest_id: q.quest_id(),
+                    sequence: q.get_sequence(),
+                    flags: q.get_flags(),
+                    counters: [q.get_counter(0), q.get_counter(1), q.get_counter(2)],
+                })
+                .collect(),
+            completed_quests: c.quest_journal.iter_completed().collect(),
+            ..Default::default()
+        };
+        let q = c.quest_journal.get(quest_id).expect("has");
+        let qh = crate::lua::LuaQuestHandle {
+            player_id: snap.actor_id,
+            quest_id,
+            has_quest: true,
+            sequence: q.get_sequence(),
+            flags: q.get_flags(),
+            counters: [q.get_counter(0), q.get_counter(1), q.get_counter(2)],
+            queue: crate::lua::command::CommandQueue::new(),
+        };
+        (snap, qh)
+    };
+
+    let lua_clone = lua.clone();
+    let extra = vec![crate::lua::QuestHookArg::Npc(npc_spec)];
+    let result = tokio::task::spawn_blocking(move || {
+        lua_clone.call_quest_hook(&script_path, hook_name, snapshot, quest_handle, extra)
+    })
+    .await;
+    let result = match result {
+        Ok(r) => r,
+        Err(join_err) => {
+            tracing::warn!(error = %join_err, quest = quest_id, hook = hook_name, "panicked");
+            return;
+        }
+    };
+    if let Some(e) = result.error {
+        tracing::debug!(error = %e, quest = quest_id, hook = hook_name, "errored");
+    }
+    if result.commands.is_empty() {
+        return;
+    }
+
+    let event_session_snapshot = {
+        let c = handle.character.read().await;
+        c.event_session.clone()
+    };
+    let mut outbox = crate::event::outbox::EventOutbox::new();
+    crate::event::lua_bridge::translate_lua_commands_into_outbox(
+        &result.commands,
+        &event_session_snapshot,
+        &mut outbox,
+    );
+    for e in outbox.drain() {
+        Box::pin(crate::event::dispatcher::dispatch_event_event(
+            &e,
+            registry,
+            world,
+            db,
+            Some(lua),
+        ))
+        .await;
+    }
+    Box::pin(apply_runtime_lua_commands(
+        result.commands,
+        registry,
+        db,
+        world,
+        Some(lua),
+    ))
+    .await;
+
+    // Auto-resume parked `_WAIT_EVENT` coroutine.
+    let player_id = handle.actor_id;
+    if let Some(after) = lua.fire_player_event_and_drain(player_id, mlua::MultiValue::new()) {
+        if !after.is_empty() {
+            let session_after = {
+                let c = handle.character.read().await;
+                c.event_session.clone()
+            };
+            let mut outbox = crate::event::outbox::EventOutbox::new();
+            crate::event::lua_bridge::translate_lua_commands_into_outbox(
+                &after,
+                &session_after,
+                &mut outbox,
+            );
+            for e in outbox.drain() {
+                Box::pin(crate::event::dispatcher::dispatch_event_event(
+                    &e,
+                    registry,
+                    world,
+                    db,
+                    Some(lua),
+                ))
+                .await;
+            }
+            Box::pin(apply_runtime_lua_commands(after, registry, db, world, Some(lua))).await;
+        }
+    }
+}
+
 /// Fire a quest's `onTalk(player, quest, npc)` hook on behalf of an
 /// out-of-band caller (currently the GM `talkto` command). Mirrors
 /// `PacketProcessor::fire_quest_hook` + the EventOutbox bridge step

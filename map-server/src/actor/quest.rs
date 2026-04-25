@@ -302,6 +302,14 @@ pub struct QuestState {
     /// [`begin_sequence_swap`]; drained by the engine after the hook
     /// finishes so stale entries get a "clear" broadcast.
     pub old: HashMap<u32, QuestEnpc>,
+    /// `actorClassId`s that have already fired their `onPush` hook this
+    /// sequence — proximity-push detection runs on every position update,
+    /// so without this dedupe we'd re-fire the hook every ~350ms while
+    /// the player was inside the trigger radius. Cleared on every
+    /// `begin_sequence_swap` (so a new sequence can re-trigger pushes
+    /// for the same NPCs) and never persisted to disk (in-memory only;
+    /// re-login resets it).
+    pub recently_pushed: std::collections::HashSet<u32>,
 }
 
 impl QuestState {
@@ -349,6 +357,9 @@ impl QuestState {
     /// clear-broadcasts for ENPCs the new sequence didn't re-activate.
     pub fn begin_sequence_swap(&mut self) {
         self.old = std::mem::take(&mut self.current);
+        // A fresh sequence may legitimately want to re-fire push hooks
+        // (e.g. SEQ_010 re-uses ROSTNSTHAL with a new push trigger).
+        self.recently_pushed.clear();
     }
 
     /// Iterate and drain every ENPC left in `old` after the hook ran —
