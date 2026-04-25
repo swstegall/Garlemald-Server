@@ -103,6 +103,18 @@ pub async fn dispatch_event_event(
         }
 
         // ---- Packet sends ----------------------------------------------
+        // Each builder leaves SubPacketHeader.target_id = 0 because
+        // `SubPacket::new` only sets source_id (target_id stays at the
+        // default-zero from `SubPacketHeader::default()`). The 1.x
+        // client appears to silently drop event subpackets whose
+        // target_id != the receiving actor's session id — Meteor's
+        // KickEvent / RunEventFunction packets carry target_id = 1
+        // (the player). Without this, the server's RunEventFunction
+        // for the opening cutscene reaches the client with the right
+        // bytes everywhere except SubPacketHeader.target_id, and the
+        // client sits on "Now Loading" forever (no EventUpdate, no
+        // EndEvent, the script's `_WAIT_EVENT` coroutine never
+        // resumes).
         EventEvent::RunEventFunction {
             player_actor_id,
             trigger_actor_id,
@@ -112,7 +124,7 @@ pub async fn dispatch_event_event(
             function_name,
             lua_params,
         } => {
-            let sub = tx::build_run_event_function(
+            let mut sub = tx::build_run_event_function(
                 *trigger_actor_id,
                 *owner_actor_id,
                 event_name,
@@ -120,6 +132,7 @@ pub async fn dispatch_event_event(
                 function_name,
                 lua_params,
             );
+            sub.set_target_id(*player_actor_id);
             send_to_player(world, registry, *player_actor_id, sub.to_bytes()).await;
         }
         EventEvent::EndEvent {
@@ -128,8 +141,9 @@ pub async fn dispatch_event_event(
             event_name,
             event_type,
         } => {
-            let sub =
+            let mut sub =
                 tx::build_end_event(*player_actor_id, *owner_actor_id, event_name, *event_type);
+            sub.set_target_id(*player_actor_id);
             send_to_player(world, registry, *player_actor_id, sub.to_bytes()).await;
         }
         EventEvent::KickEvent {
@@ -140,13 +154,14 @@ pub async fn dispatch_event_event(
             event_type,
             lua_params,
         } => {
-            let sub = tx::build_kick_event(
+            let mut sub = tx::build_kick_event(
                 *target_actor_id,
                 *owner_actor_id,
                 event_name,
                 *event_type,
                 lua_params,
             );
+            sub.set_target_id(*player_actor_id);
             send_to_player(world, registry, *player_actor_id, sub.to_bytes()).await;
         }
 
