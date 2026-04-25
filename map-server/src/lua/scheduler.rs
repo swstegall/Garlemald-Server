@@ -165,7 +165,13 @@ pub fn classify_yield(value: &Value) -> YieldDirective {
 }
 
 /// Adapter: turn a Lua value into the matching `LuaCommandArg` so scripts can
-/// return structured values that the game loop consumes.
+/// return structured values that the game loop consumes. UserData values
+/// (LuaPlayer / LuaActor / LuaNpc / LuaDirectorHandle / LuaQuestHandle)
+/// are coerced to `ActorId` so cutscene and event RPCs that pass `player`
+/// or `quest` as Lua-param entries (e.g. `callClientFunction(player,
+/// "delegateEvent", player, quest, "processTtrNomal001withHQ")`) end up
+/// with type-byte 0x06 on the wire instead of being silently flattened
+/// to `Nil`.
 pub fn value_to_command_arg(value: &Value) -> LuaCommandArg {
     match value {
         Value::Nil => LuaCommandArg::Nil,
@@ -174,6 +180,37 @@ pub fn value_to_command_arg(value: &Value) -> LuaCommandArg {
         Value::Number(n) => LuaCommandArg::Float(*n),
         Value::String(s) => {
             LuaCommandArg::String(s.to_str().map(|c| c.to_string()).unwrap_or_default())
+        }
+        Value::UserData(ud) => {
+            use super::userdata::{
+                LuaActor, LuaDirectorHandle, LuaNpc, LuaPlayer, LuaQuestHandle,
+            };
+            // Use `borrow_scoped` rather than `borrow`: the latter conflicts
+            // with the mlua method binding's outer borrow when a script
+            // passes `self` back into the call as a vararg
+            // (`player:RunEventFunction("delegateEvent", player, …)`),
+            // which silently dropped the player slot to Nil before this
+            // change. `borrow_scoped` releases its handle as soon as the
+            // closure returns, so it composes safely with the binding's
+            // immutable borrow of `this`.
+            if let Ok(id) = ud.borrow_scoped::<LuaPlayer, _>(|p| p.snapshot.actor_id) {
+                LuaCommandArg::ActorId(id)
+            } else if let Ok(id) = ud.borrow_scoped::<LuaActor, _>(|a| a.actor_id) {
+                LuaCommandArg::ActorId(id)
+            } else if let Ok(id) = ud.borrow_scoped::<LuaNpc, _>(|n| n.base.actor_id) {
+                LuaCommandArg::ActorId(id)
+            } else if let Ok(id) = ud.borrow_scoped::<LuaDirectorHandle, _>(|d| d.actor_id) {
+                LuaCommandArg::ActorId(id)
+            } else if let Ok(id) = ud.borrow_scoped::<LuaQuestHandle, _>(|q| 0xA0F0_0000 | q.quest_id) {
+                // Meteor's CreateLuaParamList encodes a quest as
+                // `0xA0F00000 | quest.GetQuestId()` (the same masking
+                // StaticActors uses), then writes it as an Actor
+                // LuaParam. Mirror that so the client recognises the
+                // quest reference inside the cutscene RPC payload.
+                LuaCommandArg::ActorId(id)
+            } else {
+                LuaCommandArg::Nil
+            }
         }
         _ => LuaCommandArg::Nil,
     }

@@ -1033,18 +1033,29 @@ impl UserData for LuaPlayer {
         });
         methods.add_method(
             "RunEventFunction",
-            |_, this, (name, _args): (String, mlua::MultiValue)| {
-                // MultiValue args are dropped for now — full parity awaits a
-                // Lua-value → LuaCommandArg marshaller. The Rust server loop
-                // still receives the event name, which is what the client
-                // reacts to in most cases.
+            |_, this, (name, varargs): (String, mlua::MultiValue)| {
+                // Marshal the trailing varargs through the same
+                // value_to_command_arg pipeline KickEvent uses. These end up
+                // in the wire packet's Lua-param region (offset 0x49) and
+                // are *load-bearing* for cutscene RPCs: the opening flow
+                // calls `callClientFunction(player, "delegateEvent",
+                // player, quest, "processTtrNomal001withHQ")` from
+                // `quests/man/man0l0.lua`, and the inner string param is
+                // the cutscene routine the 1.x client dispatches.
+                // Dropping it (the previous behaviour) shipped a packet
+                // with `function_name=delegateEvent` and an empty
+                // params block, and the client silently no-op'd it.
+                let args: Vec<super::command::LuaCommandArg> = varargs
+                    .iter()
+                    .map(super::scheduler::value_to_command_arg)
+                    .collect();
                 push(
                     &this.queue,
                     LuaCommand::RunEventFunction {
                         player_id: this.snapshot.actor_id,
                         event_name: this.snapshot.current_event_name.clone(),
                         function_name: name,
-                        args: Vec::new(),
+                        args,
                     },
                 );
                 Ok(())

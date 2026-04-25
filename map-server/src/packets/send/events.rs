@@ -27,22 +27,39 @@ use common::luaparam::{self, LuaParam};
 use common::subpacket::SubPacket;
 
 use super::super::opcodes::*;
-use super::{body, write_padded_ascii};
+use super::body;
 
 /// 0x0131 EndEventPacket — scripted event teardown.
+///
+/// Byte layout mirrors C# `Map Server/Packets/Send/Events/EndEventPacket.cs`:
+/// - 0x00..0x04: `source_player` (u32) — the player ending the event
+/// - 0x04..0x08: 0                (u32, always zero)
+/// - 0x08      : `event_type`     (u8)
+/// - 0x09..    : null-terminated event name (no fixed-width padding;
+///   the buffer is zero-init so the implicit NUL terminates it)
+///
+/// `event_owner_actor_id` is intentionally unused in the wire layout — the
+/// 1.x client takes the event owner from the open event-session it
+/// already tracked from `EventStartPacket`/`KickEventPacket`. We keep
+/// the parameter for call-site clarity.
 pub fn build_end_event(
     source_player: u32,
-    event_owner_actor_id: u32,
+    _event_owner_actor_id: u32,
     event_name: &str,
     event_type: u8,
 ) -> SubPacket {
     let mut data = body(0x50);
     let mut c = Cursor::new(&mut data[..]);
-    c.write_u32::<LittleEndian>(event_owner_actor_id).unwrap();
+    c.write_u32::<LittleEndian>(source_player).unwrap();
+    c.write_u32::<LittleEndian>(0).unwrap();
     c.write_u8(event_type).unwrap();
-    c.write_u8(0).unwrap();
-    c.write_u16::<LittleEndian>(0).unwrap();
-    write_padded_ascii(&mut c, event_name, 0x20);
+    let name_bytes = event_name.as_bytes();
+    // Body capacity is 0x50 - 0x20 = 0x30. Reserve 1 byte for the
+    // implicit NUL terminator at the end of the event name.
+    let max_name_len = 0x30usize - 0x09 - 1;
+    let n = name_bytes.len().min(max_name_len);
+    use std::io::Write as _;
+    c.write_all(&name_bytes[..n]).unwrap();
     SubPacket::new(OP_END_EVENT, source_player, data)
 }
 
@@ -95,6 +112,24 @@ pub fn build_kick_event(
 }
 
 /// 0x0130 RunEventFunctionPacket.
+///
+/// Byte layout mirrors C# `Map Server/Packets/Send/Events/RunEventFunctionPacket.cs`
+/// exactly — the prior port omitted the leading `trigger_actor_id` u32
+/// and packed `event_name` against the previous field, shifting every
+/// subsequent byte one position. Result: the function-name slot at
+/// 0x29 and the lua-param region at 0x49 were both garbled, so the
+/// 1.x client received a cutscene RPC whose function name was junk and
+/// silently dropped it. The opening "noticeEvent" → "delegateEvent
+/// processTtrNomal001withHQ" call from `quests/man/man0l0.lua` was the
+/// canonical victim — see `captures/garlemald-quest/run1-raw/` and
+/// `captures/pmeteor-quest/.../map-packets.log` for the byte diff.
+///
+/// - 0x00..0x04: `trigger_actor_id` (u32) — typically the player
+/// - 0x04..0x08: `owner_actor_id`  (u32) — director / NPC owning the event
+/// - 0x08      : `event_type`      (u8)
+/// - 0x09..0x29: null-padded `event_name`    (32 bytes incl. terminator)
+/// - 0x29..0x49: null-padded `function_name` (32 bytes incl. terminator)
+/// - 0x49..    : Lua-param stream
 pub fn build_run_event_function(
     trigger_actor_id: u32,
     owner_actor_id: u32,
@@ -105,12 +140,26 @@ pub fn build_run_event_function(
 ) -> SubPacket {
     let mut data = body(0x2B8);
     let mut c = Cursor::new(&mut data[..]);
+    c.write_u32::<LittleEndian>(trigger_actor_id).unwrap();
     c.write_u32::<LittleEndian>(owner_actor_id).unwrap();
     c.write_u8(event_type).unwrap();
-    c.write_u8(0).unwrap();
-    c.write_u16::<LittleEndian>(0).unwrap();
-    write_padded_ascii(&mut c, event_name, 0x20);
-    write_padded_ascii(&mut c, function_name, 0x20);
+
+    // event_name lands at 0x09 in C#, with the next field at 0x29 from
+    // an explicit `binWriter.Seek(0x29, …)`. Mirror that with a
+    // bounded write + set_position so we don't trample the type byte
+    // when the name is empty.
+    let name_bytes = event_name.as_bytes();
+    let n = name_bytes.len().min(0x29 - 0x09 - 1);
+    use std::io::Write as _;
+    c.write_all(&name_bytes[..n]).unwrap();
+
+    c.set_position(0x29);
+    let fn_bytes = function_name.as_bytes();
+    let fn_n = fn_bytes.len().min(0x49 - 0x29 - 1);
+    c.write_all(&fn_bytes[..fn_n]).unwrap();
+
+    c.set_position(0x49);
     let _ = luaparam::write_lua_params(&mut c, lua_params);
+
     SubPacket::new(OP_RUN_EVENT_FUNCTION, trigger_actor_id, data)
 }
