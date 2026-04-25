@@ -870,6 +870,44 @@ impl CommandProcessor {
                 .collect()
         };
 
+        // Mirror `handle_event_start` in processor.rs: after the
+        // EventStarted dispatch (which targets the NPC's class script),
+        // also fire `onTalk` on every active quest the player holds. The
+        // 1.x convention is that the quest script — not the NPC class
+        // script — owns the per-NPC dialogue branches (`seq000_onTalk`,
+        // etc. in `man0l0.lua`). Without this call, `talkto Rostnsthal`
+        // dispatches into the NPC class default but never reaches the
+        // quest's branch that fires `processTtrNomal003`.
+        let npc_spec = {
+            let c = npc_handle.character.read().await;
+            crate::lua::LuaNpcSpec {
+                actor_id: c.base.actor_id,
+                name: c.base.actor_name.clone(),
+                class_name: c.base.class_name.clone(),
+                class_path: c.base.class_path.clone(),
+                unique_id: String::new(),
+                zone_id: c.base.zone_id,
+                zone_name: String::new(),
+                state: c.base.current_main_state,
+                pos: (c.base.position_x, c.base.position_y, c.base.position_z),
+                rotation: c.base.rotation,
+                actor_class_id: c.chara.actor_class_id,
+                quest_graphic: 0,
+            }
+        };
+        for quest_id in &active_quests {
+            crate::runtime::quest_apply::fire_quest_on_talk_via_command(
+                &player_handle,
+                *quest_id,
+                npc_spec.clone(),
+                &self.registry,
+                &self.db,
+                &self.world,
+                Some(&self.lua),
+            )
+            .await;
+        }
+
         format!(
             "talkto fired event on player {chara_id} → NPC {owner_actor_id} (class {actor_class_id}, \"{npc_name}\"), {} active quest(s) in journal",
             active_quests.len()

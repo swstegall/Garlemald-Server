@@ -520,6 +520,30 @@ async fn dispatch_npc_event_started(
         );
     }
     if !commands.is_empty() {
+        // Event-flavoured commands (RunEventFunction / EndEvent /
+        // KickEvent) need to flow through the EventOutbox so their
+        // packets actually reach the client. apply_runtime_lua_commands
+        // knows about non-event variants but isn't wired to the event
+        // bridge — without this drain step, the GM `talkto` command's
+        // emitted RunEventFunction/EndEvent get silently logged as
+        // "runtime lua command unhandled" and the cutscene never plays
+        // on the client. Mirrors the bridge step in
+        // `dispatch_director_event_started` and `apply_quest_on_notice`.
+        if let Some(player_handle) = registry.get(player_actor_id).await {
+            let event_session_snapshot = {
+                let c = player_handle.character.read().await;
+                c.event_session.clone()
+            };
+            let mut outbox = crate::event::outbox::EventOutbox::new();
+            crate::event::lua_bridge::translate_lua_commands_into_outbox(
+                &commands,
+                &event_session_snapshot,
+                &mut outbox,
+            );
+            for e in outbox.drain() {
+                Box::pin(dispatch_event_event(&e, registry, world, db, Some(lua))).await;
+            }
+        }
         crate::runtime::quest_apply::apply_runtime_lua_commands(
             commands,
             registry,

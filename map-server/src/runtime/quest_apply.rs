@@ -2379,6 +2379,184 @@ pub async fn apply_quest_on_notice(
     }
 }
 
+/// Fire a quest's `onTalk(player, quest, npc)` hook on behalf of an
+/// out-of-band caller (currently the GM `talkto` command). Mirrors
+/// `PacketProcessor::fire_quest_hook` + the EventOutbox bridge step
+/// from `apply_quest_on_notice`: runs the hook, translates the
+/// event-flavoured commands (RunEventFunction / EndEvent / KickEvent)
+/// into the outbox so their packets actually reach the client, then
+/// falls through to `apply_runtime_lua_commands` for the rest.
+///
+/// Without this, `talkto` only fires `EventStarted` against the NPC's
+/// class script, and the actual cutscene-driving lines in
+/// `man0l0.lua::seq000_onTalk` (the ROSTNSTHAL branch that calls
+/// `processTtrNomal003`) never run.
+#[allow(clippy::too_many_arguments)]
+pub async fn fire_quest_on_talk_via_command(
+    handle: &ActorHandle,
+    quest_id: u32,
+    npc_spec: crate::lua::LuaNpcSpec,
+    registry: &ActorRegistry,
+    db: &Database,
+    world: &WorldManager,
+    lua: Option<&Arc<LuaEngine>>,
+) {
+    let Some(lua) = lua else { return };
+    if !matches!(handle.kind, ActorKindTag::Player) {
+        return;
+    }
+    let Some(script_name) = lua.catalogs().quest_script_name(quest_id) else {
+        return;
+    };
+    let script_path = lua.resolver().quest(&script_name);
+    if !script_path.exists() {
+        return;
+    }
+
+    let (snapshot, quest_handle) = {
+        let c = handle.character.read().await;
+        if !c.quest_journal.has(quest_id) {
+            return;
+        }
+        let snap = crate::lua::userdata::PlayerSnapshot {
+            actor_id: c.base.actor_id,
+            name: c.base.actor_name.clone(),
+            zone_id: c.base.zone_id,
+            pos: (c.base.position_x, c.base.position_y, c.base.position_z),
+            rotation: c.base.rotation,
+            state: c.base.current_main_state,
+            hp: c.chara.hp,
+            max_hp: c.chara.max_hp,
+            mp: c.chara.mp,
+            max_mp: c.chara.max_mp,
+            tp: c.chara.tp,
+            active_quests: c
+                .quest_journal
+                .slots
+                .iter()
+                .flatten()
+                .map(|q| q.quest_id())
+                .collect(),
+            active_quest_states: c
+                .quest_journal
+                .slots
+                .iter()
+                .flatten()
+                .map(|q| crate::lua::QuestStateSnapshot {
+                    quest_id: q.quest_id(),
+                    sequence: q.get_sequence(),
+                    flags: q.get_flags(),
+                    counters: [q.get_counter(0), q.get_counter(1), q.get_counter(2)],
+                })
+                .collect(),
+            completed_quests: c.quest_journal.iter_completed().collect(),
+            ..Default::default()
+        };
+        let q = c.quest_journal.get(quest_id).expect("has(quest_id) is true");
+        let qh = crate::lua::LuaQuestHandle {
+            player_id: snap.actor_id,
+            quest_id,
+            has_quest: true,
+            sequence: q.get_sequence(),
+            flags: q.get_flags(),
+            counters: [q.get_counter(0), q.get_counter(1), q.get_counter(2)],
+            queue: crate::lua::command::CommandQueue::new(),
+        };
+        (snap, qh)
+    };
+
+    let lua_clone = lua.clone();
+    let extra = vec![crate::lua::QuestHookArg::Npc(npc_spec)];
+    let result = tokio::task::spawn_blocking(move || {
+        lua_clone.call_quest_hook(&script_path, "onTalk", snapshot, quest_handle, extra)
+    })
+    .await;
+    let result = match result {
+        Ok(r) => r,
+        Err(join_err) => {
+            tracing::warn!(error = %join_err, quest = quest_id, "onTalk panicked");
+            return;
+        }
+    };
+    if let Some(e) = result.error {
+        tracing::debug!(error = %e, quest = quest_id, "onTalk errored");
+    }
+
+    if result.commands.is_empty() {
+        return;
+    }
+
+    // Bridge step — translate event-flavoured commands into the
+    // EventOutbox, drain through `dispatch_event_event`. Same
+    // pattern as `apply_quest_on_notice` and the patched
+    // `dispatch_npc_event_started`.
+    let event_session_snapshot = {
+        let c = handle.character.read().await;
+        c.event_session.clone()
+    };
+    let mut outbox = crate::event::outbox::EventOutbox::new();
+    crate::event::lua_bridge::translate_lua_commands_into_outbox(
+        &result.commands,
+        &event_session_snapshot,
+        &mut outbox,
+    );
+    for e in outbox.drain() {
+        Box::pin(crate::event::dispatcher::dispatch_event_event(
+            &e,
+            registry,
+            world,
+            db,
+            Some(lua),
+        ))
+        .await;
+    }
+    // Then drain the rest (quest flag mutates, AddExp, UpdateENPCs,
+    // etc.) through the regular runtime apply pipeline.
+    Box::pin(apply_runtime_lua_commands(
+        result.commands,
+        registry,
+        db,
+        world,
+        Some(lua),
+    ))
+    .await;
+
+    // Auto-resume any coroutine the onTalk hook parked via
+    // `callClientFunction`'s `coroutine.yield("_WAIT_EVENT", player)`.
+    // Mirrors the same auto-resume in `apply_quest_on_notice` — without
+    // it, `player:EndEvent()` after `callClientFunction` never runs and
+    // the client stays in event-locked state.
+    let player_id = handle.actor_id;
+    if let Some(after) = lua.fire_player_event_and_drain(player_id, mlua::MultiValue::new()) {
+        if !after.is_empty() {
+            let session_after = {
+                let c = handle.character.read().await;
+                c.event_session.clone()
+            };
+            let mut outbox = crate::event::outbox::EventOutbox::new();
+            crate::event::lua_bridge::translate_lua_commands_into_outbox(
+                &after,
+                &session_after,
+                &mut outbox,
+            );
+            for e in outbox.drain() {
+                Box::pin(crate::event::dispatcher::dispatch_event_event(
+                    &e,
+                    registry,
+                    world,
+                    db,
+                    Some(lua),
+                ))
+                .await;
+            }
+            Box::pin(apply_runtime_lua_commands(
+                after, registry, db, world, Some(lua),
+            ))
+            .await;
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Lua hook firing — mirror of `PacketProcessor::fire_quest_hook` that
 // drains emitted commands back through `apply_runtime_lua_command`.
