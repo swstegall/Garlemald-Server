@@ -2324,6 +2324,58 @@ pub async fn apply_quest_on_notice(
             Some(lua),
         ))
         .await;
+
+        // The opening-cutscene hook `man0l0.lua::onNotice` runs:
+        //
+        //     callClientFunction(player, "delegateEvent", player, quest,
+        //                        "processTtrNomal001withHQ")
+        //     player:EndEvent()
+        //     quest:UpdateENPCs()
+        //
+        // `callClientFunction` (in scripts/global.lua) does
+        // `coroutine.yield("_WAIT_EVENT", player)`, so the coroutine
+        // parks after the first call. The 1.x client never sends a
+        // matching `0x012E EventUpdate` for cutscene completion — the
+        // cinematic plays asynchronously, the client expects the
+        // server to drive the post-cinematic state on its own — so
+        // the parked coroutine would sit forever, `player:EndEvent()`
+        // (the `0x0131 EndEventPacket` that frees the client from
+        // event-locked state) never fires, and the player can't
+        // interact with NPCs even though visually the world is
+        // rendered. Auto-fire the parked coroutine immediately so the
+        // post-`callClientFunction` lines in the hook (the EndEvent
+        // and UpdateENPCs calls) run in the same drain pass. Re-drain
+        // anything those produce.
+        if let Some(after) =
+            lua.fire_player_event_and_drain(player_id, mlua::MultiValue::new())
+        {
+            if !after.is_empty() {
+                let session_after = {
+                    let c = handle.character.read().await;
+                    c.event_session.clone()
+                };
+                let mut outbox = crate::event::outbox::EventOutbox::new();
+                crate::event::lua_bridge::translate_lua_commands_into_outbox(
+                    &after,
+                    &session_after,
+                    &mut outbox,
+                );
+                for e in outbox.drain() {
+                    Box::pin(crate::event::dispatcher::dispatch_event_event(
+                        &e,
+                        registry,
+                        world,
+                        db,
+                        Some(lua),
+                    ))
+                    .await;
+                }
+                Box::pin(apply_runtime_lua_commands(
+                    after, registry, db, world, Some(lua),
+                ))
+                .await;
+            }
+        }
     }
 }
 

@@ -721,16 +721,49 @@ impl LuaEngine {
 
     /// Notify the scheduler that `player_id` just received an event update.
     pub fn fire_player_event(&self, player_id: u32, args: MultiValue) -> bool {
-        let Some(parked) = self
-            .scheduler
-            .lock()
-            .ok()
-            .and_then(|mut s| s.take_event(player_id))
-        else {
-            return false;
+        self.fire_player_event_and_drain(player_id, args).is_some()
+    }
+
+    /// Like [`Self::fire_player_event`] but returns the commands the
+    /// resumed coroutine queued before yielding/finishing, and re-parks
+    /// the coroutine if it yielded again on a known directive. `None`
+    /// means no coroutine was waiting; otherwise the (possibly empty)
+    /// command list is returned.
+    ///
+    /// Falls back to `player_id=0` if no coroutine is parked under the
+    /// specific id — `coroutine.yield("_WAIT_EVENT", player)` from
+    /// `global.lua` passes the `LuaPlayer` userdata as the second yield
+    /// arg, but mlua's `Thread::resume::<Value>` discards yield args
+    /// past the first, so the scheduler ends up parking everything on
+    /// the bare-string variant's player_id=0 fallback.
+    pub fn fire_player_event_and_drain(
+        &self,
+        player_id: u32,
+        args: MultiValue,
+    ) -> Option<Vec<LuaCommand>> {
+        let Some(parked) = self.scheduler.lock().ok().and_then(|mut s| {
+            s.take_event(player_id).or_else(|| {
+                if player_id != 0 {
+                    s.take_event(0)
+                } else {
+                    None
+                }
+            })
+        }) else {
+            return None;
         };
-        let _ = parked.thread.resume::<Value>(args);
-        true
+        let resume_result = parked.thread.resume::<Value>(args);
+        let commands = CommandQueue::drain(&parked.queue);
+        if matches!(parked.thread.status(), mlua::ThreadStatus::Resumable) {
+            // Coroutine yielded again — re-park on whatever directive
+            // it returned. Without this, a multi-step script that
+            // yields more than once would lose its handle.
+            if let Ok(value) = resume_result {
+                let directive = scheduler::classify_yield(&value);
+                self.repark(parked, directive);
+            }
+        }
+        Some(commands)
     }
 
     fn repark(&self, parked: ParkedCoroutine, directive: YieldDirective) {
