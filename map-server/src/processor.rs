@@ -811,7 +811,12 @@ impl PacketProcessor {
                 // The LuaZone:CreateDirector binding pins the director
                 // local_id to 0, so the actor id is deterministic and
                 // we can round-trip it into the registry idempotently.
-                let director_local_id = director_actor_id & 0x0007_FFFF;
+                // `encode_director_actor_id` adds the C# `+ 2` quirk
+                // — strip it back off here so `create_director_with_id`
+                // re-applies the encoding correctly (otherwise the
+                // round-trip drifts by 4 every CreateDirector call).
+                let director_local_id =
+                    (director_actor_id & 0x0007_FFFF).saturating_sub(2);
                 if let Some(zone_arc) = self.world.zone(zone_actor_id).await {
                     let mut zone = zone_arc.write().await;
                     zone.core.create_director_with_id(

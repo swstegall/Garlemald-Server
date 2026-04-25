@@ -1661,19 +1661,25 @@ impl UserData for LuaZone {
         // `zone:CreateDirector(name, some_flag)` is called from
         // `battlenpc.lua`/`player.lua` `onBeginLogin` for the tutorial
         // opening. Computes the director's actor id per the C# formula
-        // `(6 << 28) | (zone_actor_id << 19) | director_local_id` (see
-        // `Director.cs` ctor base call) and fires a `CreateDirector`
-        // command so the host can emit the director's spawn packets in
-        // the same pass as the zone-in bundle. Returns a LuaDirectorHandle
-        // carrying that actor id so `player:SetLoginDirector(director)`
-        // can read it back. For the login director we only ever need
-        // one per zone, so `director_local_id` is always 0.
+        // `(6 << 28) | (zone_actor_id << 19) | (director_local_id + 2)`
+        // (see `Director.cs:49` ctor base call — the `+ 2` quirk
+        // reserves slots 0 and 1 for system actors) and fires a
+        // `CreateDirector` command so the host can emit the director's
+        // spawn packets in the same pass as the zone-in bundle.
+        // Returns a LuaDirectorHandle carrying that actor id so
+        // `player:SetLoginDirector(director)` can read it back. For
+        // the login director we only ever need one per zone, so
+        // `director_local_id` is always 0 — actor_id ends up at
+        // `(6 << 28) | (zone << 19) | 2`.
         methods.add_method(
             "CreateDirector",
             |lua, this, (name, _flag): (String, Option<bool>)| {
                 let director_local_id: u32 = 0;
                 let zone_actor_id = this.snapshot.zone_id;
-                let director_actor_id = (6u32 << 28) | (zone_actor_id << 19) | director_local_id;
+                let director_actor_id = crate::director::director::encode_director_actor_id(
+                    zone_actor_id,
+                    director_local_id,
+                );
                 // C# `Director.init()` returns the classPath — for
                 // OpeningDirector that's `/Director/OpeningDirector`.
                 // We reconstruct the path deterministically from the

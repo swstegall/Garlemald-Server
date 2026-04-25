@@ -287,10 +287,19 @@ impl Director {
 }
 
 /// Compute the composite actor id. Prefix 6 is the director kind; the
-/// C# packs the zone id in the mid 9 bits and the local sequence number
-/// in the low 19.
+/// C# packs the zone id in the mid 9 bits and `(uint)id + 2` in the
+/// low 19. The `+ 2` quirk is from `Director.cs:49`
+/// (`base((6 << 28 | zone.ZoneId << 19 | (uint)id + 2))`) — slots 0
+/// and 1 are reserved by the Area itself for system actors, so the
+/// first user-visible director created via `CreateDirector(0, …)`
+/// lands at actor_id `…|2`. Without the offset, garlemald's
+/// OpeningDirector ended up at `0x66080000`, the 1.x client refused
+/// to fire `EventEnd` after the cinematic, and the opening quest
+/// stalled on every fresh login. See `captures/pmeteor-quest/.../map-packets.log`
+/// vs `captures/garlemald-quest/run9-playquest/` for the byte-level
+/// divergence at offset 0x24 of the 0x0130 RunEventFunction packet.
 pub fn encode_director_actor_id(zone_id: u32, local_id: u32) -> u32 {
-    (6u32 << 28) | ((zone_id & 0x1FF) << 19) | (local_id & 0x7FFFF)
+    (6u32 << 28) | ((zone_id & 0x1FF) << 19) | ((local_id + 2) & 0x7FFFF)
 }
 
 fn abbreviate_zone_name(name: &str) -> String {
@@ -328,7 +337,8 @@ mod tests {
     fn actor_id_is_6_prefixed() {
         let d = Director::new(7, 100, "Weather/Default", false);
         assert_eq!(d.actor_id >> 28, 6);
-        assert_eq!(d.actor_id & 0x7FFFF, 7);
+        // Mirrors C# Director.cs:49 — the low 19 bits are `id + 2`.
+        assert_eq!(d.actor_id & 0x7FFFF, 9);
     }
 
     #[test]
