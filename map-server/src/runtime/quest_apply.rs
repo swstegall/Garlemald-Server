@@ -630,7 +630,17 @@ pub async fn apply_add_quest(
         "AddQuest applied",
     );
     if let Some(lua_engine) = lua {
-        fire_quest_hook(&handle, quest_id, "onStart", Vec::new(), lua_engine, registry, db).await;
+        fire_quest_hook(
+            &handle,
+            quest_id,
+            "onStart",
+            Vec::new(),
+            lua_engine,
+            registry,
+            db,
+            None,
+        )
+        .await;
     }
 }
 
@@ -653,6 +663,7 @@ pub async fn apply_complete_quest(
             lua_engine,
             registry,
             db,
+            None,
         )
         .await;
     }
@@ -707,6 +718,7 @@ pub async fn apply_abandon_quest(
             lua_engine,
             registry,
             db,
+            None,
         )
         .await;
     }
@@ -768,6 +780,7 @@ pub async fn apply_quest_start_sequence(
             lua_engine,
             registry,
             db,
+            Some(world),
         )
         .await;
     }
@@ -864,6 +877,7 @@ pub async fn apply_quest_update_enpcs(
             lua_engine,
             registry,
             db,
+            Some(world),
         )
         .await;
     }
@@ -876,6 +890,33 @@ pub async fn apply_quest_update_enpcs(
     };
     for enpc in stale {
         broadcast_quest_enpc_clear(player_id, enpc, registry, world).await;
+    }
+
+    // Force-rebroadcast every ENPC currently active for this quest.
+    //
+    // Why: `apply_quest_set_enpc` only emits a broadcast when `add_enpc`
+    // returns `New` or `Updated` — i.e. when the new flags differ from the
+    // previous sequence's. After a cinematic noticeEvent ack, re-running
+    // `onStateChange` typically computes the *same* flags as zone-in
+    // (e.g. man0g0 SEQ_000 with MINITUT0/MINITUT1 still false), so every
+    // SetEnpc returns `Unchanged` and no packets go out. The 1.x client
+    // appears to drop quest-graphic state across cinematic playback,
+    // though, so without a fresh broadcast Yda's `!` icon never reappears
+    // and the player thinks no NPC is interactable.
+    //
+    // Pmeteor's `QuestState.UpdateState()` re-emits unconditionally, so
+    // matching that here produces the same wire-level behaviour. The
+    // duplicate packet at zone-in (when no cinematic has played yet) is
+    // a tiny cost.
+    let active: Vec<QuestEnpc> = {
+        let c = handle.character.read().await;
+        c.quest_journal
+            .get(quest_id)
+            .map(|q| q.state.current.values().copied().collect())
+            .unwrap_or_default()
+    };
+    for enpc in active {
+        broadcast_quest_enpc_update(player_id, enpc, registry, world).await;
     }
 }
 
@@ -3139,6 +3180,7 @@ async fn fire_quest_hook(
     lua: &Arc<LuaEngine>,
     registry: &ActorRegistry,
     db: &Database,
+    world: Option<&WorldManager>,
 ) {
     // Skip Lua work on actors that aren't Players — NPCs / BattleNpcs
     // carry a default-empty quest_journal but shouldn't ever reach this
@@ -3237,30 +3279,49 @@ async fn fire_quest_hook(
         tracing::debug!(error = %e, quest = quest_id, hook = hook_name, "hook errored");
     }
 
-    // Recurse into the runtime drain (Box::pin to bound future size —
-    // hooks can emit AddQuest which re-enters fire_quest_hook).
-    // The `world` parameter needs a placeholder here; fetch it from the
-    // player handle's zone lookup path. Since this helper doesn't take a
-    // world ref, any command that needs it (QuestSetEnpc,
-    // QuestUpdateEnpcs, QuestStartSequence's stale-drain) would no-op
-    // silently. Callers that want full command support pass
-    // `apply_runtime_lua_commands` directly with a world ref after the
-    // hook returns — this helper only powers `apply_add_quest` /
-    // `apply_complete_quest` / `apply_abandon_quest`, none of which
-    // run onStateChange or otherwise need a world.
+    // Drain emitted commands. When the caller has a `WorldManager`,
+    // route them through `apply_runtime_lua_commands` so world-needing
+    // commands (QuestSetEnpc → broadcast_quest_enpc_update,
+    // QuestUpdateEnpcs, QuestStartSequence's stale-drain) actually fire.
+    // Without this, re-running `onStateChange` (e.g. via
+    // `apply_quest_update_enpcs` after a cinematic noticeEvent) would
+    // produce SetENpc lua commands that get silently dropped — leaving
+    // the post-cinematic `current` ENPC set empty and `drain_stale_enpcs`
+    // broadcasting CLEAR (SetEventStatus enabled=0) for every NPC that
+    // was supposed to remain active. Symptom: walking into Yda after
+    // the man0g0 opening cinematic does nothing because her pushDefault
+    // and talkDefault triggers were just disabled.
+    //
+    // Callers without a `world` (apply_complete_quest /
+    // apply_abandon_quest's onFinish, plus the apply_add_quest onStart
+    // path which today is reached via the processor's login pipeline)
+    // pass `None` and the legacy log-and-drop behaviour is preserved.
+    // Box::pin handles the recursive future size since hooks can emit
+    // AddQuest which re-enters fire_quest_hook.
     if !result.commands.is_empty() {
-        tracing::debug!(
-            quest = quest_id,
-            hook = hook_name,
-            commands = result.commands.len(),
-            "hook emitted runtime commands (not drained from fire_quest_hook)",
-        );
-        // Best-effort drain for pure-runtime commands that don't need
-        // the WorldManager. Commands that do need `world` are logged
-        // and dropped by apply_runtime_lua_command's `_ => false`.
-        // Callers wanting full command drain should use the public
-        // `apply_runtime_lua_commands` against the same registry/db/lua.
-        let _ = (registry, db); // silence unused in degenerate builds
+        if let Some(world) = world {
+            tracing::debug!(
+                quest = quest_id,
+                hook = hook_name,
+                commands = result.commands.len(),
+                "draining hook commands through apply_runtime_lua_commands",
+            );
+            Box::pin(apply_runtime_lua_commands(
+                result.commands,
+                registry,
+                db,
+                world,
+                Some(lua),
+            ))
+            .await;
+        } else {
+            tracing::debug!(
+                quest = quest_id,
+                hook = hook_name,
+                commands = result.commands.len(),
+                "hook emitted runtime commands (not drained from fire_quest_hook)",
+            );
+        }
     }
 }
 
