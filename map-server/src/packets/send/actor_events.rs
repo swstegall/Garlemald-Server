@@ -137,7 +137,16 @@ pub fn build_set_push_circle_event_condition(
     c.write_u32::<LittleEndian>(0x4453_3088).unwrap();
     c.write_f32::<LittleEndian>(100.0).unwrap();
     c.write_u32::<LittleEndian>(0).unwrap();
-    c.write_u8(if condition.outwards { 0x11 } else { 0x01 })
+    // Meteor's `SetPushEventConditionWithCircle.cs:48` writes
+    // `outwards ? 0x10 : 0x00` here — bit 4 (`0x10`) inverts the
+    // bounding-box test (player triggers on *leaving* the circle).
+    // The previous garlemald port wrote `0x11`/`0x01` with bit 0 set,
+    // which made the 1.x client treat the trigger as silently disabled
+    // — visible symptom: walking into Yda's `pushDefault` radius after
+    // the opening cinematic ended did nothing on the wire (no inbound
+    // `EventStart(eventType=2, owner=Yda)`), so `man0g0::onPush` never
+    // fired the `processTtrNomal002` follow-up cinematic.
+    c.write_u8(if condition.outwards { 0x10 } else { 0x00 })
         .unwrap();
     c.write_u8(0).unwrap();
     c.write_u8(if condition.silent { 1 } else { 0 }).unwrap();
@@ -159,6 +168,11 @@ pub fn build_set_push_fan_event_condition(
     c.write_u32::<LittleEndian>(0x4453_3088).unwrap();
     c.write_f32::<LittleEndian>(100.0).unwrap();
     c.write_u32::<LittleEndian>(0).unwrap();
+    // Fan-variant uses a different flag-byte encoding from the circle:
+    // `SetPushEventConditionWithFan.cs:48` writes `outwards ? 0x11 : 0x01`
+    // (bit 0 always set, bit 4 toggled by `outwards`), unlike the circle
+    // which writes `outwards ? 0x10 : 0x00`. Bit 0 likely keys "fan
+    // shape" client-side. Don't fold this into the circle wiring.
     c.write_u8(if condition.outwards { 0x11 } else { 0x01 })
         .unwrap();
     c.write_u8(0).unwrap();
@@ -183,7 +197,12 @@ pub fn build_set_push_box_event_condition(
     let mut c = Cursor::new(&mut data[..]);
     c.write_u32::<LittleEndian>(condition.bg_obj).unwrap();
     c.write_u32::<LittleEndian>(condition.layout).unwrap();
-    c.write_u8(if condition.outwards { 0x11 } else { 0x01 })
+    // Box-variant uses yet another flag-byte encoding from the circle
+    // and fan: `SetPushEventConditionWithTriggerBox.cs:51` writes
+    // `outwards ? 0x11 : 0x00` (not symmetric — bit 0 only sets when
+    // `outwards`). Box-push triggers aren't on any current critical
+    // path so this is mostly cosmetic until a caller exercises it.
+    c.write_u8(if condition.outwards { 0x11 } else { 0x00 })
         .unwrap();
     c.write_u8(0).unwrap();
     c.write_u8(if condition.silent { 1 } else { 0 }).unwrap();

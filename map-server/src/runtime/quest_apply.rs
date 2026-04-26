@@ -144,7 +144,7 @@ pub async fn apply_runtime_lua_command(
             true
         }
         LC::QuestUpdateEnpcs { player_id, quest_id } => {
-            apply_quest_update_enpcs(player_id, quest_id, registry, world).await;
+            apply_quest_update_enpcs(player_id, quest_id, registry, db, world, lua).await;
             true
         }
         LC::SetQuestComplete { player_id, quest_id, flag } => {
@@ -826,11 +826,47 @@ pub async fn apply_quest_update_enpcs(
     player_id: u32,
     quest_id: u32,
     registry: &ActorRegistry,
+    db: &Database,
     world: &WorldManager,
+    lua: Option<&Arc<LuaEngine>>,
 ) {
     let Some(handle) = registry.get(player_id).await else {
         return;
     };
+    // Mirror Meteor's `QuestState.UpdateState()` — re-run the script's
+    // `onStateChange(sequence)` hook so flag-dependent `quest:SetENpc(...)`
+    // calls re-evaluate, then drain stale entries and broadcast clears.
+    // Same fix as `processor::apply_quest_update_enpcs`; both paths are
+    // hot now that `dispatch_event_updated_drain` (post-cinematic
+    // resume of a parked _WAIT_EVENT coroutine) routes through
+    // `apply_runtime_lua_commands` instead of the processor's login-
+    // command pipeline. Without the runtime re-run, the post-talk-tutorial
+    // Yda→off / Papalymo→talk swap never propagated to the client and
+    // Papalymo's quest icon stayed dark.
+    let sequence = {
+        let c = handle.character.read().await;
+        c.quest_journal.get(quest_id).map(|q| q.get_sequence())
+    };
+    if let (Some(sequence), Some(lua_engine)) = (sequence, lua) {
+        // begin_sequence_swap: move `current` to `old` so SetEnpc calls
+        // populate a fresh `current` and we can diff for stale clears.
+        {
+            let mut c = handle.character.write().await;
+            if let Some(q) = c.quest_journal.get_mut(quest_id) {
+                q.state.begin_sequence_swap();
+            }
+        }
+        fire_quest_hook(
+            &handle,
+            quest_id,
+            "onStateChange",
+            vec![crate::lua::QuestHookArg::Int(sequence as i64)],
+            lua_engine,
+            registry,
+            db,
+        )
+        .await;
+    }
     let stale: Vec<QuestEnpc> = {
         let mut c = handle.character.write().await;
         match c.quest_journal.get_mut(quest_id) {
@@ -2046,13 +2082,22 @@ async fn broadcast_quest_enpc_update(
         Some(enpc.is_push_enabled),
         true,
     );
-    for sub in subpackets {
+    for mut sub in subpackets {
+        // 1.x client silently drops event-related subpackets whose
+        // SubPacketHeader.target_id != receiving actor's session id.
+        // See `processor::broadcast_quest_enpc_update` for the longer
+        // diagnosis — the upshot is that without setting target_id the
+        // SetEventStatus + SetActorQuestGraphic broadcasts evaporate on
+        // the wire and the client never updates the talk-arrow icon
+        // when a quest's `onStateChange` swaps which ENPC is active.
+        sub.set_target_id(player_id);
         client.send_bytes(sub.to_bytes()).await;
     }
-    let graphic = crate::packets::send::build_set_actor_quest_graphic(
+    let mut graphic = crate::packets::send::build_set_actor_quest_graphic(
         npc_actor_id,
         enpc.quest_flag_type,
     );
+    graphic.set_target_id(player_id);
     client.send_bytes(graphic.to_bytes()).await;
 }
 
@@ -2090,10 +2135,13 @@ async fn broadcast_quest_enpc_clear(
         Some(false),
         false,
     );
-    for sub in subpackets {
+    for mut sub in subpackets {
+        // Same target_id requirement as `broadcast_quest_enpc_update`.
+        sub.set_target_id(player_id);
         client.send_bytes(sub.to_bytes()).await;
     }
-    let graphic = crate::packets::send::build_set_actor_quest_graphic(npc_actor_id, 0);
+    let mut graphic = crate::packets::send::build_set_actor_quest_graphic(npc_actor_id, 0);
+    graphic.set_target_id(player_id);
     client.send_bytes(graphic.to_bytes()).await;
 }
 
@@ -2521,6 +2569,173 @@ pub async fn check_quest_proximity_pushes(
     }
 }
 
+/// Proximity-push dispatcher (KickEvent variant). Walks the player's
+/// active quests, finds any push-enabled ENPC inside trigger radius,
+/// and emits `KickEventPacket("pushDefault", owner=npc_actor_id,
+/// type=2)` directly to the client. The 1.x client responds with an
+/// `EventStart(eventType=2, owner=npc)` which lands in
+/// `processor::handle_event_start` — that handler sets up the
+/// player's `EventSession` (owner / event_name / event_type) and runs
+/// the per-quest `onPush` fan-out within that active context, so the
+/// resulting `RunEventFunction` packet from the script's
+/// `callClientFunction(...)` carries the correct event-routing fields.
+///
+/// Same per-actor-class debouncing as the older
+/// `check_quest_proximity_pushes` (via `QuestState::recently_pushed`)
+/// so we don't spam KickEvent on every position update inside the
+/// trigger radius.
+pub async fn kick_quest_proximity_pushes(
+    player_id: u32,
+    session_id: u32,
+    pos: (f32, f32, f32),
+    registry: &ActorRegistry,
+    world: &WorldManager,
+) {
+    let Some(handle) = registry.get(player_id).await else {
+        return;
+    };
+    if !matches!(handle.kind, ActorKindTag::Player) {
+        return;
+    }
+    let Some(client) = world.client(session_id).await else {
+        return;
+    };
+
+    // Snapshot the (quest_id, push-enabled class_ids) tuples. Filter
+    // out class ids that already fired this sequence — without this
+    // the trigger re-fires every ~350ms while the player sits inside
+    // the radius.
+    let (quest_pushes, journal_summary): (Vec<(u32, Vec<u32>)>, Vec<(u32, usize, usize)>) = {
+        let c = handle.character.read().await;
+        let pushes: Vec<(u32, Vec<u32>)> = c
+            .quest_journal
+            .slots
+            .iter()
+            .flatten()
+            .map(|q| {
+                let to_check: Vec<u32> = q
+                    .state
+                    .current
+                    .values()
+                    .filter(|e| {
+                        e.is_push_enabled && !q.state.recently_pushed.contains(&e.actor_class_id)
+                    })
+                    .map(|e| e.actor_class_id)
+                    .collect();
+                (q.quest_id(), to_check)
+            })
+            .filter(|(_, v)| !v.is_empty())
+            .collect();
+        let summary: Vec<(u32, usize, usize)> = c
+            .quest_journal
+            .slots
+            .iter()
+            .flatten()
+            .map(|q| {
+                let push_enabled = q
+                    .state
+                    .current
+                    .values()
+                    .filter(|e| e.is_push_enabled)
+                    .count();
+                (q.quest_id(), q.state.current.len(), push_enabled)
+            })
+            .collect();
+        (pushes, summary)
+    };
+    if quest_pushes.is_empty() {
+        if !journal_summary.is_empty() {
+            // Throttle: only log every Nth call so we don't spam.
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static COUNTER: AtomicU32 = AtomicU32::new(0);
+            let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+            if n % 30 == 0 {
+                tracing::info!(
+                    player = player_id,
+                    journal = ?journal_summary,
+                    "proximity push: nothing to check (no push-enabled, un-fired ENPCs)",
+                );
+            }
+        }
+        return;
+    }
+    tracing::info!(
+        player = player_id,
+        pos = ?pos,
+        quest_pushes = ?quest_pushes,
+        "proximity push: walking active push-enabled NPCs",
+    );
+
+    let zone_id = {
+        let c = handle.character.read().await;
+        c.base.zone_id
+    };
+    let zone_actors = registry.actors_in_zone(zone_id).await;
+
+    const TRIGGER_RADIUS: f32 = 3.0;
+    let trigger_radius_sq = TRIGGER_RADIUS * TRIGGER_RADIUS;
+
+    for (quest_id, class_ids) in quest_pushes {
+        for class_id in class_ids {
+            // Find the NPC's live actor in this zone with matching class.
+            let mut npc_handle = None;
+            for h in &zone_actors {
+                let m = {
+                    let c = h.character.read().await;
+                    c.chara.actor_class_id == class_id
+                };
+                if m {
+                    npc_handle = Some(h.clone());
+                    break;
+                }
+            }
+            let Some(npc_handle) = npc_handle else { continue };
+
+            let npc_actor_id = {
+                let c = npc_handle.character.read().await;
+                let dx = pos.0 - c.base.position_x;
+                let dz = pos.2 - c.base.position_z;
+                let dist_sq = dx * dx + dz * dz;
+                if dist_sq > trigger_radius_sq {
+                    continue;
+                }
+                c.base.actor_id
+            };
+
+            // Mark as pushed BEFORE firing so a re-entrant position-
+            // update inside the radius doesn't double-kick.
+            {
+                let mut c = handle.character.write().await;
+                if let Some(q) = c.quest_journal.get_mut(quest_id) {
+                    q.state.recently_pushed.insert(class_id);
+                }
+            }
+
+            tracing::info!(
+                player = player_id,
+                quest = quest_id,
+                npc_class = class_id,
+                npc_actor = format!("0x{:08X}", npc_actor_id),
+                "proximity push: kicking pushDefault on client",
+            );
+
+            // Build + send `KickEventPacket("pushDefault", owner=npc,
+            // event_type=2)`. Server-side `EventSession` is left alone —
+            // the client's reply EventStart(eventType=2) is what
+            // populates it via `processor::handle_event_start`.
+            let mut sub = crate::packets::send::events::build_kick_event(
+                player_id,
+                npc_actor_id,
+                "pushDefault",
+                2,
+                &[],
+            );
+            sub.set_target_id(player_id);
+            client.send_bytes(sub.to_bytes()).await;
+        }
+    }
+}
+
 /// Fire a quest's `onPush(player, quest, npc)` hook. Mirrors
 /// `fire_quest_on_talk_via_command` exactly — the only difference is
 /// the hook name. Both run the script, bridge event-flavoured
@@ -2620,6 +2835,40 @@ async fn fire_quest_npc_hook_via_command(
         };
         (snap, qh)
     };
+
+    // Reset the server-side `EventSession` to its zero / no-event
+    // state before running the Lua hook. Without this, `EventSession`
+    // still carries the previous event's `current_event_owner`,
+    // `current_event_name` (e.g. `"noticeEvent"` from the
+    // OpeningDirector login cinematic) and `current_event_type`,
+    // because retail-shaped `LuaCommand::EndEvent` only dispatches an
+    // `EndEventPacket` to the client — it never calls
+    // `EventSession::end_event` server-side, so the server's view of
+    // "what event is active" never gets cleared.
+    //
+    // Concretely: the next `callClientFunction` from the Lua hook
+    // produces a `RunEventFunction` packet whose owner /
+    // event_name / event_type are inherited from that stale session.
+    // The client has already torn the prior event down (it received
+    // the EndEvent packet), so it sees a `RunEventFunction` for an
+    // event it doesn't think exists and silently drops it — visible
+    // symptom: walking into Rostnsthal's push radius after the
+    // opening cinematic does nothing on screen, even though the
+    // server-side proximity dispatcher fires and the 712-byte packet
+    // is on the wire.
+    //
+    // Zeroing the session — `(owner=0, name="", type=0)` — mirrors
+    // how `EventSession::end_event` would have left it, and matches
+    // the working "no cinematic enabled" baseline from earlier in
+    // this session, where the proximity push's `RunEventFunction`
+    // packet went out with owner=0 / event_name="" and the client
+    // accepted it as a free-form scripted call.
+    {
+        let mut c = handle.character.write().await;
+        c.event_session.current_event_owner = 0;
+        c.event_session.current_event_name.clear();
+        c.event_session.current_event_type = 0;
+    }
 
     let lua_clone = lua.clone();
     let extra = vec![crate::lua::QuestHookArg::Npc(npc_spec)];

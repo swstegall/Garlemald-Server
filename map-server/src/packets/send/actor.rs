@@ -337,7 +337,23 @@ pub fn build_0x132(actor_id: u32, number: u16, function: &str) -> SubPacket {
     SubPacket::new(OP_0X132_PACKET, actor_id, data)
 }
 
-/// 0x0136 SetEventStatusPacket.
+/// 0x0136 SetEventStatusPacket — port of `SetEventStatusPacket.cs`.
+///
+/// Layout (0x48 packet / 0x28 body):
+/// * 0x00..0x04: u32 enabled (Meteor writes `UInt32`, NOT `Byte`)
+/// * 0x04:       u8 type (1=talk, 2=push, 3=emote, 5=notice)
+/// * 0x05..0x29: ASCII condition name, max 0x24 bytes (no padding past
+///               the bytes actually written, but our `write_padded_ascii`
+///               zero-fills to 0x20 which is fine — the condition-name
+///               compare on the client stops at the NUL terminator).
+///
+/// Previous garlemald port wrote `enabled` as a single byte, which
+/// shifted `type` and `condition_name` left by 3 bytes. The 1.x client
+/// then read the type from inside the (now-misaligned) condition-name
+/// buffer and the talk/push trigger silently failed to enable. Visible
+/// symptom: clicking Yda after the opening cinematic never fired
+/// `EventStart(eventType=1, owner=Yda)` because the talk condition was
+/// disabled client-side, so `man0g0::seq000_onTalk` couldn't run.
 pub fn build_set_event_status(
     actor_id: u32,
     enabled: bool,
@@ -346,7 +362,7 @@ pub fn build_set_event_status(
 ) -> SubPacket {
     let mut data = body(0x48);
     let mut c = Cursor::new(&mut data[..]);
-    c.write_u8(enabled as u8).unwrap();
+    c.write_u32::<LittleEndian>(if enabled { 1 } else { 0 }).unwrap();
     c.write_u8(ty).unwrap();
     write_padded_ascii(&mut c, condition_name, 0x20);
     SubPacket::new(OP_SET_EVENT_STATUS, actor_id, data)
@@ -621,6 +637,14 @@ pub fn build_player_property_init(
     birthday_month: u8,
     initial_town: u8,
     rest_bonus_exp_rate: i32,
+    // (slot, quest_actor_id) pairs for every active scenario quest. C#
+    // `Player.GetInitPackets` (line 540-545) iterates `playerWork.questScenario`
+    // and calls `AddProperty("playerWork.questScenario[i]")` for each non-zero
+    // slot — that's the wire that puts active quests in the client's journal
+    // and lets `seq000_onTalk` actually find them. Without this the client
+    // never sees the scenario quest a fresh-character `onBeginLogin` adds, so
+    // the journal stays empty and Yda/Papalymo's quest icons never light up.
+    active_quests: &[(u32, u32)],
 ) -> Vec<SubPacket> {
     let mut b = ActorPropertyPacketBuilder::new(actor_id, "/_init");
 
@@ -756,6 +780,17 @@ pub fn build_player_property_init(
     b.add_byte("playerWork.birthdayMonth", birthday_month);
     b.add_byte("playerWork.birthdayDay", birthday_day);
     b.add_byte("playerWork.initialTown", initial_town);
+
+    // Scenario quest slots. C# `Player.GetInitPackets` (line 540-545) emits
+    // `playerWork.questScenario[i]` for each non-zero slot — that's how the
+    // client learns which scenario quests are in the journal. The slot
+    // payload is the quest's static-actor id (`0xA0F00000 | quest_id`).
+    for (slot, quest_actor_id) in active_quests {
+        b.add_int(
+            &format!("playerWork.questScenario[{slot}]"),
+            *quest_actor_id,
+        );
+    }
 
     b.done()
 }

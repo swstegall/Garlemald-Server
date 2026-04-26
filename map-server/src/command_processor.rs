@@ -100,6 +100,8 @@ impl CommandProcessor {
             "addgcseals" => self.handle_add_gc_seals(&args).await,
             "warp" => self.handle_warp(&args).await,
             "talkto" => self.handle_talkto(&args).await,
+            "pushtrigger" => self.handle_pushtrigger(&args).await,
+            "setseq" => self.handle_setseq(&args).await,
             other => format!("unknown command: {other} (args={:?})", args.rest()),
         };
         Ok(response)
@@ -120,7 +122,9 @@ impl CommandProcessor {
          joingc <gc> <name>, setgcrank <gc> <rank> <name>, \
          addgcseals <gc> <amount> <name>, \
          warp <zone> <x> <y> <z> <name>, \
-         talkto <actor_class_id> <name>"
+         talkto <actor_class_id> <name>, \
+         pushtrigger <actor_class_id> <name>, \
+         setseq <quest_id> <sequence> <name>"
             .into()
     }
 
@@ -910,6 +914,130 @@ impl CommandProcessor {
 
         format!(
             "talkto fired event on player {chara_id} → NPC {owner_actor_id} (class {actor_class_id}, \"{npc_name}\"), {} active quest(s) in journal",
+            active_quests.len()
+        )
+    }
+
+    /// `setseq <quest_id> <sequence> <name>` — force a quest's sequence
+    /// to the given value. Useful for E2E driving past content-area
+    /// transitions (combat zones, instanced dungeons) whose
+    /// `CreateContentArea` Lua bindings aren't ported yet — set the
+    /// sequence, warp the player to the next phase's location, and the
+    /// `onStateChange` hook fires the per-sequence `SetENpc` setup so
+    /// the target NPCs become interactive.
+    async fn handle_setseq(&self, args: &Args<'_>) -> String {
+        let quest_id = match args.parse_u32(0) {
+            Ok(v) => v,
+            Err(e) => return format!("usage: setseq <quest_id> <sequence> <name> — {e}"),
+        };
+        let sequence = match args.parse_u32(1) {
+            Ok(v) => v,
+            Err(e) => return format!("usage: setseq <quest_id> <sequence> <name> — {e}"),
+        };
+        let Some(name) = args.rest_joined(2) else {
+            return "usage: setseq <quest_id> <sequence> <name>".into();
+        };
+        let Some(chara_id) = self.lookup_character_id(&name).await else {
+            return format!("unknown character: {name}");
+        };
+        if self.registry.get(chara_id).await.is_none() {
+            return format!("{name} is not online");
+        }
+        crate::runtime::quest_apply::apply_quest_start_sequence(
+            chara_id,
+            quest_id,
+            sequence,
+            &self.registry,
+            &self.db,
+            &self.world,
+            Some(&self.lua),
+        )
+        .await;
+        format!("setseq quest {quest_id} → sequence {sequence} on {name} (actor {chara_id})")
+    }
+
+    /// `pushtrigger <actor_class_id> <name>` — server-side analog of
+    /// `talkto`, but fires `onPush` rather than `onTalk`. Same NPC
+    /// resolution, but routes through `fire_quest_on_push_via_command`
+    /// so quest scripts that gate progression on a proximity push
+    /// (door triggers, exit cones, the EXIT_TRIGGER on the opening
+    /// quest's boat) can be advanced without the player having to walk
+    /// into a possibly-untraversable mesh through synthesised input.
+    async fn handle_pushtrigger(&self, args: &Args<'_>) -> String {
+        let actor_class_id = match args.parse_u32(0) {
+            Ok(v) => v,
+            Err(e) => return format!("usage: pushtrigger <actor_class_id> <name> — {e}"),
+        };
+        let Some(name) = args.rest_joined(1) else {
+            return "usage: pushtrigger <actor_class_id> <name>".into();
+        };
+        let Some(chara_id) = self.lookup_character_id(&name).await else {
+            return format!("unknown character: {name}");
+        };
+        let Some(player_handle) = self.registry.get(chara_id).await else {
+            return format!("{name} is not online");
+        };
+        let zone_id = player_handle.zone_id;
+
+        let mut npc_handle = None;
+        for h in self.registry.actors_in_zone(zone_id).await {
+            let matches = {
+                let c = h.character.read().await;
+                c.chara.actor_class_id == actor_class_id
+            };
+            if matches {
+                npc_handle = Some(h);
+                break;
+            }
+        }
+        let Some(npc_handle) = npc_handle else {
+            return format!(
+                "no NPC with actor_class_id={actor_class_id} in zone {zone_id}",
+            );
+        };
+
+        let active_quests: Vec<u32> = {
+            let c = player_handle.character.read().await;
+            c.quest_journal
+                .slots
+                .iter()
+                .flatten()
+                .map(|q| q.quest_id())
+                .collect()
+        };
+
+        let npc_spec = {
+            let c = npc_handle.character.read().await;
+            crate::lua::LuaNpcSpec {
+                actor_id: c.base.actor_id,
+                name: c.base.actor_name.clone(),
+                class_name: c.base.class_name.clone(),
+                class_path: c.base.class_path.clone(),
+                unique_id: String::new(),
+                zone_id: c.base.zone_id,
+                zone_name: String::new(),
+                state: c.base.current_main_state,
+                pos: (c.base.position_x, c.base.position_y, c.base.position_z),
+                rotation: c.base.rotation,
+                actor_class_id: c.chara.actor_class_id,
+                quest_graphic: 0,
+            }
+        };
+        for quest_id in &active_quests {
+            crate::runtime::quest_apply::fire_quest_on_push_via_command(
+                &player_handle,
+                *quest_id,
+                npc_spec.clone(),
+                &self.registry,
+                &self.db,
+                &self.world,
+                Some(&self.lua),
+            )
+            .await;
+        }
+
+        format!(
+            "pushtrigger fired onPush on player {chara_id} → NPC class {actor_class_id}, {} active quest(s)",
             active_quests.len()
         )
     }

@@ -442,6 +442,30 @@ fn push_npc_spawn(
     );
     subpackets.extend(npc_init);
 
+    // SetEventStatus enable-flags for every condition the spawn bundle
+    // just registered. Mirrors Meteor's `Session.UpdateInstance` order:
+    // `GetSpawnPackets()` (which is where EventConditionPackets lived) →
+    // `GetInitPackets()` → `GetSetEventStatusPackets()` (Session.cs:159-161).
+    // The condition packets alone register the trigger client-side (radius,
+    // condition name, etc.) but it stays *disabled* until a SetEventStatus
+    // says otherwise — so without these the 1.x client never fires
+    // `EventStart(eventType=2, owner=npc, eventName="pushDefault")` when the
+    // player walks into the circle, and proximity-driven cinematics like
+    // `man0g0::onPush(YDA)` never reach the player.
+    //
+    // Defaults match Meteor's signature `(talkEnabled=true, emoteEnabled=true,
+    // pushEnabled=null → unwrap_or(true), noticeEnabled=true)`. A subsequent
+    // `quest:SetENpc(...)` broadcast can flip `pushEnabled=false` if the
+    // current sequence wants the trigger silent.
+    subpackets.extend(crate::packets::send::build_actor_event_status_packets(
+        actor_id,
+        &character.base.event_conditions,
+        true,
+        true,
+        None,
+        true,
+    ));
+
     // BattleNpc `/npcWork/hate` tail is load-bearing — omitting it
     // for monster-path actors Wine-hard-crashes on zone-in (confirmed
     // 2026-04-21). Keep the emission; it stays at `hateType = 0` so
@@ -941,8 +965,21 @@ impl WorldManager {
             rest_bonus_exp_rate,
             current_job,
             login_director_actor_id,
+            active_quests,
         ) = {
             let c = actor_handle.character.read().await;
+            // (slot, quest_actor_id) pairs for `playerWork.questScenario[N]`
+            // emission inside the `/_init` bundle. Collected here so the
+            // character lock can drop before the long packet-build below.
+            let aq: Vec<(u32, u32)> = c
+                .quest_journal
+                .slots
+                .iter()
+                .enumerate()
+                .filter_map(|(slot, q)| {
+                    q.as_ref().map(|q| (slot as u32, q.actor_id))
+                })
+                .collect();
             (
                 c.base.display_name().to_string(),
                 c.base.display_name_id,
@@ -965,6 +1002,7 @@ impl WorldManager {
                 c.chara.rest_bonus_exp_rate,
                 c.chara.current_job,
                 c.chara.login_director_actor_id,
+                aq,
             )
         };
         let has_login_director = login_director_actor_id != 0;
@@ -1329,6 +1367,7 @@ impl WorldManager {
             birthday_month,
             initial_town,
             rest_bonus_exp_rate,
+            &active_quests,
         ));
         // Post-init property emission — C# `PostUpdate` drives these on
         // the first tick after spawn, but the client's

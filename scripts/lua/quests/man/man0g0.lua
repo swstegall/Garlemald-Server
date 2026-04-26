@@ -101,12 +101,25 @@ end
 
 function onStateChange(player, quest, sequence)
     local data = quest:GetData();
-	
+
     if (sequence == SEQ_000) then
-        -- Setup states incase we loaded in.        
-		local ydaFlag = ((not data:GetFlag(FLAG_SEQ000_MINITUT0)) or (data:GetFlag(FLAG_SEQ000_MINITUT1))) and QFLAG_TALK or QFLAG_OFF;
-        local papalymoFlag = ((not data:GetFlag(FLAG_SEQ000_MINITUT1)) and data:GetFlag(FLAG_SEQ000_MINITUT0) and QFLAG_TALK or QFLAG_OFF);
-        		
+        -- Canonical 1.x flow per user testing: BOTH Yda and Papalymo
+        -- have quest icons from the start of SEQ_000. Talking to either
+        -- of them once plays their respective intro cinematic and sets
+        -- MINITUT1; talking to Yda one more time then triggers the
+        -- combat-tutorial content area.
+        --
+        -- The original Project Meteor quest_system-branch script only
+        -- lit Yda's icon initially and chained Yda-then-Papalymo-then-
+        -- Yda (3 clicks). That version was upstream-broken — see
+        -- `seq000_onTalk(PAPALYMO, MINITUT0=false)` which fires
+        -- `processEvent000_2` but never sets any flag, so the player
+        -- could click Papalymo forever in that state without progress.
+        local minitutDone = data:GetFlag(FLAG_SEQ000_MINITUT1);
+        local ydaFlag = QFLAG_TALK;  -- Yda always shows the icon until
+                                      -- combat tutorial fires.
+        local papalymoFlag = (not minitutDone) and QFLAG_TALK or QFLAG_OFF;
+
         quest:SetENpc(YDA, ydaFlag, true, not data:GetFlag(FLAG_SEQ000_MINITUT0));
         quest:SetENpc(PAPALYMO, papalymoFlag);
     elseif (sequence == SEQ_010) then                      
@@ -166,24 +179,29 @@ end
 
 function seq000_onTalk(player, quest, npc, classId)
     local data = quest:GetData();
+    -- 2-click canonical flow: first click on EITHER Yda or Papalymo
+    -- plays their intro cinematic and sets `MINITUT1` so the combat-
+    -- tutorial gate opens. The second click on Yda fires `doContentArea`.
+    -- (See `onStateChange` for matching ENPC-flag derivation.)
     if (classId == YDA) then
-        if (not data:GetFlag(FLAG_SEQ000_MINITUT0)) then -- If Talk tutorial
-            callClientFunction(player, "delegateEvent", player, quest, "processTtrNomal003");
-            data:SetFlag(FLAG_SEQ000_MINITUT0); -- Disable Yda's PushEvent and set up Papalymo
-        elseif (data:GetFlag(FLAG_SEQ000_MINITUT1)) then -- If Talked to after Papaylmo 
-            doContentArea(player, quest, npc); -- Set up Combat Tutorial
+        if (data:GetFlag(FLAG_SEQ000_MINITUT1)) then
+            -- Already talked once; this click triggers the combat tutorial.
+            doContentArea(player, quest, npc);
         else
-            callClientFunction(player, "delegateEvent", player, quest, "processEvent000_3");
+            -- First-talk path. Yda's intro cinematic.
+            callClientFunction(player, "delegateEvent", player, quest, "processTtrNomal003");
+            data:SetFlag(FLAG_SEQ000_MINITUT0);
+            data:SetFlag(FLAG_SEQ000_MINITUT1);
         end
     elseif (classId == PAPALYMO) then
-        if (data:GetFlag(FLAG_SEQ000_MINITUT0)) then
-            callClientFunction(player, "delegateEvent", player, quest, "processEvent000_2");
-            data:SetFlag(FLAG_SEQ000_MINITUT1);
-        else
-            callClientFunction(player, "delegateEvent", player, quest, "processEvent000_2");
-        end
+        -- Talking to Papalymo plays his intro cinematic and also
+        -- satisfies the MINITUT1 gate so the next Yda click triggers
+        -- the combat tutorial.
+        callClientFunction(player, "delegateEvent", player, quest, "processEvent000_2");
+        data:SetFlag(FLAG_SEQ000_MINITUT0);
+        data:SetFlag(FLAG_SEQ000_MINITUT1);
     end
-    
+
     player:EndEvent();
 end
 

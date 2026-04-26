@@ -3004,6 +3004,40 @@ impl PacketProcessor {
         let Some(handle) = self.registry.get(player_id).await else {
             return;
         };
+        // Mirror Meteor's `QuestState.UpdateState()` (Map Server/Actors/
+        // Quest/QuestState.cs:UpdateState) — re-run the script's
+        // `onStateChange(sequence)` hook so it can re-evaluate flag-
+        // dependent `quest:SetENpc(...)` calls, then drain stale entries
+        // and broadcast clears for ENPCs the new state didn't re-register.
+        //
+        // Without the re-run, scripts that toggle ENPC visibility from
+        // `onTalk` (e.g. `man0g0::seq000_onTalk` flips Yda → off + Papalymo
+        // → on by setting `FLAG_SEQ000_MINITUT0` and trailing
+        // `quest:UpdateENPCs()`) only got the stale-drain half — Yda never
+        // went off, Papalymo never went on, and the player got stuck after
+        // the talk-tutorial cinematic with nothing else to interact with.
+        let sequence = {
+            let c = handle.character.read().await;
+            c.quest_journal.get(quest_id).map(|q| q.get_sequence())
+        };
+        if let Some(sequence) = sequence {
+            // Swap the ENPC maps BEFORE the hook runs so `apply_quest_set_enpc`
+            // sees a clean `current` and the `old` set captures the previous
+            // state for diffing — same pattern as `apply_quest_start_sequence`.
+            {
+                let mut c = handle.character.write().await;
+                if let Some(q) = c.quest_journal.get_mut(quest_id) {
+                    q.state.begin_sequence_swap();
+                }
+            }
+            self.fire_quest_hook(
+                &handle,
+                quest_id,
+                "onStateChange",
+                vec![crate::lua::QuestHookArg::Int(sequence as i64)],
+            )
+            .await;
+        }
         let stale: Vec<crate::actor::quest::QuestEnpc> = {
             let mut c = handle.character.write().await;
             match c.quest_journal.get_mut(quest_id) {
@@ -3054,6 +3088,17 @@ impl PacketProcessor {
             (c.base.actor_id, c.base.event_conditions.clone())
         };
 
+        tracing::info!(
+            player = player_id,
+            npc_class = enpc.actor_class_id,
+            npc_actor = format!("0x{:08X}", npc_actor_id),
+            quest_flag = enpc.quest_flag_type,
+            talk = enpc.is_talk_enabled,
+            push = enpc.is_push_enabled,
+            emote = enpc.is_emote_enabled,
+            "broadcast_quest_enpc_update",
+        );
+
         let subpackets = crate::packets::send::build_actor_event_status_packets(
             npc_actor_id,
             &conditions,
@@ -3062,13 +3107,23 @@ impl PacketProcessor {
             Some(enpc.is_push_enabled),
             /* notice_enabled */ true,
         );
-        for sub in subpackets {
+        for mut sub in subpackets {
+            // 1.x client silently drops event-related subpackets whose
+            // SubPacketHeader.target_id != receiving actor's session id
+            // (same gotcha that `dispatch_event_event` for RunEventFunction
+            // documents). Without setting it the SetEventStatus + quest-
+            // graphic broadcasts evaporate on the wire — visible symptom:
+            // after `man0g0::seq000_onTalk` swaps Yda → off / Papalymo → on,
+            // Papalymo's talk-arrow icon never appears and the player gets
+            // stuck with no clickable next NPC.
+            sub.set_target_id(player_id);
             client.send_bytes(sub.to_bytes()).await;
         }
-        let graphic = crate::packets::send::build_set_actor_quest_graphic(
+        let mut graphic = crate::packets::send::build_set_actor_quest_graphic(
             npc_actor_id,
             enpc.quest_flag_type,
         );
+        graphic.set_target_id(player_id);
         client.send_bytes(graphic.to_bytes()).await;
     }
 
@@ -3110,10 +3165,13 @@ impl PacketProcessor {
             /* push */ Some(false),
             /* notice */ false,
         );
-        for sub in subpackets {
+        for mut sub in subpackets {
+            // Same target_id requirement as `broadcast_quest_enpc_update`.
+            sub.set_target_id(player_id);
             client.send_bytes(sub.to_bytes()).await;
         }
-        let graphic = crate::packets::send::build_set_actor_quest_graphic(npc_actor_id, 0);
+        let mut graphic = crate::packets::send::build_set_actor_quest_graphic(npc_actor_id, 0);
+        graphic.set_target_id(player_id);
         client.send_bytes(graphic.to_bytes()).await;
     }
 
@@ -3406,6 +3464,161 @@ impl PacketProcessor {
         }
     }
 
+    /// Variant of [`Self::fire_quest_hook`] for hooks that fire while a
+    /// client-initiated event is open (`onTalk` / `onPush` / `onEmote` /
+    /// `onCommand`). The hook body's tail typically does
+    /// `callClientFunction(player, "delegateEvent", …)` followed by
+    /// `player:EndEvent()` — both produce event-flavoured `LuaCommand`s
+    /// (`RunEventFunction` / `EndEvent`) that `apply_login_lua_command`
+    /// has no arm for.
+    ///
+    /// To make those packets actually reach the client, we snapshot the
+    /// player's `EventSession` (set by `handle_event_start`'s preceding
+    /// `start_event` call) and translate the event-flavoured commands
+    /// into an `EventOutbox`, then drain through `dispatch_event_event`
+    /// — same pattern as `dispatch_director_event_started` and
+    /// `apply_quest_on_notice`.
+    ///
+    /// After dispatching, auto-resume any `_WAIT_EVENT`-parked coroutine
+    /// the hook spun up via `callClientFunction`'s
+    /// `coroutine.yield("_WAIT_EVENT", player)`. The resume drains the
+    /// post-yield `player:EndEvent()` and any trailing `quest:UpdateENPCs()`
+    /// — without this the coroutine sits forever waiting for an
+    /// `EventUpdate` the 1.x client never sends for cutscene completion.
+    async fn fire_quest_event_hook(
+        &self,
+        handle: &ActorHandle,
+        quest_id: u32,
+        hook_name: &'static str,
+        extra_args: Vec<crate::lua::QuestHookArg>,
+    ) {
+        let Some(engine) = self.lua.as_ref() else {
+            return;
+        };
+        let Some(script_name) = engine.catalogs().quest_script_name(quest_id) else {
+            return;
+        };
+        let script_path = engine.resolver().quest(&script_name);
+        if !script_path.exists() {
+            return;
+        }
+
+        let (snapshot, quest_handle) = {
+            let c = handle.character.read().await;
+            if !c.quest_journal.has(quest_id) {
+                return;
+            }
+            let snap = build_player_snapshot_from_character(&c);
+            let q = c.quest_journal.get(quest_id).expect("has");
+            let qh = crate::lua::LuaQuestHandle {
+                player_id: snap.actor_id,
+                quest_id,
+                has_quest: true,
+                sequence: q.get_sequence(),
+                flags: q.get_flags(),
+                counters: [q.get_counter(0), q.get_counter(1), q.get_counter(2)],
+                queue: crate::lua::command::CommandQueue::new(),
+            };
+            (snap, qh)
+        };
+
+        let engine_clone = engine.clone();
+        let script_path_clone = script_path.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            engine_clone.call_quest_hook(
+                &script_path_clone,
+                hook_name,
+                snapshot,
+                quest_handle,
+                extra_args,
+            )
+        })
+        .await;
+
+        let result = match result {
+            Ok(r) => r,
+            Err(join_err) => {
+                tracing::warn!(
+                    error = %join_err,
+                    quest = quest_id,
+                    hook = hook_name,
+                    "quest event-hook dispatch panicked",
+                );
+                return;
+            }
+        };
+        if let Some(e) = result.error {
+            tracing::debug!(
+                error = %e,
+                quest = quest_id,
+                hook = hook_name,
+                "quest event-hook errored",
+            );
+        }
+        if result.commands.is_empty() {
+            return;
+        }
+
+        // Bridge step — translate event-flavoured commands into the
+        // EventOutbox so cinematic packets reach the client.
+        let event_session_snapshot = {
+            let c = handle.character.read().await;
+            c.event_session.clone()
+        };
+        let mut outbox = crate::event::outbox::EventOutbox::new();
+        crate::event::lua_bridge::translate_lua_commands_into_outbox(
+            &result.commands,
+            &event_session_snapshot,
+            &mut outbox,
+        );
+        for e in outbox.drain() {
+            Box::pin(crate::event::dispatcher::dispatch_event_event(
+                &e,
+                &self.registry,
+                &self.world,
+                &self.db,
+                self.lua.as_ref(),
+            ))
+            .await;
+        }
+        // Drain non-event commands through the login-command pipeline
+        // (quest-flag mutates, AddExp, UpdateENPCs, etc.).
+        for cmd in result.commands {
+            Box::pin(self.apply_login_lua_command(handle, cmd)).await;
+        }
+
+        // DON'T auto-resume here. The opening cinematic auto-resume
+        // (`apply_quest_on_notice`) is needed because the OpeningDirector's
+        // notice cinematic doesn't reliably elicit an `EventUpdate` from
+        // the client. For interactive talk/push cinematics, the 1.x
+        // client *does* send `0x012E EventUpdate` when the cinematic
+        // ends — that path lands in `dispatch_event_updated` which calls
+        // `lua.fire_player_event(...)` and resumes the parked coroutine
+        // properly, with `EndEvent` going out *after* the cinematic has
+        // visibly completed.
+        //
+        // Auto-resuming here drains the rest of the coroutine
+        // (data:SetFlag → player:EndEvent → quest:UpdateENPCs)
+        // immediately, which queues the `EndEvent` packet ~1 frame
+        // after `RunEventFunction`. The client then receives EndEvent
+        // *during* the cinematic playback, which leaves the client's
+        // event-input layer in a state that silently drops every
+        // subsequent `EventStart` from clicks on other NPCs (verified
+        // 2026-04-25: after `processTtrNomal003` finishes, neither Yda
+        // nor Papalymo's clicks produce inbound `0x012D` even though
+        // both are talk-enabled with `target_id` correctly set).
+        //
+        // The parked coroutine stays in the scheduler; the client's
+        // EventUpdate at cinematic-end resumes it via
+        // `dispatch_event_updated` → `LuaEngine::fire_player_event`,
+        // which then drains the trailing `EndEvent` + `UpdateENPCs`
+        // back through the same EventOutbox bridge + apply pipeline
+        // (see `LuaEngine::dispatch_post_resume_commands` once that's
+        // wired — for now the resume path is responsible for emitting
+        // the post-cinematic packets).
+        let _ = engine;
+    }
+
     async fn handle_game_message(&self, client: &ClientHandle, sub: &SubPacket) -> Result<()> {
         let opcode = sub.game_message.opcode;
         let source = sub.header.source_id;
@@ -3502,26 +3715,58 @@ impl PacketProcessor {
                 .await;
         }
 
-        // Fire `onTalk(player, quest, npc)` on every active quest the
-        // player holds. Meteor's convention is to fire for *every* quest
-        // and let the script filter by NPC class id + sequence — trying
-        // to pre-filter on `QuestState.current` membership would drop
+        // Fire the per-quest event hook based on the EventStart's
+        // `event_type`. Meteor's convention is to fire for *every* active
+        // quest and let the script filter by NPC class id + sequence —
+        // pre-filtering on `QuestState.current` membership would drop
         // scripts that haven't populated their ENPC list yet (many stub
         // quests, tutorial cleanup paths, etc.).
-        self.fire_on_talk_for_active_quests(&handle, owner_actor_id).await;
+        //
+        // Mirrors `PopulaceStandard.lua::doQuestEvent`'s eventType switch:
+        //   * 1 → `quest:OnTalk(player, npc)`
+        //   * 2 → `quest:OnPush(player, npc, eventName)`
+        //   * 3 → `quest:OnEmote(player, npc, eventName)`
+        //   * 0 → `quest:OnCommand(player, npc, eventName)`
+        //
+        // The 1.x client fires eventType=2 itself when the player walks
+        // into a `SetPushEventConditionWithCircle` radius — this is the
+        // hook that lets quests like `man0g0::onPush` fire the
+        // `processTtrNomal002` cinematic when the player closes on Yda.
+        if let Some(hook_name) = match pkt.event_type {
+            1 => Some("onTalk"),
+            2 => Some("onPush"),
+            3 => Some("onEmote"),
+            0 => Some("onCommand"),
+            _ => None,
+        } {
+            self.fire_quest_hook_for_active_quests(&handle, owner_actor_id, hook_name).await;
+        }
 
         tracing::debug!(
             player = actor_id,
             owner = owner_actor_id,
+            event_type = pkt.event_type,
             "event start dispatched",
         );
         Ok(())
     }
 
-    /// Look up the NPC's live state and fire `onTalk(player, quest, npc)`
-    /// once per active quest in the player's journal. No-ops if the NPC
-    /// isn't in the registry, or the player has no active quests.
-    async fn fire_on_talk_for_active_quests(&self, handle: &ActorHandle, npc_actor_id: u32) {
+    /// Look up the NPC's live state and fire `<hook_name>(player, quest, npc)`
+    /// once per active quest in the player's journal. Properly bridges any
+    /// event-flavoured commands the hook emits (`RunEventFunction` /
+    /// `EndEvent` / `KickEvent`) into the `EventOutbox` so cinematic
+    /// packets reach the client — without this, the quest's
+    /// `callClientFunction(...)` lines would queue their commands but
+    /// they'd be silently dropped at `apply_login_lua_command`.
+    ///
+    /// No-ops if the NPC isn't in the registry, or the player has no
+    /// active quests.
+    async fn fire_quest_hook_for_active_quests(
+        &self,
+        handle: &ActorHandle,
+        npc_actor_id: u32,
+        hook_name: &'static str,
+    ) {
         let active_quest_ids: Vec<u32> = {
             let c = handle.character.read().await;
             c.quest_journal
@@ -3537,15 +3782,15 @@ impl PacketProcessor {
         let Some(npc_spec) = self.build_npc_spec(npc_actor_id).await else {
             // Not a registered actor (e.g. director-owned kicks) — the
             // event went through the normal dispatch; we just skip the
-            // quest-side onTalk loop.
+            // quest-side fan-out loop.
             return;
         };
 
         for quest_id in active_quest_ids {
-            self.fire_quest_hook(
+            self.fire_quest_event_hook(
                 handle,
                 quest_id,
-                "onTalk",
+                hook_name,
                 vec![crate::lua::QuestHookArg::Npc(npc_spec.clone())],
             )
             .await;
@@ -3643,23 +3888,26 @@ impl PacketProcessor {
             .seamless_check(actor_id, session_id, Vector3::new(pkt.x, pkt.y, pkt.z))
             .await;
 
-        // 4. Proximity-push dispatch. Walk active quests, find any
-        //    push-enabled ENPC inside trigger radius, fire the quest's
-        //    `onPush` hook once. This is the 1.x mechanism that lets
-        //    the player advance the boat-interior tutorial chain by
-        //    just walking up to Rostnsthal / the EXIT_TRIGGER door
-        //    instead of having to press an interact key whose
-        //    synthetic equivalent doesn't reliably fire `EventStart`
-        //    on this Wine setup.
-        crate::runtime::quest_apply::check_quest_proximity_pushes(
-            actor_id,
-            (pkt.x, pkt.y, pkt.z),
-            &self.registry,
-            &self.db,
-            &self.world,
-            self.lua.as_ref(),
-        )
-        .await;
+        // 4. Proximity-push dispatch is now CLIENT-SIDE. The
+        //    `SetPushEventConditionWithCircle` packets emitted in the
+        //    spawn bundle, combined with the corrected `SetEventStatus`
+        //    wire format (UInt32 enabled flag + correct outwards bits),
+        //    let the 1.x client track proximity locally and fire
+        //    `EventStart(eventType=2, owner=npc, eventName="pushDefault")`
+        //    when the player walks into the circle. That EventStart
+        //    lands in `handle_event_start` below.
+        //
+        //    Earlier in this branch we ran a server-side
+        //    `kick_quest_proximity_pushes` that emitted
+        //    `KickEventPacket("pushDefault")` to force the same flow,
+        //    because the SetEventStatus packet was malformed and the
+        //    client never tracked proximity. Once the wire format was
+        //    fixed (UInt32 not Byte) and the broadcast started actually
+        //    enabling the push trigger, both paths started firing —
+        //    one EventStart per client-side trigger AND one per
+        //    server-side kick — which spammed the same `processTtrNomal002`
+        //    cinematic ~30 times per second. Letting the client own
+        //    proximity is the cleaner answer.
 
         Ok(())
     }

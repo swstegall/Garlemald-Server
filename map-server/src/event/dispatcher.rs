@@ -79,13 +79,17 @@ pub async fn dispatch_event_event(
             event_type,
             lua_params,
         } => {
-            dispatch_event_updated(
+            dispatch_event_updated_drain(
+                registry,
+                world,
+                db,
                 lua,
                 *player_actor_id,
                 *trigger_actor_id,
                 *event_type,
                 lua_params,
-            );
+            )
+            .await;
         }
         EventEvent::QuestCheckCompletion {
             player_actor_id,
@@ -797,6 +801,90 @@ async fn dispatch_director_event_started(
     }
 }
 
+/// `EventUpdate (0x012E)` arrived from the client (typically signals
+/// "cinematic finished" for a `_WAIT_EVENT`-parked coroutine). Resume
+/// the parked coroutine, then drain its trailing commands through the
+/// same EventOutbox bridge + login-command pipeline `fire_quest_event_hook`
+/// uses on the entry path. Without this drain, the post-cinematic
+/// `player:EndEvent()` + `quest:UpdateENPCs()` would never reach the
+/// client and the player would stay event-locked.
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_event_updated_drain(
+    registry: &ActorRegistry,
+    world: &WorldManager,
+    db: &Database,
+    lua: Option<&Arc<LuaEngine>>,
+    player_actor_id: u32,
+    trigger_actor_id: u32,
+    event_type: u8,
+    lua_params: &[LuaParam],
+) {
+    let Some(lua) = lua else {
+        tracing::debug!(
+            player = player_actor_id,
+            trigger = trigger_actor_id,
+            ty = event_type,
+            params = lua_params.len(),
+            "event: updated (no Lua engine)",
+        );
+        return;
+    };
+    // Resume any parked `_WAIT_EVENT` coroutine; collect the commands
+    // it queued before yielding/returning.
+    let after = lua.fire_player_event_and_drain(player_actor_id, mlua::MultiValue::new());
+    let Some(after) = after else {
+        tracing::debug!(
+            player = player_actor_id,
+            trigger = trigger_actor_id,
+            ty = event_type,
+            "event: updated (no parked coroutine)",
+        );
+        return;
+    };
+    if after.is_empty() {
+        tracing::debug!(
+            player = player_actor_id,
+            trigger = trigger_actor_id,
+            "event: updated (resumed, no commands)",
+        );
+        return;
+    }
+    tracing::debug!(
+        player = player_actor_id,
+        trigger = trigger_actor_id,
+        commands = after.len(),
+        "event: updated (resumed, draining commands)",
+    );
+    // Snapshot session for the bridge step.
+    let event_session_snapshot = if let Some(handle) = registry.get(player_actor_id).await {
+        let c = handle.character.read().await;
+        c.event_session.clone()
+    } else {
+        return;
+    };
+    let mut outbox = crate::event::outbox::EventOutbox::new();
+    crate::event::lua_bridge::translate_lua_commands_into_outbox(
+        &after,
+        &event_session_snapshot,
+        &mut outbox,
+    );
+    for e in outbox.drain() {
+        Box::pin(dispatch_event_event(&e, registry, world, db, Some(lua))).await;
+    }
+    // Drain non-event commands through the runtime-apply pipeline so
+    // QuestSetFlag / QuestUpdateEnpcs / etc. fire the side-effects
+    // (broadcasts, DB writes, dependent hook re-runs).
+    crate::runtime::quest_apply::apply_runtime_lua_commands(
+        after,
+        registry,
+        db,
+        world,
+        Some(lua),
+    )
+    .await;
+}
+
+#[allow(dead_code)]
 fn dispatch_event_updated(
     lua: Option<&Arc<LuaEngine>>,
     player_actor_id: u32,
