@@ -1420,10 +1420,168 @@ impl PacketProcessor {
             LC::PromoteGC { player_id, gc } => {
                 self.apply_promote_gc(player_id, gc).await;
             }
+            LC::CreateContentArea {
+                player_id,
+                parent_zone_id,
+                area_class_path,
+                area_name,
+                content_script,
+                director_name,
+                director_actor_id,
+                content_area_actor_id,
+            } => {
+                // Phase 1 stub: log the registration. Full implementation
+                // would materialise a `PrivateAreaContent` under the
+                // parent zone, register a `Director` with the named
+                // script, and start the content-group loop. For now the
+                // existence of the lua handle is enough — the lua chain
+                // proceeds through `:GetContentDirector()` +
+                // `player:AddDirector(director)` +
+                // `:StartDirector(false)` + `KickEvent("noticeEvent")`
+                // + `DoZoneChangeContent(...)` and the player at least
+                // gets warped to the content-area coords.
+                let _ = (player_id, area_class_path, content_script);
+                tracing::info!(
+                    parent_zone = parent_zone_id,
+                    area = %area_name,
+                    director = %director_name,
+                    director_actor_id = format!("0x{:08X}", director_actor_id),
+                    content_area_actor_id = format!("0x{:08X}", content_area_actor_id),
+                    "CreateContentArea applied (stub: lua handle live, server-side instance not yet materialised)",
+                );
+            }
+            LC::DoZoneChangeContent {
+                player_id,
+                parent_zone_id,
+                area_name,
+                director_actor_id,
+                spawn_type,
+                x,
+                y,
+                z,
+                rotation,
+            } => {
+                self.apply_do_zone_change_content(
+                    player_id,
+                    parent_zone_id,
+                    area_name,
+                    director_actor_id,
+                    spawn_type,
+                    x,
+                    y,
+                    z,
+                    rotation,
+                )
+                .await;
+            }
+            LC::ContentFinished {
+                parent_zone_id,
+                area_name,
+            } => {
+                tracing::info!(
+                    parent_zone = parent_zone_id,
+                    area = %area_name,
+                    "ContentFinished applied (stub: cleanup not yet wired)",
+                );
+            }
             other => {
                 tracing::debug!(?other, "login lua cmd (unhandled)");
             }
         }
+    }
+
+    /// Combat-tutorial / instance entry — port of C#
+    /// `WorldManager.DoZoneChangeContent` (Map Server/WorldManager.cs:971).
+    /// Updates the player's position to the content-area spawn coords,
+    /// then emits the trio that tells the 1.x client to wipe the world
+    /// and re-render: `DeleteAllActors (0x0007)` + `0x00E2(0x10)` + the
+    /// standard zone-in bundle.
+    ///
+    /// Phase 1 simplification: we don't yet maintain a separate
+    /// `PrivateAreaContent` actor list on the parent zone, so the player
+    /// stays attached to the parent zone (no shadowed actors / no
+    /// instance isolation). The visual effect is "world clears + player
+    /// is re-spawned at the new coords"; combat-tutorial NPCs spawn into
+    /// the same parent-zone scope, which matches Yda/Papalymo's existing
+    /// positions until the proper instance subsystem lands.
+    #[allow(clippy::too_many_arguments)]
+    async fn apply_do_zone_change_content(
+        &self,
+        player_id: u32,
+        parent_zone_id: u32,
+        area_name: String,
+        _director_actor_id: u32,
+        spawn_type: u8,
+        x: f32,
+        y: f32,
+        z: f32,
+        rotation: f32,
+    ) {
+        let Some(handle) = self.registry.get(player_id).await else {
+            tracing::warn!(player = player_id, "DoZoneChangeContent: actor missing");
+            return;
+        };
+        let session_id = handle.session_id;
+        let actor_id = handle.actor_id;
+
+        // 1. Update character position so subsequent reads + the zone-in
+        //    bundle's `CreateSpawnPositionPacket` see the new coords.
+        {
+            let mut c = handle.character.write().await;
+            c.base.position_x = x;
+            c.base.position_y = y;
+            c.base.position_z = z;
+            c.base.rotation = rotation;
+            c.base.zone_id = parent_zone_id;
+        }
+
+        // 2. Update the session's destination + zone fields so the
+        //    zone-in bundle pulls the right values.
+        if let Some(mut snap) = self.world.session(session_id).await {
+            snap.current_zone_id = parent_zone_id;
+            snap.destination_zone_id = parent_zone_id;
+            snap.destination_spawn_type = spawn_type;
+            snap.destination_x = x;
+            snap.destination_y = y;
+            snap.destination_z = z;
+            snap.destination_rot = rotation;
+            self.world.upsert_session(snap).await;
+        }
+
+        // 3. Emit the zone-change packet trio. Order matters: client
+        //    expects the world wipe first, then the 0x00E2 marker, then
+        //    the zone-in payload.
+        let Some(client) = self.world.client(session_id).await else {
+            tracing::warn!(player = player_id, "DoZoneChangeContent: no client");
+            return;
+        };
+        client
+            .send_bytes(
+                crate::packets::send::handshake::build_delete_all_actors(actor_id).to_bytes(),
+            )
+            .await;
+        client
+            .send_bytes(
+                crate::packets::send::handshake::build_0xe2(actor_id, 0x10).to_bytes(),
+            )
+            .await;
+
+        // 4. Replay the zone-in bundle. `send_zone_in_bundle` reads from
+        //    the session + character we just updated, so the bundle
+        //    spawns the player at the content-area coords.
+        self.world
+            .send_zone_in_bundle(&self.registry, session_id, spawn_type as u16)
+            .await;
+
+        tracing::info!(
+            player = player_id,
+            parent_zone = parent_zone_id,
+            area = %area_name,
+            x,
+            y,
+            z,
+            "DoZoneChangeContent applied (Phase 1 — same-zone warp + zone-in replay)",
+        );
     }
 
     // =======================================================================

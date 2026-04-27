@@ -338,6 +338,50 @@ pub enum LuaCommand {
         z: f32,
         rotation: f32,
     },
+    /// `area:CreateContentArea(player, classPath, areaName, contentScript,
+    /// directorName, ...args)` from Lua. Mirrors C#
+    /// `Zone.CreateContentArea` (Map Server/Actors/Area/Zone.cs:170) —
+    /// allocates a `PrivateAreaContent` instance under the parent zone,
+    /// creates a content director with the given script, and binds the
+    /// director's content group to the player. The combat tutorial path
+    /// (`man0g0::doContentArea`) calls this with
+    /// `(player, "/Area/PrivateArea/Content/PrivateAreaMasterSimpleContent",
+    /// "man0g01", "SimpleContent30010", "Quest/QuestDirectorMan0g001")`.
+    CreateContentArea {
+        player_id: u32,
+        parent_zone_id: u32,
+        area_class_path: String,
+        area_name: String,
+        content_script: String,
+        director_name: String,
+        director_actor_id: u32,
+        content_area_actor_id: u32,
+    },
+    /// `GetWorldManager():DoZoneChangeContent(player, contentArea, x, y,
+    /// z, rot, spawnType)` — port of C#
+    /// `WorldManager.DoZoneChangeContent` (Map Server/WorldManager.cs:971).
+    /// Removes the player from the old area, places them in the content
+    /// area, and emits `DeleteAllActors` + `0x00E2` + the standard
+    /// zone-in bundle so the client wipes the world and re-renders for
+    /// the instance.
+    DoZoneChangeContent {
+        player_id: u32,
+        parent_zone_id: u32,
+        area_name: String,
+        director_actor_id: u32,
+        spawn_type: u8,
+        x: f32,
+        y: f32,
+        z: f32,
+        rotation: f32,
+    },
+    /// `area:ContentFinished()` — flag the content area for cleanup
+    /// once the last player exits. The combat tutorial calls this after
+    /// the post-fight cinematic finishes.
+    ContentFinished {
+        parent_zone_id: u32,
+        area_name: String,
+    },
     /// `player:SpawnMyRetainer(bell, retainerIndex)` — retail
     /// "summon retainer at a bell" path. Resolves `retainer_index`
     /// (1-based) to a `characters_retainers` row, loads the catalog

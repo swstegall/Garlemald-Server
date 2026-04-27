@@ -481,6 +481,27 @@ impl UserData for LuaPlayer {
         fields.add_field_method_get("gcRankUldah", |_, this| {
             Ok(this.snapshot.gc_rank_uldah)
         });
+        // `player.CurrentArea` — pmeteor exposes Player.CurrentArea as a
+        // public Area field, which Lua reaches through dot syntax in
+        // `man0g0::doContentArea`:
+        //   `contentArea = player.CurrentArea:CreateContentArea(...)`.
+        // We return a `LuaZone` userdata whose `CreateContentArea`
+        // method picks up the parent zone and routes the rest. Same
+        // queue handle as `player:GetZone()` so commands flow through
+        // a single command pipeline.
+        fields.add_field_method_get("CurrentArea", |lua, this| {
+            let zone = LuaZone {
+                snapshot: ZoneSnapshot {
+                    zone_id: this.snapshot.zone_id,
+                    zone_name: String::new(),
+                    player_ids: Vec::new(),
+                    npc_ids: Vec::new(),
+                    monster_ids: Vec::new(),
+                },
+                queue: this.queue.clone(),
+            };
+            lua.create_userdata(zone)
+        });
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1732,6 +1753,143 @@ impl UserData for LuaZone {
             );
             Ok(())
         });
+        // `area:CreateContentArea(player, classPath, areaName,
+        // contentScript, directorName, ...args)` — combat-tutorial entry
+        // point per `man0g0::doContentArea`. Allocates the director +
+        // content-area actor ids client-side, queues the runtime command
+        // that materialises the `PrivateAreaContent`, and returns a
+        // `LuaContentArea` handle so the lua chain can call
+        // `:GetContentDirector()` + `:SpawnActor(...)` next.
+        methods.add_method(
+            "CreateContentArea",
+            |lua,
+             this,
+             (
+                _player,
+                area_class_path,
+                area_name,
+                _content_script,
+                director_name,
+            ): (mlua::Value, String, String, String, String)| {
+                let parent_zone_id = this.snapshot.zone_id;
+                let director_actor_id = crate::director::director::encode_director_actor_id(
+                    parent_zone_id,
+                    /* director_local_id */ 1,
+                );
+                // Content area gets its own actor id sharing the
+                // director's encoding. `+ 0x80000` pushes it into a
+                // high local-id band so it doesn't collide with normal
+                // directors. Synthetic but stable across calls.
+                let content_area_actor_id = crate::director::director::encode_director_actor_id(
+                    parent_zone_id,
+                    0x80000 | 1,
+                );
+                push(
+                    &this.queue,
+                    LuaCommand::CreateContentArea {
+                        player_id: 0, // populated by apply when player handle is in scope
+                        parent_zone_id,
+                        area_class_path: area_class_path.clone(),
+                        area_name: area_name.clone(),
+                        content_script: _content_script.clone(),
+                        director_name: director_name.clone(),
+                        director_actor_id,
+                        content_area_actor_id,
+                    },
+                );
+                let handle = LuaContentArea {
+                    parent_zone_id,
+                    area_name,
+                    area_class_path,
+                    director_name: director_name.clone(),
+                    director_actor_id,
+                    queue: this.queue.clone(),
+                };
+                lua.create_userdata(handle)
+            },
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LuaContentArea — handle returned by `LuaZone:CreateContentArea`. The
+// instance is materialised server-side by the `CreateContentArea` runtime
+// command; this struct just carries the actor ids + names back to the
+// lua chain so it can fetch the director, spawn actors, and trigger the
+// content-finished cleanup.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct LuaContentArea {
+    pub parent_zone_id: u32,
+    pub area_name: String,
+    pub area_class_path: String,
+    pub director_name: String,
+    pub director_actor_id: u32,
+    pub queue: Arc<Mutex<CommandQueue>>,
+}
+
+impl UserData for LuaContentArea {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        // `contentArea:GetContentDirector()` — return the director that
+        // `Zone.CreateContentArea` instantiated alongside this area.
+        // Mirrors `PrivateAreaContent.GetContentDirector` (returns
+        // `currentDirector`). Garlemald's lua flow then calls
+        // `player:AddDirector(director)` + `director:StartDirector(false)`.
+        methods.add_method("GetContentDirector", |lua, this, _: ()| {
+            let class_path = format!("/Director/{}", this.director_name);
+            let handle = LuaDirectorHandle {
+                name: this.director_name.clone(),
+                actor_id: this.director_actor_id,
+                class_path,
+                queue: this.queue.clone(),
+            };
+            lua.create_userdata(handle)
+        });
+
+        // `contentArea:SpawnActor(classId, name, x, y, z, rot)` — fired
+        // from `QuestDirectorMan0g001.lua::onCreateContentArea` to drop
+        // Yda/Papalymo/mobs into the instance. Reuse the zone-level
+        // SpawnActor command for now; the proper content-area variant
+        // ships with the full PrivateAreaContent runtime.
+        methods.add_method(
+            "SpawnActor",
+            |_, this, (class_id, _name, x, y, z, rotation): (
+                u32,
+                String,
+                f32,
+                f32,
+                f32,
+                Option<f32>,
+            )| {
+                push(
+                    &this.queue,
+                    LuaCommand::SpawnActor {
+                        zone_id: this.parent_zone_id,
+                        actor_class_id: class_id,
+                        x,
+                        y,
+                        z,
+                        rotation: rotation.unwrap_or(0.0),
+                    },
+                );
+                Ok(())
+            },
+        );
+
+        // `contentArea:ContentFinished()` — flag the area for cleanup
+        // once the last player leaves. Mirrors
+        // `PrivateAreaContent.ContentFinished`.
+        methods.add_method("ContentFinished", |_, this, _: ()| {
+            push(
+                &this.queue,
+                LuaCommand::ContentFinished {
+                    parent_zone_id: this.parent_zone_id,
+                    area_name: this.area_name.clone(),
+                },
+            );
+            Ok(())
+        });
     }
 }
 
@@ -1781,13 +1939,50 @@ impl UserData for LuaWorldManager {
             },
         );
 
+        // `GetWorldManager():DoZoneChangeContent(player, contentArea, x,
+        // y, z, rot, spawnType)` — combat-tutorial zone-change entry
+        // point per `man0g0::doContentArea`. The contentArea userdata is
+        // accepted but the runtime command keys off the parent zone +
+        // area name carried by the handle. Ported from C#
+        // `WorldManager.DoZoneChangeContent` (Map Server/WorldManager.cs:971).
+        methods.add_method(
+            "DoZoneChangeContent",
+            |_,
+             this,
+             (player_id, content_area, x, y, z, rotation, spawn_type): (
+                u32,
+                mlua::AnyUserData,
+                f32,
+                f32,
+                f32,
+                f32,
+                Option<u8>,
+            )| {
+                let area = content_area.borrow::<LuaContentArea>()?;
+                push(
+                    &this.queue,
+                    LuaCommand::DoZoneChangeContent {
+                        player_id,
+                        parent_zone_id: area.parent_zone_id,
+                        area_name: area.area_name.clone(),
+                        director_actor_id: area.director_actor_id,
+                        spawn_type: spawn_type.unwrap_or(16),
+                        x,
+                        y,
+                        z,
+                        rotation,
+                    },
+                );
+                Ok(())
+            },
+        );
+
         // The remaining WorldManager methods (DoPlayerMoveInZone,
         // CreateInvitePartyGroup, CreateTradeGroup, AcceptTrade, …) queue
         // log-only stubs so scripts don't abort. Concrete handlers ship in
         // later phases.
         for stub in [
             "DoPlayerMoveInZone",
-            "DoZoneChangeContent",
             "CreateInvitePartyGroup",
             "CreateTradeGroup",
             "AcceptTrade",
