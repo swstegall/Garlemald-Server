@@ -3666,6 +3666,13 @@ impl PacketProcessor {
         Ok(())
     }
 
+    /// Pmeteor's `RequestQuestJournalCommand` static-actor id —
+    /// `0xA0F00000 | 0x5E93`. The 1.x client sends `EventStart` against
+    /// this actor with `event_name="commandRequest"` whenever the player
+    /// opens a journal entry, expecting a `qtdata` reply with the quest's
+    /// sequence + journalInfo.
+    const REQUEST_QUEST_JOURNAL_COMMAND: u32 = 0xA0F0_5E93;
+
     async fn handle_event_start(&self, session_id: u32, data: &[u8]) -> Result<()> {
         let pkt = match EventStartPacket::parse(data) {
             Ok(p) => p,
@@ -3698,6 +3705,7 @@ impl PacketProcessor {
         let actor_id = handle.actor_id;
 
         let owner_actor_id = pkt.owner_actor_id;
+        let event_name_for_match = pkt.event_name.clone();
         let mut outbox = EventOutbox::new();
         {
             let mut chara = handle.character.write().await;
@@ -3742,6 +3750,30 @@ impl PacketProcessor {
             self.fire_quest_hook_for_active_quests(&handle, owner_actor_id, hook_name).await;
         }
 
+        // RequestQuestJournalCommand handler — when the client opens a
+        // quest's journal entry it sends EventStart targeting the
+        // `RequestQuestJournalCommand` static actor (id `0xA0F05E93`)
+        // with eventName `"commandRequest"`. Pmeteor's
+        // `commands/RequestQuestJournalCommand.lua` responds by calling
+        // `quest:GetJournalInformation()` and queueing a
+        // `SendDataPacket("requestedData", "qtdata", questId, sequence,
+        // …journalInfo)` (opcode 0x0133), then `EndEvent`. Without the
+        // qtdata response the 1.x journal pane shows the quest name from
+        // sqpack data but no description / sequence summary, leaving the
+        // entry blank for the user.
+        //
+        // We don't have a full command-actor scripting framework yet, so
+        // this is a hardcoded handler: detect the magic actor id +
+        // eventName, walk the player's journal, and emit one qtdata
+        // packet per active quest with the default-empty journalInfo
+        // (man0g0 + most opener quests don't override
+        // `getJournalInformation`).
+        if owner_actor_id == Self::REQUEST_QUEST_JOURNAL_COMMAND
+            && event_name_for_match == "commandRequest"
+        {
+            self.send_quest_journal_data(&handle, session_id).await;
+        }
+
         tracing::debug!(
             player = actor_id,
             owner = owner_actor_id,
@@ -3749,6 +3781,72 @@ impl PacketProcessor {
             "event start dispatched",
         );
         Ok(())
+    }
+
+    /// Mirror of pmeteor's `RequestQuestJournalCommand.lua::onEventStarted`
+    /// — emit one `0x0133 GenericDataPacket(["requestedData", "qtdata",
+    /// questId, sequence])` per active quest, then a single `EndEvent`.
+    /// The default empty journalInfo is fine for the man0g0 opener path
+    /// (and most quests that don't override `getJournalInformation`).
+    async fn send_quest_journal_data(&self, handle: &ActorHandle, session_id: u32) {
+        let Some(client) = self.world.client(session_id).await else {
+            return;
+        };
+        let actor_id = handle.actor_id;
+
+        let active_quests: Vec<(u32, u32)> = {
+            let c = handle.character.read().await;
+            c.quest_journal
+                .slots
+                .iter()
+                .flatten()
+                .map(|q| (q.quest_id(), q.get_sequence()))
+                .collect()
+        };
+
+        for (quest_id, sequence) in active_quests {
+            // Match pmeteor's exact param shape: [String, String, Int32,
+            // Int32, Nil] — pmeteor's lua tail does
+            // `unpack(journalInfo)` after the questId/sequence ints, and
+            // even with `journalInfo == {}` C# pads at least one Nil into
+            // the packet so the client's reader sees a 5-param payload.
+            let params = vec![
+                common::luaparam::LuaParam::String("requestedData".to_string()),
+                common::luaparam::LuaParam::String("qtdata".to_string()),
+                common::luaparam::LuaParam::Int32(quest_id as i32),
+                common::luaparam::LuaParam::Int32(sequence as i32),
+                common::luaparam::LuaParam::Nil,
+            ];
+            let mut pkt = crate::packets::send::player::build_generic_data(actor_id, &params);
+            // 1.x client silently drops event-flavoured subpackets where
+            // SubPacketHeader.target_id != receiving actor's session id.
+            // Pmeteor's queue dispatcher stamps `target_id = player.Id`
+            // for all queued packets; garlemald's `build_generic_data`
+            // leaves it 0, which makes the client ignore the qtdata
+            // payload and the journal pane never populates the
+            // description. Same gotcha as `broadcast_quest_enpc_update`.
+            pkt.set_target_id(actor_id);
+            client.send_bytes(pkt.to_bytes()).await;
+            tracing::debug!(
+                player = actor_id,
+                quest = quest_id,
+                sequence = sequence,
+                "RequestQuestJournalCommand → qtdata sent",
+            );
+        }
+
+        // Pmeteor's lua tail calls `player:EndEvent()` after queueing the
+        // qtdata packets, regardless of whether any quest matched. Match
+        // that — without an EndEvent the client sits with an open event
+        // session and the journal-pane request never completes.
+        let mut end = crate::packets::send::events::build_end_event(
+            actor_id,
+            Self::REQUEST_QUEST_JOURNAL_COMMAND,
+            "commandRequest",
+            0,
+        );
+        end.set_target_id(actor_id);
+        client.send_bytes(end.to_bytes()).await;
     }
 
     /// Look up the NPC's live state and fire `<hook_name>(player, quest, npc)`

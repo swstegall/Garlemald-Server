@@ -1351,6 +1351,19 @@ impl WorldManager {
         // them in order with the right continuation markers (0x60+len on
         // every packet except the last, which gets 0x82+len). Extend the
         // zone-in bundle with whatever the builder returned.
+        // `playerWork/journal`-targeted companion to the `/_init` bundle.
+        // EMITTED FIRST (before `/_init`) — pmeteor's
+        // `Player.AddQuest` → `SendQuestClientUpdate` fires during
+        // `onBeginLogin` lua execution, which lands the journal packet
+        // ahead of the player's main zone-in init in the captured
+        // outbound stream. The 1.x client appears to require this
+        // ordering for the journal pane to render the quest's
+        // description/summary text — sending it after `/_init` (as we
+        // did originally) leaves the journal entry name-only.
+        subpackets.extend(tx::actor::build_player_journal_property(
+            actor_id,
+            &active_quests,
+        ));
         subpackets.extend(tx::actor::build_player_property_init(
             actor_id,
             hp,

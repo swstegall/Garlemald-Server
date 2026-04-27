@@ -795,6 +795,35 @@ pub fn build_player_property_init(
     b.done()
 }
 
+/// `playerWork/journal`-targeted SetActorProperty companion to
+/// [`build_player_property_init`]. C# `Player.SendQuestClientUpdate`
+/// (Map Server/Actors/Chara/Player/Player.cs:2048) emits one of these
+/// per AddQuest/RemoveQuest call, and `Player.GetInitPackets` opens the
+/// player session with one journal-targeted packet listing every active
+/// scenario quest. Without this packet the 1.x client's journal tab
+/// shows the quest-name string but the surrounding info pane (sequence
+/// summary, description text from sqpack) stays blank — captured 2026-04-26
+/// against pmeteor's `quest_system_mac` capture which sends 4 separate
+/// `playerWork/journal` packets at zone-in (one base + 3 incremental).
+///
+/// The `/_init` variant in [`build_player_property_init`] also sends the
+/// same `playerWork.questScenario[N]` properties, but the 1.x client
+/// dispatches by target name — only the `playerWork/journal`-targeted
+/// emission triggers the journal-pane refresh.
+pub fn build_player_journal_property(
+    actor_id: u32,
+    active_quests: &[(u32, u32)],
+) -> Vec<SubPacket> {
+    let mut b = ActorPropertyPacketBuilder::new(actor_id, "playerWork/journal");
+    for (slot, quest_actor_id) in active_quests {
+        b.add_int(
+            &format!("playerWork.questScenario[{slot}]"),
+            *quest_actor_id,
+        );
+    }
+    b.done()
+}
+
 /// NPC `/_init` property dump, modelled on C# `Npc.GetInitPackets()`
 /// (Map Server/Actors/Chara/Npc/Npc.cs:228). Emits the populace-baseline
 /// property set: `charaWork.property[i]` for each non-zero bit of
