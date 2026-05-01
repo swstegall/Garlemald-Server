@@ -16,14 +16,22 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Project Meteor's non-standard Blowfish variant.
+//! FFXIV 1.23b's lobby Blowfish variant.
 //!
-//! The P and S boxes are NOT derived from the digits of pi (standard Blowfish);
-//! they are fixed byte tables baked into the client. The key schedule also
-//! differs in one subtle way: key bytes are sign-extended to i32 before being
-//! OR'd into the accumulator, meaning keys with bytes >= 0x80 produce a
-//! different schedule than stock Blowfish. Both quirks are preserved here so
-//! the server can decrypt traffic from the original 1.23b client.
+//! The P and S init tables ARE the canonical pi-derived constants from
+//! Schneier 1993 / OpenSSL `bf_pi.h` — verified bit-for-bit against
+//! ffxivgame.exe at VA 0x01267278 (P[18]) and 0x012672C0 (S[4][256]) by
+//! `meteor-decomp/tools/extract_crypt_engine.py`. They are stored here as
+//! flat little-endian byte arrays for explicit byte-order control, which
+//! can look "non-pi" at a glance but reads as the standard values once
+//! you load each chunk as a u32 LE.
+//!
+//! The actual non-canonical quirk lives in the key schedule: each cycled
+//! key byte is sign-extended to i32 (`MOVSX` in the binary, not `MOVZX`)
+//! before being OR'd into the 32-bit accumulator, so keys containing
+//! bytes >= 0x80 produce a schedule that diverges from stock OpenSSL
+//! Blowfish. This quirk is faithfully reproduced below so the server
+//! can decrypt traffic from the original 1.23b client.
 
 use crate::error::PacketError;
 
