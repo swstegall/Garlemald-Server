@@ -2152,13 +2152,18 @@ pub struct LuaWorldManager {
 
 impl UserData for LuaWorldManager {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        // `GetWorldManager():DoZoneChange(player, zoneId, privateArea_or_nil,
+        // privateAreaType, spawnType, x, y, z, rot)` — full cross-zone
+        // warp. `player` is a LuaPlayer userdata (not a u32); we extract
+        // its actor_id here. Mirrors C# `WorldManager.DoZoneChange`
+        // (Map Server/WorldManager.cs:855).
         methods.add_method(
             "DoZoneChange",
             #[allow(clippy::type_complexity)]
             |_,
              this,
-             (player_id, zone_id, private_area, private_area_type, spawn_type, x, y, z, rot): (
-                u32,
+             (player, zone_id, private_area, private_area_type, spawn_type, x, y, z, rot): (
+                mlua::AnyUserData,
                 u32,
                 Option<String>,
                 Option<u32>,
@@ -2168,10 +2173,11 @@ impl UserData for LuaWorldManager {
                 f32,
                 Option<f32>,
             )| {
+                let p = player.borrow::<LuaPlayer>()?;
                 push(
                     &this.queue,
                     LuaCommand::DoZoneChange {
-                        player_id,
+                        player_id: p.snapshot.actor_id,
                         zone_id,
                         private_area,
                         private_area_type: private_area_type.unwrap_or(0),

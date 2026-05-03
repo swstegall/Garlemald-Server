@@ -1352,14 +1352,7 @@ impl PacketProcessor {
                     .await;
             }
             LC::WarpToPublicArea { player_id, target } => {
-                tracing::warn!(
-                    player = player_id,
-                    ?target,
-                    "WarpToPublicArea: cross-zone warp not yet wired \
-                     (same limitation as DoZoneChange — the loading-screen \
-                     + zone-change packet flow needs to be plumbed through \
-                     before this can do anything visible)"
-                );
+                self.apply_warp_to_public_area(player_id, target).await;
             }
             LC::WarpToPrivateArea {
                 player_id,
@@ -1367,13 +1360,32 @@ impl PacketProcessor {
                 area_index,
                 target,
             } => {
-                tracing::warn!(
-                    player = player_id,
-                    %area_class,
-                    area_index,
-                    ?target,
-                    "WarpToPrivateArea: cross-zone warp not yet wired"
-                );
+                self.apply_warp_to_private_area(player_id, area_class, area_index, target)
+                    .await;
+            }
+            LC::DoZoneChange {
+                player_id,
+                zone_id,
+                private_area,
+                private_area_type,
+                spawn_type,
+                x,
+                y,
+                z,
+                rotation,
+            } => {
+                self.apply_do_zone_change(
+                    player_id,
+                    zone_id,
+                    private_area,
+                    private_area_type,
+                    spawn_type,
+                    x,
+                    y,
+                    z,
+                    rotation,
+                )
+                .await;
             }
             LC::SpawnMyRetainer {
                 player_id,
@@ -2380,6 +2392,201 @@ impl PacketProcessor {
             z,
             "DoZoneChangeContent applied (B7: warp + zone-in replay + onZoneIn fired)",
         );
+    }
+
+    /// Cross-zone warp — port of C# `WorldManager.DoZoneChange`
+    /// (Map Server/WorldManager.cs:855). Mirrors `apply_do_zone_change_content`'s
+    /// packet flow exactly (the retail pcaps `gridania_to_coerthas.pcapng` /
+    /// `from_gridania_to_blackshroud.pcapng` show the same single
+    /// `0x00E2(0x10)` marker around the zone-in bundle whether the
+    /// destination is a sibling zone or a content area), but uses
+    /// `WorldManager::do_zone_change` to actually migrate the actor
+    /// between zone registries instead of just updating in-place.
+    ///
+    /// Same-zone targets short-circuit the registry move and behave
+    /// like a glorified `WarpToPosition` followed by a re-render —
+    /// quest scripts use this idiom for "you teleport but stay in
+    /// the same zone" effects (e.g. `man0g0::doNoticeEvent` warps
+    /// the player to the cinematic vantage point with a fresh
+    /// loading screen).
+    ///
+    /// `private_area`/`private_area_type` are accepted to match the
+    /// Lua signature but currently unused — garlemald's `Zone` model
+    /// stores private areas as children of their parent `zone_id`,
+    /// and a separate `SetPrivateArea`-style packet would be needed
+    /// to flip the client onto a specific private replica. Filed as
+    /// a follow-up: most quest call sites pass `nil` so the public
+    /// area is the right destination already.
+    #[allow(clippy::too_many_arguments)]
+    async fn apply_do_zone_change(
+        &self,
+        player_id: u32,
+        zone_id: u32,
+        private_area: Option<String>,
+        private_area_type: u32,
+        spawn_type: u8,
+        x: f32,
+        y: f32,
+        z: f32,
+        rotation: f32,
+    ) {
+        let Some(handle) = self.registry.get(player_id).await else {
+            tracing::warn!(player = player_id, "DoZoneChange: actor missing");
+            return;
+        };
+        let session_id = handle.session_id;
+        let actor_id = handle.actor_id;
+        if session_id == 0 {
+            tracing::debug!(player = player_id, "DoZoneChange: no session (NPC?)");
+            return;
+        }
+
+        // 1. Migrate the actor between zones (no-op if zone_id is the
+        //    same as the current zone). `do_zone_change` also updates
+        //    the session's destination + zone fields.
+        let spawn = common::Vector3::new(x, y, z);
+        if let Err(e) = self
+            .world
+            .do_zone_change(actor_id, session_id, zone_id, spawn, rotation)
+            .await
+        {
+            tracing::error!(
+                error = %e,
+                player = player_id,
+                zone = zone_id,
+                "DoZoneChange: world.do_zone_change failed"
+            );
+            return;
+        }
+
+        // 2. Update the character's persistent zone_id + position
+        //    (the registry move above only touches the spatial grid;
+        //    the Character row's `base.zone_id` is what `send_zone_in_bundle`
+        //    reads on the next login + what persists to disk).
+        {
+            let mut c = handle.character.write().await;
+            c.base.zone_id = zone_id;
+            c.base.position_x = x;
+            c.base.position_y = y;
+            c.base.position_z = z;
+            c.base.rotation = rotation;
+        }
+
+        // 3. Carry the requested spawn_type through to the zone-in
+        //    bundle so the client plays the right "you arrived" anim.
+        if let Some(mut snap) = self.world.session(session_id).await {
+            snap.destination_spawn_type = spawn_type;
+            self.world.upsert_session(snap).await;
+        }
+
+        // 4. Emit the zone-change packet trio — same order as
+        //    `apply_do_zone_change_content`.
+        let Some(client) = self.world.client(session_id).await else {
+            tracing::warn!(player = player_id, "DoZoneChange: no client");
+            return;
+        };
+        client
+            .send_bytes(
+                crate::packets::send::handshake::build_delete_all_actors(actor_id).to_bytes(),
+            )
+            .await;
+        client
+            .send_bytes(
+                crate::packets::send::handshake::build_0xe2(actor_id, 0x10).to_bytes(),
+            )
+            .await;
+
+        // 5. Replay the zone-in bundle. `send_zone_in_bundle` reads
+        //    from the session + character we just updated, so the
+        //    bundle spawns the player at the new coords.
+        self.world
+            .send_zone_in_bundle(&self.registry, session_id, spawn_type as u16)
+            .await;
+
+        tracing::info!(
+            player = player_id,
+            zone = zone_id,
+            ?private_area,
+            private_area_type,
+            spawn_type,
+            x,
+            y,
+            z,
+            rotation,
+            "DoZoneChange applied (cross-zone warp + zone-in replay)",
+        );
+    }
+
+    /// `WorldManager:WarpToPublicArea(player[, x, y, z, rot])` — quest
+    /// scripts use this to send the player back to the public-area
+    /// version of their current zone. With no target, uses the
+    /// player's current pos (so the visible effect is just a
+    /// loading-screen flicker as the private area is unwound). With
+    /// a target, warps to that position.
+    ///
+    /// Garlemald's zone model stores private areas as children of a
+    /// parent zone_id — the "public area" of zone N is just zone N
+    /// itself with no private-area routing. So this is essentially
+    /// a same-parent-zone DoZoneChange with `private_area=None`.
+    async fn apply_warp_to_public_area(
+        &self,
+        player_id: u32,
+        target: Option<(f32, f32, f32, f32)>,
+    ) {
+        let Some(handle) = self.registry.get(player_id).await else {
+            tracing::warn!(player = player_id, "WarpToPublicArea: actor missing");
+            return;
+        };
+        let (zone_id, cur_x, cur_y, cur_z, cur_rot) = {
+            let c = handle.character.read().await;
+            (c.base.zone_id, c.base.position_x, c.base.position_y, c.base.position_z, c.base.rotation)
+        };
+        let (x, y, z, rotation) = target.unwrap_or((cur_x, cur_y, cur_z, cur_rot));
+        // spawn_type=2 == "warp" (matches Meteor's WarpToPublicArea
+        // path which passes 2 to DoZoneChange).
+        self.apply_do_zone_change(player_id, zone_id, None, 0, 2, x, y, z, rotation)
+            .await;
+    }
+
+    /// `WorldManager:WarpToPrivateArea(player, area_class, area_index
+    /// [, x, y, z, rot])` — quest scripts use this to instance the
+    /// player into a named private-area replica (e.g. cutscene-only
+    /// flashback variants like `PrivateAreaMasterPast`). Resolves
+    /// the private area against the player's current parent zone
+    /// then dispatches a DoZoneChange carrying the area routing.
+    async fn apply_warp_to_private_area(
+        &self,
+        player_id: u32,
+        area_class: String,
+        area_index: u32,
+        target: Option<(f32, f32, f32, f32)>,
+    ) {
+        let Some(handle) = self.registry.get(player_id).await else {
+            tracing::warn!(
+                player = player_id,
+                %area_class,
+                area_index,
+                "WarpToPrivateArea: actor missing"
+            );
+            return;
+        };
+        let (zone_id, cur_x, cur_y, cur_z, cur_rot) = {
+            let c = handle.character.read().await;
+            (c.base.zone_id, c.base.position_x, c.base.position_y, c.base.position_z, c.base.rotation)
+        };
+        let (x, y, z, rotation) = target.unwrap_or((cur_x, cur_y, cur_z, cur_rot));
+        self.apply_do_zone_change(
+            player_id,
+            zone_id,
+            Some(area_class),
+            area_index,
+            2,
+            x,
+            y,
+            z,
+            rotation,
+        )
+        .await;
     }
 
     // =======================================================================
