@@ -29,6 +29,19 @@ use common::subpacket::SubPacket;
 use super::super::opcodes::*;
 use super::{body, write_padded_ascii};
 
+/// Synthetic actor id of the global "WorldMaster" actor — Project Meteor's
+/// `WorldManager.GetActor()`. Used as the source actor for every
+/// receiver-targeted system message that doesn't have a real
+/// in-world sender (quest-accept ding, quest-complete banner, NpcLs
+/// linkpearl-obtained toast, …). Per Map Server/Actors/WorldMaster.cs.
+pub const WORLD_MASTER_ACTOR_ID: u32 = 0x5FF8_0001;
+
+/// Synthetic actor id of the "Debug" actor — `/System/Debug.prog`. Used
+/// as the sender for the `/_init` debug-channel events. Sibling
+/// constant to `WORLD_MASTER_ACTOR_ID` — both are hardcoded in
+/// Meteor's `WorldManager.LoadServerActors`.
+pub const DEBUG_ACTOR_ID: u32 = 0x5FF8_0002;
+
 /// 0x0005 SetMap — loads a zone/region map on the client side. Wire layout
 /// mirrors `Map Server/Packets/Send/SetMapPacket.cs`: `region_id` first,
 /// `zone_actor_id` second, then the magic 0x28 at offset 0x08. The C# param

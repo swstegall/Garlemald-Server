@@ -5316,6 +5316,25 @@ impl PacketProcessor {
             );
         }
         tracing::info!(player = player_id, quest = quest_id, slot, "AddQuest applied");
+
+        // Fan out the canonical "<Quest> added to journal" toast.
+        // Mirror C# `WorldManager.AddQuest`'s
+        // `SendGameMessage(WorldMaster, 25224, 0x20, questId)`. Routed
+        // through the auto-tier text-sheet builder; receiver = the
+        // owning client only (no broadcast — this is a personal
+        // system message).
+        if let Some(client) = self.world.client(handle.session_id).await {
+            let pkt = crate::packets::send::misc::build_text_sheet_no_source_auto(
+                handle.actor_id,
+                crate::packets::send::misc::WORLD_MASTER_ACTOR_ID,
+                /* text_id */ 25224,
+                crate::packets::send::misc::MESSAGE_TYPE_SYSTEM,
+                &[common::luaparam::LuaParam::UInt32(quest_id)],
+                /* prefer_alt */ false,
+            );
+            client.send_bytes(pkt.to_bytes()).await;
+        }
+
         self.fire_quest_hook(&handle, quest_id, "onStart", vec![])
             .await;
     }
@@ -5367,6 +5386,21 @@ impl PacketProcessor {
             quest = quest_id,
             "CompleteQuest applied",
         );
+
+        // Fan out the canonical "<Quest> complete!" toast.
+        // Mirror C# `Quest.OnComplete`'s
+        // `SendGameMessage(WorldMaster, 25086, 0x20, GetQuestId())`.
+        if let Some(client) = self.world.client(handle.session_id).await {
+            let pkt = crate::packets::send::misc::build_text_sheet_no_source_auto(
+                handle.actor_id,
+                crate::packets::send::misc::WORLD_MASTER_ACTOR_ID,
+                /* text_id */ 25086,
+                crate::packets::send::misc::MESSAGE_TYPE_SYSTEM,
+                &[common::luaparam::LuaParam::UInt32(quest_id)],
+                /* prefer_alt */ false,
+            );
+            client.send_bytes(pkt.to_bytes()).await;
+        }
     }
 
     /// `player:AbandonQuest(id)` / `player:RemoveQuest(id)` — drop the
