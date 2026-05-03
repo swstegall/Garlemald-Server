@@ -1167,9 +1167,13 @@ mod tests {
         }
     }
 
-    /// Phase-A smoke test: a synthetic content script's `onCreate`
-    /// runs to completion against the player + content-area + director
-    /// userdata, and any LuaCommands it emits drain back to the caller.
+    /// End-to-end smoke test for the SEQ_005 binding chain. A
+    /// synthetic content script's `onCreate` exercises the
+    /// 3 user-bindings the man0g0 combat tutorial drives — `SetMod`
+    /// (B3), `currentParty:AddMember` (B2), `positionX` write — and
+    /// the test asserts every binding produces the expected
+    /// `LuaCommand` variant in the drain. Replaces the Phase-A
+    /// "no-op stubs" assertion now that B2/B3 are live.
     #[test]
     fn call_content_hook_runs_oncreate_and_drains_commands() {
         let root = tmpdir();
@@ -1178,15 +1182,12 @@ mod tests {
             root.join("content/SimpleContent30010.lua"),
             r#"
             function onCreate(starterPlayer, contentArea, director)
-                -- Drive `LuaCommand::SetPos` so the test can verify
-                -- the script reached the body and the queue drains.
-                starterPlayer.positionX = 362.0
-                -- Bindings exercised: SetMod (no-op stub),
-                -- currentParty:AddMember (no-op stub).
-                starterPlayer:SetMod(1, 1)
+                -- B-phase bindings exercised in turn:
+                starterPlayer.positionX = 362.0       -- SetPos
+                starterPlayer:SetMod(114, 1)          -- B3 SetActorMod (MinimumHpLock)
                 local p = starterPlayer.currentParty
                 if p ~= nil then
-                    p:AddMember(0x12345678)
+                    p:AddMember(0x12345678)            -- B2 PartyAddMember
                 end
                 return true
             end
@@ -1217,6 +1218,37 @@ mod tests {
         assert!(
             saw_setpos,
             "expected SetPos from positionX assignment; got {:?}",
+            result.commands
+        );
+        // B3 — SetMod(114, 1) emits SetActorMod.
+        let saw_setmod = result.commands.iter().any(|c| {
+            matches!(
+                c,
+                LuaCommand::SetActorMod {
+                    modifier_key: 114,
+                    value: 1,
+                    ..
+                }
+            )
+        });
+        assert!(
+            saw_setmod,
+            "expected SetActorMod{{modifier_key:114,value:1}}; got {:?}",
+            result.commands
+        );
+        // B2 — currentParty:AddMember(0x12345678) emits PartyAddMember.
+        let saw_party_add = result.commands.iter().any(|c| {
+            matches!(
+                c,
+                LuaCommand::PartyAddMember {
+                    member_actor_id: 0x1234_5678,
+                    ..
+                }
+            )
+        });
+        assert!(
+            saw_party_add,
+            "expected PartyAddMember{{member:0x12345678}}; got {:?}",
             result.commands
         );
         let _ = std::fs::remove_dir_all(root);

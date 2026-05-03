@@ -75,6 +75,18 @@ pub enum LuaCommand {
         z: f32,
         rotation: f32,
     },
+    /// `currentParty:AddMember(actor_id)` — port of C#
+    /// `Party::AddMember`. Appends `member_actor_id` to the
+    /// `leader_actor_id` session's transient party-member list and
+    /// re-emits the GroupHeader / GroupMembersBegin / X08 / End
+    /// sequence so the leader's party-list UI shows the new member.
+    /// Used by combat-tutorial scripts to add ally NPCs (Yda +
+    /// Papalymo for `SimpleContent30010.lua::onCreate`) so the
+    /// allies render as party members.
+    PartyAddMember {
+        leader_actor_id: u32,
+        member_actor_id: u32,
+    },
     /// `actor:SetMod(modifier_key, value)` — port of C#
     /// `Chara::SetMod` (`Map Server/Actors/Chara/Chara.cs`). Writes
     /// `value` into the actor's `ModifierMap` keyed by `modifier_key`

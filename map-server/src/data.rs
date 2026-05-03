@@ -88,6 +88,16 @@ pub struct Session {
     /// to `Some(dreamId)` and emits the fade-in packet; `EndDream()`
     /// clears it. `IsDreaming()` reads this via the snapshot.
     pub current_dream_id: Option<u8>,
+    /// Per-session transient party-member list — accumulates as
+    /// `currentParty:AddMember(actor_id)` fires from content scripts
+    /// (e.g. `SimpleContent30010.lua::onCreate` adds the tutorial
+    /// allies Yda + Papalymo). The map-server re-emits the full
+    /// GroupHeader / GroupMembersBegin / X08 / End sequence with
+    /// this list every time it changes so the player's party-list
+    /// UI stays in sync. Excludes the leader (player) — they're
+    /// added at broadcast time so the slot[0]=requester convention
+    /// stays consistent. B2 of the SEQ_005 unblock plan.
+    pub transient_party_members: Vec<u32>,
 }
 
 /// Runtime-only snapshot of an in-world retainer. Holds the minimal

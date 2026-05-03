@@ -1629,23 +1629,32 @@ impl PacketProcessor {
             );
         }
         if !partial.commands.is_empty() {
-            // Partition out SpawnBattleNpcById commands — those need
-            // db lookups + actor materialisation that the runtime
-            // applier doesn't have plumbing for. Hand them to a
-            // local helper; everything else flows through the
-            // standard runtime drain.
+            // Partition out commands that need processor-scoped
+            // resources (db, sessions, client handles) the runtime
+            // applier can't reach: SpawnBattleNpcById (B1) needs db
+            // lookups + actor materialisation; PartyAddMember (B2)
+            // needs the leader's session + client handle to broadcast
+            // the group packet trio. Everything else flows through
+            // the standard runtime drain.
             let mut runtime_cmds = Vec::with_capacity(partial.commands.len());
             for cmd in partial.commands {
-                if let crate::lua::command::LuaCommand::SpawnBattleNpcById {
-                    bnpc_id,
-                    parent_zone_id: pz,
-                    expected_actor_id,
-                } = cmd
-                {
-                    self.apply_spawn_battle_npc_by_id(bnpc_id, pz, expected_actor_id)
-                        .await;
-                } else {
-                    runtime_cmds.push(cmd);
+                match cmd {
+                    crate::lua::command::LuaCommand::SpawnBattleNpcById {
+                        bnpc_id,
+                        parent_zone_id: pz,
+                        expected_actor_id,
+                    } => {
+                        self.apply_spawn_battle_npc_by_id(bnpc_id, pz, expected_actor_id)
+                            .await;
+                    }
+                    crate::lua::command::LuaCommand::PartyAddMember {
+                        leader_actor_id,
+                        member_actor_id,
+                    } => {
+                        self.apply_party_add_member(leader_actor_id, member_actor_id)
+                            .await;
+                    }
+                    other => runtime_cmds.push(other),
                 }
             }
             if !runtime_cmds.is_empty() {
@@ -1834,6 +1843,157 @@ impl PacketProcessor {
             allegiance = spawn.allegiance,
             pos = ?(spawn.position_x, spawn.position_y, spawn.position_z),
             "SpawnBattleNpcById applied (B1: actor materialised + spawn bundle fanned out)",
+        );
+    }
+
+    /// B2 of the SEQ_005 unblock plan — port of C#
+    /// `Party::AddMember` semantics for the local-zone case (the
+    /// only path the combat-tutorial scripts exercise). Updates
+    /// the leader session's transient member list and re-broadcasts
+    /// the GroupHeader / GroupMembersBegin / GroupMembersX08 /
+    /// GroupMembersEnd sequence so the client's party-list UI
+    /// shows the freshly-added ally.
+    ///
+    /// Phase B2 simplifications:
+    ///   * No persistent server-side party state; the roster lives
+    ///     on `Session.transient_party_members` and re-broadcasts
+    ///     the full list every change. Cross-zone sync (which would
+    ///     route through world-server's `OP_WORLD_PARTY_INVITE` →
+    ///     `PartyManager::add_member` flow) is a follow-up.
+    ///   * No client-side accept prompt; the new member auto-joins
+    ///     (matches the tutorial use case where the allies are NPCs
+    ///     with no client of their own).
+    ///   * Member names default to a synthetic `bnpc_<id>` if the
+    ///     actor isn't in the registry yet (rare race window).
+    async fn apply_party_add_member(
+        &self,
+        leader_actor_id: u32,
+        member_actor_id: u32,
+    ) {
+        let Some(leader_handle) = self.registry.get(leader_actor_id).await else {
+            tracing::debug!(
+                leader = format!("0x{leader_actor_id:08X}"),
+                "PartyAddMember skipped — leader not in registry",
+            );
+            return;
+        };
+        let session_id = leader_handle.session_id;
+        let leader_name = {
+            let c = leader_handle.character.read().await;
+            c.base.display_name().to_string()
+        };
+
+        // Append to transient roster. Idempotent: if the member is
+        // already in the list (script double-fired AddMember) the
+        // re-broadcast still produces the same packet content.
+        let members_actor_ids = {
+            let Some(mut snap) = self.world.session(session_id).await else {
+                tracing::debug!(
+                    session = session_id,
+                    "PartyAddMember skipped — no session for leader",
+                );
+                return;
+            };
+            if !snap.transient_party_members.contains(&member_actor_id) {
+                snap.transient_party_members.push(member_actor_id);
+            }
+            let ids = snap.transient_party_members.clone();
+            self.world.upsert_session(snap).await;
+            ids
+        };
+
+        // Build GroupMember rows: leader first, then the transient
+        // adds. Look up names; default to "bnpc_<id>" placeholder if
+        // the member isn't registered yet (B1's spawn happens in the
+        // same drain so this should normally resolve).
+        let mut members = Vec::with_capacity(1 + members_actor_ids.len());
+        members.push(crate::packets::send::groups::GroupMember {
+            actor_id: leader_actor_id,
+            localized_name: -1,
+            unknown2: 0,
+            flag1: false,
+            is_online: true,
+            name: leader_name,
+        });
+        for &mid in &members_actor_ids {
+            let name = if let Some(h) = self.registry.get(mid).await {
+                let c = h.character.read().await;
+                c.base.display_name().to_string()
+            } else {
+                format!("bnpc_{mid:08X}")
+            };
+            members.push(crate::packets::send::groups::GroupMember {
+                actor_id: mid,
+                localized_name: -1,
+                unknown2: 0,
+                flag1: false,
+                is_online: true,
+                name,
+            });
+        }
+
+        // Build the trio. Group index uses the same solo-self flag
+        // pattern `send_zone_in_bundle` uses; sequence_id is fresh.
+        // Tutorial allies don't promote the player out of the
+        // synthetic solo-self party — they just join it.
+        const PARTY_SOLO_SELF_FLAG: u64 = 0x8000_0000_0000_0000;
+        const GROUP_TYPE_PARTY: u32 = 0x2711;
+        let group_index: u64 = PARTY_SOLO_SELF_FLAG | (leader_actor_id as u64);
+        let zone_actor_id = leader_handle.zone_id;
+        let location_code = zone_actor_id as u64;
+        let sequence_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or_default();
+
+        let mut offset = 0usize;
+        let mut subs = vec![
+            crate::packets::send::groups::build_group_header(
+                leader_actor_id,
+                location_code,
+                sequence_id,
+                group_index,
+                GROUP_TYPE_PARTY,
+                -1,
+                "",
+                members.len() as u32,
+            ),
+            crate::packets::send::groups::build_group_members_begin(
+                leader_actor_id,
+                location_code,
+                sequence_id,
+                group_index,
+                members.len() as u32,
+            ),
+            crate::packets::send::groups::build_group_members_x08(
+                leader_actor_id,
+                location_code,
+                sequence_id,
+                &members,
+                &mut offset,
+            ),
+            crate::packets::send::groups::build_group_members_end(
+                leader_actor_id,
+                location_code,
+                sequence_id,
+                group_index,
+            ),
+        ];
+
+        let Some(client) = self.world.client(session_id).await else {
+            tracing::debug!(session = session_id, "PartyAddMember skipped — no client handle");
+            return;
+        };
+        for sub in &mut subs {
+            sub.set_target_id(session_id);
+            client.send_bytes(sub.to_bytes()).await;
+        }
+
+        tracing::info!(
+            leader = format!("0x{leader_actor_id:08X}"),
+            member = format!("0x{member_actor_id:08X}"),
+            roster = members.len(),
+            "PartyAddMember applied (B2: transient roster + group trio rebroadcast)",
         );
     }
 

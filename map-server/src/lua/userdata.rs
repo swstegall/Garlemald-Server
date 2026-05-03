@@ -1902,14 +1902,20 @@ impl UserData for LuaParty {
         // `currentParty:AddMember(actor_id)` — invite a (B)NPC into the
         // player's party. Used by combat-tutorial scripts to add the
         // ally NPCs (Yda + Papalymo) to the player's roster so the
-        // party-list UI shows them. The real implementation routes
-        // through the existing `PartyManager` in world-server; for
-        // now we log and no-op so the content script keeps running.
+        // party-list UI shows them.
+        //
+        // B2: pushes `LuaCommand::PartyAddMember`, applied by the
+        // processor to (1) accumulate the member in the leader's
+        // session-scoped transient roster and (2) re-broadcast the
+        // GroupHeader / GroupMembersBegin / X08 / End sequence so the
+        // client's party-list UI shows the freshly-added ally.
         methods.add_method("AddMember", |_, this, actor_id: u32| {
-            tracing::debug!(
-                leader = format!("0x{:08X}", this.leader_actor_id),
-                member = format!("0x{:08X}", actor_id),
-                "LuaParty::AddMember (Phase-A stub: routed to log only)",
+            push(
+                &this.queue,
+                LuaCommand::PartyAddMember {
+                    leader_actor_id: this.leader_actor_id,
+                    member_actor_id: actor_id,
+                },
             );
             Ok(())
         });
