@@ -2313,7 +2313,43 @@ impl UserData for LuaDirectorHandle {
         methods.add_method("EndDirector", |_, _this, _: ()| Ok(()));
         methods.add_method("StartSceneSession", |_, _this, _: Option<Value>| Ok(()));
         methods.add_method("EndSceneSession", |_, _this, _: ()| Ok(()));
-        methods.add_method("AddMember", |_, _this, _member: Value| Ok(()));
+        // `director:AddMember(actor)` — append the actor to the
+        // director's transient roster + re-broadcast the
+        // GroupHeader / Begin / X08 / End sequence so the
+        // content-group UI shows the right members. B4 of the
+        // SEQ_005 unblock plan (was previously a no-op stub).
+        //
+        // `actor` can be a LuaPlayer, LuaActor, or LuaNpc userdata.
+        // We extract `.actorId` (or fall through to 0 if the value
+        // isn't an actor-like userdata, in which case the apply
+        // path skips the broadcast cleanly).
+        methods.add_method("AddMember", |_, this, member: mlua::Value| {
+            let member_actor_id = match &member {
+                mlua::Value::UserData(ud) => {
+                    if let Ok(p) = ud.borrow::<LuaPlayer>() {
+                        p.snapshot.actor_id
+                    } else if let Ok(a) = ud.borrow::<LuaActor>() {
+                        a.actor_id
+                    } else if let Ok(n) = ud.borrow::<LuaNpc>() {
+                        n.base.actor_id
+                    } else {
+                        0
+                    }
+                }
+                mlua::Value::Integer(i) => *i as u32,
+                _ => 0,
+            };
+            if member_actor_id != 0 {
+                push(
+                    &this.queue,
+                    LuaCommand::DirectorAddMember {
+                        director_actor_id: this.actor_id,
+                        member_actor_id,
+                    },
+                );
+            }
+            Ok(())
+        });
         methods.add_method("RemoveMember", |_, _this, _member: Value| Ok(()));
         methods.add_method("GetContentMembers", |_, _this, _: ()| Ok(Vec::<u32>::new()));
         methods.add_method("SetLeader", |_, _this, _actor: Value| Ok(()));

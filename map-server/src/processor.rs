@@ -1654,6 +1654,24 @@ impl PacketProcessor {
                         self.apply_party_add_member(leader_actor_id, member_actor_id)
                             .await;
                     }
+                    crate::lua::command::LuaCommand::DirectorAddMember {
+                        director_actor_id,
+                        member_actor_id,
+                    } => {
+                        // Bind to the player whose `onCreate` chain
+                        // emitted the command — they're the
+                        // broadcast target for this director's
+                        // group packets in the solo-tutorial case.
+                        // Multi-player content groups (Phase B5+)
+                        // would walk the director's player_members
+                        // and broadcast to each.
+                        self.apply_director_add_member(
+                            player_id,
+                            director_actor_id,
+                            member_actor_id,
+                        )
+                        .await;
+                    }
                     other => runtime_cmds.push(other),
                 }
             }
@@ -1994,6 +2012,147 @@ impl PacketProcessor {
             member = format!("0x{member_actor_id:08X}"),
             roster = members.len(),
             "PartyAddMember applied (B2: transient roster + group trio rebroadcast)",
+        );
+    }
+
+    /// B4 of the SEQ_005 unblock plan — port of C#
+    /// `Director::AddMember`. Appends `member_actor_id` to the
+    /// player session's transient roster for `director_actor_id`,
+    /// then re-broadcasts the GroupHeader / GroupMembersBegin /
+    /// GroupMembersX08 / GroupMembersEnd trio keyed by the
+    /// director's group id so the client's content-group UI shows
+    /// the freshly-added member.
+    ///
+    /// Phase B4 simplification: solo-tutorial-only (broadcasts to
+    /// the single `player_actor_id` argument's client). Multi-
+    /// player content groups (Phase B5+) would walk the director's
+    /// `player_members` set and broadcast to each.
+    async fn apply_director_add_member(
+        &self,
+        player_actor_id: u32,
+        director_actor_id: u32,
+        member_actor_id: u32,
+    ) {
+        let Some(player_handle) = self.registry.get(player_actor_id).await else {
+            tracing::debug!(
+                player = format!("0x{player_actor_id:08X}"),
+                director = format!("0x{director_actor_id:08X}"),
+                "DirectorAddMember skipped — player not in registry",
+            );
+            return;
+        };
+        let session_id = player_handle.session_id;
+
+        // Append to the per-director roster on Session.
+        let roster = {
+            let Some(mut snap) = self.world.session(session_id).await else {
+                tracing::debug!(
+                    session = session_id,
+                    "DirectorAddMember skipped — no session",
+                );
+                return;
+            };
+            let entry = snap
+                .transient_director_members
+                .entry(director_actor_id)
+                .or_default();
+            if !entry.contains(&member_actor_id) {
+                entry.push(member_actor_id);
+            }
+            let cloned = entry.clone();
+            self.world.upsert_session(snap).await;
+            cloned
+        };
+
+        // Build GroupMember rows from the roster. Resolve names from
+        // the registry; placeholder for entries not yet registered
+        // (rare when B1 spawns and B4 broadcasts in the same drain).
+        let mut members = Vec::with_capacity(roster.len());
+        for &mid in &roster {
+            let name = if let Some(h) = self.registry.get(mid).await {
+                let c = h.character.read().await;
+                c.base.display_name().to_string()
+            } else {
+                format!("bnpc_{mid:08X}")
+            };
+            members.push(crate::packets::send::groups::GroupMember {
+                actor_id: mid,
+                localized_name: -1,
+                unknown2: 0,
+                flag1: false,
+                is_online: true,
+                name,
+            });
+        }
+
+        // Build the trio. Group index uses the director's actor id
+        // directly — the director IS the group key (no synthetic
+        // solo-self flag like the player's party). C# uses the same
+        // convention: `director.GetGroupId()` returns the director's
+        // composite actor id.
+        let group_index: u64 = director_actor_id as u64;
+        let zone_actor_id = player_handle.zone_id;
+        let location_code = zone_actor_id as u64;
+        let sequence_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or_default();
+        // Director groups use a different group_type than party.
+        // C# `Director.GetGroupTypeId()` returns 30001 (0x7531) for
+        // ContentGroup directors; tutorials use the same value.
+        const GROUP_TYPE_CONTENT_GROUP: u32 = 30001;
+
+        let mut offset = 0usize;
+        let mut subs = vec![
+            crate::packets::send::groups::build_group_header(
+                player_actor_id,
+                location_code,
+                sequence_id,
+                group_index,
+                GROUP_TYPE_CONTENT_GROUP,
+                -1,
+                "",
+                members.len() as u32,
+            ),
+            crate::packets::send::groups::build_group_members_begin(
+                player_actor_id,
+                location_code,
+                sequence_id,
+                group_index,
+                members.len() as u32,
+            ),
+            crate::packets::send::groups::build_group_members_x08(
+                player_actor_id,
+                location_code,
+                sequence_id,
+                &members,
+                &mut offset,
+            ),
+            crate::packets::send::groups::build_group_members_end(
+                player_actor_id,
+                location_code,
+                sequence_id,
+                group_index,
+            ),
+        ];
+
+        let Some(client) = self.world.client(session_id).await else {
+            tracing::debug!(
+                session = session_id,
+                "DirectorAddMember skipped — no client handle",
+            );
+            return;
+        };
+        for sub in &mut subs {
+            sub.set_target_id(session_id);
+            client.send_bytes(sub.to_bytes()).await;
+        }
+
+        tracing::info!(
+            director = format!("0x{director_actor_id:08X}"),
+            member = format!("0x{member_actor_id:08X}"),
+            roster = members.len(),
+            "DirectorAddMember applied (B4: roster + group trio rebroadcast)",
         );
     }
 

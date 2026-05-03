@@ -75,6 +75,18 @@ pub enum LuaCommand {
         z: f32,
         rotation: f32,
     },
+    /// `director:AddMember(actor)` — port of C#
+    /// `Director::AddMember`. Appends `member_actor_id` to the
+    /// director's transient roster (keyed by director_actor_id on
+    /// the leader's session) and re-broadcasts the GroupHeader /
+    /// GroupMembersBegin / X08 / End sequence keyed by the
+    /// director's group id. Tutorial scripts call this five times
+    /// per spawn (player + Yda + Papalymo + 3 wolves) so the
+    /// content-group UI shows the right roster.
+    DirectorAddMember {
+        director_actor_id: u32,
+        member_actor_id: u32,
+    },
     /// `currentParty:AddMember(actor_id)` — port of C#
     /// `Party::AddMember`. Appends `member_actor_id` to the
     /// `leader_actor_id` session's transient party-member list and

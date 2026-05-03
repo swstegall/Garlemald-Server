@@ -1189,6 +1189,7 @@ mod tests {
                 if p ~= nil then
                     p:AddMember(0x12345678)            -- B2 PartyAddMember
                 end
+                director:AddMember(starterPlayer)      -- B4 DirectorAddMember (player)
                 return true
             end
             "#,
@@ -1249,6 +1250,17 @@ mod tests {
         assert!(
             saw_party_add,
             "expected PartyAddMember{{member:0x12345678}}; got {:?}",
+            result.commands
+        );
+        // B4 — director:AddMember(starterPlayer) emits DirectorAddMember
+        // with the LuaPlayer's actor_id extracted from the userdata.
+        let saw_director_add = result
+            .commands
+            .iter()
+            .any(|c| matches!(c, LuaCommand::DirectorAddMember { .. }));
+        assert!(
+            saw_director_add,
+            "expected DirectorAddMember from director:AddMember(player); got {:?}",
             result.commands
         );
         let _ = std::fs::remove_dir_all(root);

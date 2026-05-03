@@ -98,6 +98,15 @@ pub struct Session {
     /// added at broadcast time so the slot[0]=requester convention
     /// stays consistent. B2 of the SEQ_005 unblock plan.
     pub transient_party_members: Vec<u32>,
+    /// Per-director transient roster, keyed by `director_actor_id`.
+    /// Same idea as `transient_party_members` but for directors —
+    /// accumulates as `director:AddMember(actor)` fires (combat
+    /// tutorial adds player + papalymo + yda + 3 wolves to the
+    /// `QuestDirectorMan0g001` instance). The map-server re-emits
+    /// the GroupHeader / Begin / X08 / End sequence keyed by the
+    /// director's group id every time the roster changes. B4 of the
+    /// SEQ_005 unblock plan.
+    pub transient_director_members: std::collections::HashMap<u32, Vec<u32>>,
 }
 
 /// Runtime-only snapshot of an in-world retainer. Holds the minimal
