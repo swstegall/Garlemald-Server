@@ -119,6 +119,32 @@ pub fn build_mass_delete_actor_start(actor_id: u32) -> SubPacket {
     SubPacket::new(OP_MASS_DELETE_ACTOR_START, actor_id, body(0x28))
 }
 
+/// OP_MASS_DELETE_ACTOR_X11 (0x0008, game-message opcode) — Mass
+/// Delete Actor Body (variable-count). Capacity 11 actors per
+/// packet.
+///
+/// Wire format decoded from `ffxiv_traces/from_gridania_to_blackshroud.pcapng`
+/// 0x0008 OUT record #1: 48-byte body =
+/// `u32 count + u32[count] actor_ids + zero pad`.
+///
+/// **Different layer from `OP_PONG`** despite same numeric value:
+/// this builder emits a game-message subpacket (type 3) with
+/// opcode 0x0008 in the GameMessageHeader, whereas
+/// `build_ping_response` emits a raw subpacket (type 0x0008, no
+/// game-message header). See the doc on `OP_MASS_DELETE_ACTOR_X11`
+/// for the full disambiguation.
+pub fn build_mass_delete_actor_x11(actor_id: u32, exempt_actors: &[u32]) -> SubPacket {
+    const CAPACITY: usize = 11;
+    let mut data = body(0x50);
+    let n = exempt_actors.len().min(CAPACITY);
+    data[0..4].copy_from_slice(&(n as u32).to_le_bytes());
+    for (i, exempt) in exempt_actors.iter().take(n).enumerate() {
+        let off = 4 + i * 4;
+        data[off..off + 4].copy_from_slice(&exempt.to_le_bytes());
+    }
+    SubPacket::new(OP_MASS_DELETE_ACTOR_X11, actor_id, data)
+}
+
 /// OP_MASS_DELETE_ACTOR_X16 (0x0009) — Mass Delete Actor Body
 /// holding up to 16 actor ids to exempt from the impending wipe
 /// (wiki labels this "(x10)"; the `x10` is HEX). Body = 80 bytes
@@ -274,6 +300,58 @@ mod mass_delete_actor_tests {
         );
         // Trailing pad is zero (slot 16 onwards is unused → padding).
         assert!(pkt.data[64..80].iter().all(|b| *b == 0));
+    }
+
+    /// Reproduce the captured 0x0008 OUT body from
+    /// `ffxiv_traces/from_gridania_to_blackshroud.pcapng` record #1
+    /// — count=7 followed by 7 actor ids (the player + WorldMaster
+    /// + DebugProg + 4 zone NPCs), then 16 bytes of zero pad.
+    #[test]
+    fn mass_delete_actor_x11_matches_retail_capture() {
+        let exempt = vec![
+            0x029B_2941, // player
+            0x44B0_0002,
+            0x5FF8_0002, // DebugProg
+            0x5FF8_0001, // WorldMaster
+            0x44B0_0001,
+            0x44B0_0012,
+            0x44B0_003F,
+        ];
+        let pkt = build_mass_delete_actor_x11(0x029B_2941, &exempt);
+        assert_eq!(pkt.data.len(), 48);
+        assert_eq!(pkt.game_message.opcode, OP_MASS_DELETE_ACTOR_X11);
+        #[rustfmt::skip]
+        let expected: [u8; 48] = [
+            // u32 count
+            0x07, 0x00, 0x00, 0x00,
+            // 7 × u32 actor_id
+            0x41, 0x29, 0x9B, 0x02,
+            0x02, 0x00, 0xB0, 0x44,
+            0x02, 0x00, 0xF8, 0x5F,
+            0x01, 0x00, 0xF8, 0x5F,
+            0x01, 0x00, 0xB0, 0x44,
+            0x12, 0x00, 0xB0, 0x44,
+            0x3F, 0x00, 0xB0, 0x44,
+            // 16 bytes zero pad
+            0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        assert_eq!(pkt.data, expected);
+    }
+
+    /// Truncates above the 11-actor capacity.
+    #[test]
+    fn mass_delete_actor_x11_truncates_overflow() {
+        let actors: Vec<u32> = (0..16).map(|i| 0x4670_0000 | i).collect();
+        let pkt = build_mass_delete_actor_x11(1, &actors);
+        let count = u32::from_le_bytes(pkt.data[0..4].try_into().unwrap());
+        assert_eq!(count, 11);
+        // Slot 11 is at offset 4 + 11*4 = 48; that's beyond the body
+        // so the 12th actor was dropped.
+        assert_eq!(
+            u32::from_le_bytes(pkt.data[4 + 10 * 4..4 + 10 * 4 + 4].try_into().unwrap()),
+            0x4670_000A,
+        );
     }
 
     #[test]

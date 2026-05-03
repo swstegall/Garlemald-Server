@@ -32,6 +32,30 @@ pub const OP_SEND_MESSAGE_PUBLIC: u16 = 0x0003;
 pub const OP_SET_MAP: u16 = 0x0005;
 pub const OP_DELETE_ALL_ACTORS: u16 = 0x0007;
 pub const OP_PONG: u16 = 0x0008;
+/// Game-message opcode 0x0008 = "Mass Delete Actor Body (variable)".
+///
+/// Same numeric value as `OP_PONG`, but at a different layer:
+/// `OP_PONG` is the **subpacket type** (raw transport ping, used in
+/// `SubPacket::new_with_flag(false, ...)`), whereas
+/// `OP_MASS_DELETE_ACTOR_X11` is the **game-message opcode** field
+/// inside a type-3 (game-message) subpacket. The dispatcher routes
+/// subpacket-type=8 to `handle_ping` and subpacket-type=3 +
+/// game-message-opcode=0x0008 to the Mass Delete Actor body path.
+///
+/// The wiki labels this opcode "Mass Delete Actor Body (x1) — 8
+/// bytes, u32 actor", but retail captures (`ffxiv_traces/*.pcapng`
+/// 0x0008 OUT records) confirm the actual on-the-wire shape is a
+/// **variable-count** list with capacity 11:
+///   `u32 count + u32[count] actor_ids + zero pad to 48-byte body`
+/// Body is always 48 bytes (SubPacket size 0x50). `count` is
+/// 1..=11 across the surveyed captures.
+///
+/// Retail uses this 19× — far more than 0x0009/0x000A/0x000B
+/// combined — making it the de-facto "standard" Mass Delete Body
+/// opcode for typical zone-transition exempt lists. The fixed-slot
+/// _X16/_X32/_X64 variants are reserved for batches that exceed
+/// 11 actors.
+pub const OP_MASS_DELETE_ACTOR_X11: u16 = 0x0008;
 
 // Mass Delete Actor "(xN)" family. The wiki's `(xN)` labels are
 // HEX (x10 = 16, x20 = 32, x40 = 64), confirmed by the captured
