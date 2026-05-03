@@ -197,6 +197,14 @@ pub async fn dispatch_battle_event(
             );
             broadcast_around_actor(world, registry, zone, *owner_actor_id, sub.to_bytes())
                 .await;
+            // 0x00DE ResetHead — stop the mob's head from continuing
+            // to track the player's last position. Captured retail
+            // pairs this with the gem clear at disengage. Project
+            // Meteor leaves the head locked indefinitely; emitting
+            // ResetHead returns the mob to its neutral pose.
+            let head = tx::actor::build_reset_head(*owner_actor_id);
+            broadcast_around_actor(world, registry, zone, *owner_actor_id, head.to_bytes())
+                .await;
         }
         BattleEvent::Spawn { owner_actor_id }
         | BattleEvent::Despawn { owner_actor_id }

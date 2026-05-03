@@ -209,6 +209,26 @@ pub fn build_set_actor_target(actor_id: u32, target_id: u32) -> SubPacket {
     SubPacket::new(OP_SET_ACTOR_TARGET, actor_id, data)
 }
 
+/// 0x00DE ResetHeadPacket — clears any active head-tracking on the
+/// actor (set via 0x00DB Set Head to Actor / 0x00DC Set Head to
+/// Position / 0x00DD Set Actor Head Orientation), returning the
+/// head to its origin/neutral pose.
+///
+/// Wire format: 8-byte zero body. The wiki claims "0x4 bytes" but
+/// captures (`ffxiv_traces/combat_skills.pcapng`) confirm the
+/// actual SubPacket size is 0x28 (40 bytes total) with an 8-byte
+/// zero body — i.e. the smallest valid game-message body. Project
+/// Meteor never implements this opcode; the C# fork leaves the
+/// mob's head locked to its last target indefinitely.
+///
+/// Retail emits this when a mob disengages combat (alongside
+/// 0x0195 SetEnmityIndicator clearing the gem) so the mob's head
+/// stops following the player. `actor_id` is the mob whose head
+/// should reset.
+pub fn build_reset_head(actor_id: u32) -> SubPacket {
+    SubPacket::new(OP_RESET_HEAD, actor_id, body(0x28))
+}
+
 /// 0x00E1 ActorDoEmotePacket.
 pub fn build_actor_do_emote(
     actor_id: u32,
@@ -963,3 +983,20 @@ pub fn build_battle_parameter(actor_id: u32, general_parameter: &[i16; 35]) -> V
 }
 
 use std::io::Write as _;
+
+#[cfg(test)]
+mod reset_head_tests {
+    use super::*;
+
+    /// Reproduce the body bytes captured from
+    /// `ffxiv_traces/combat_skills.pcapng` 0x00DE record #1 — actor
+    /// `0x44D035D5` (mob), 8-byte zero body.
+    #[test]
+    fn reset_head_matches_retail_capture() {
+        let pkt = build_reset_head(0x44D0_35D5);
+        assert_eq!(pkt.data.len(), 8);
+        assert!(pkt.data.iter().all(|b| *b == 0));
+        assert_eq!(pkt.game_message.opcode, OP_RESET_HEAD);
+        assert_eq!(pkt.header.source_id, 0x44D0_35D5);
+    }
+}
