@@ -3905,15 +3905,26 @@ impl PacketProcessor {
                 // opcode as outbound GenericData. Client signals it
                 // has spawned a new monster group / actor and wants
                 // the server to register `/_init` event handlers.
-                // Payload at body[0..8] is u64 actor or
-                // monster-group id (synthetic 0x2680… prefix for
-                // mob groups), body[8..40] is a 32-byte
-                // null-padded ASCII work-string (captures all show
-                // "/_init"; field sized per
-                // Kodama/core/src/ipc/zone/mod.rs::GroupCreated.work_string).
-                let event_name = if sub.data.len() >= 40 {
-                    extract_null_terminated_ascii(&sub.data[8..40])
-                } else if sub.data.len() >= 8 {
+                //
+                // Captured retail body shape (every 0x0133 IN record
+                // in the 56-capture survey, none ambiguous):
+                //   body[0..8]  = u64 actor or monster-group id
+                //                 (synthetic 0x2680… prefix for mob
+                //                 groups)
+                //   body[8..14] = ASCII "/_init"
+                //   body[14..40] = 26 bytes of zero
+                //
+                // The captures don't disambiguate the string field's
+                // declared width — every captured string fits in 7
+                // bytes including the NUL, so a 16/24/32-byte field
+                // would all look identical on the wire when followed
+                // by zero-padding. We extract through the full body
+                // and stop at the first NUL: defensive against the
+                // unknown true field size, correct for the captured
+                // strings, and harmless if the trailing region turns
+                // out to be reserved rather than padding (it's
+                // always zero in practice).
+                let event_name = if sub.data.len() >= 8 {
                     extract_null_terminated_ascii(&sub.data[8..])
                 } else {
                     String::new()
