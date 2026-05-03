@@ -1345,6 +1345,14 @@ impl PacketProcessor {
             LC::SetHomePointInn { player_id, inn_id } => {
                 self.apply_set_home_point_inn(player_id, inn_id).await;
             }
+            LC::PlayerSetNpcLs {
+                player_id,
+                npc_ls_id,
+                state,
+            } => {
+                self.apply_player_set_npc_ls(player_id, npc_ls_id, state)
+                    .await;
+            }
             LC::SetPool {
                 actor_id,
                 kind,
@@ -3702,6 +3710,71 @@ impl PacketProcessor {
             }
         }
         tracing::info!(player = player_id, inn_id, "SetHomePointInn applied");
+    }
+
+    /// `player:SetNpcLs(id, state)` / `player:AddNpcLs(id)` /
+    /// `quest:NewNpcLsMsg(from)` apply path. State decode mirrors
+    /// the C# `Player.SetNpcLs` switch (Map Server/Actors/Chara/Player/Player.cs):
+    ///
+    ///  0 = NPCLS_GONE     → (false, false) — not in player's collection
+    ///  1 = NPCLS_INACTIVE → (false, true)  — owned, no glow
+    ///  2 = NPCLS_ACTIVE   → (true, false)  — owned, calling (post-read)
+    ///  3 = NPCLS_ALERT    → (true, true)   — owned, glow + calling
+    ///
+    /// 1.x's `npc_ls_id` is 1-based on the wire (1..=40); the DB row
+    /// is 0-based, so we decrement before persisting. The matching
+    /// `playerWork.npcLinkshellChat{Calling,Extra}[N]` SetActorProperty
+    /// fan-out is deferred — those paths aren't in the property
+    /// registry yet, so the client won't see the icon flip until
+    /// they're plumbed through.
+    async fn apply_player_set_npc_ls(&self, player_id: u32, npc_ls_id: u32, state: u8) {
+        if !(1..=40).contains(&npc_ls_id) {
+            tracing::debug!(
+                player = player_id,
+                npc_ls_id,
+                state,
+                "SetNpcLs: id out of valid range (1..=40)",
+            );
+            return;
+        }
+        let (is_calling, is_extra) = match state {
+            0 => (false, false), // NPCLS_GONE
+            1 => (false, true),  // NPCLS_INACTIVE
+            2 => (true, false),  // NPCLS_ACTIVE
+            3 => (true, true),   // NPCLS_ALERT
+            _ => {
+                tracing::debug!(
+                    player = player_id,
+                    npc_ls_id,
+                    state,
+                    "SetNpcLs: unknown state code",
+                );
+                return;
+            }
+        };
+        let zero_based = npc_ls_id - 1;
+        if let Err(e) = self
+            .db
+            .save_npc_ls(player_id, zero_based, is_calling, is_extra)
+            .await
+        {
+            tracing::warn!(
+                player = player_id,
+                npc_ls_id,
+                state,
+                err = %e,
+                "SetNpcLs: DB persist failed",
+            );
+            return;
+        }
+        tracing::debug!(
+            player = player_id,
+            npc_ls_id,
+            state,
+            is_calling,
+            is_extra,
+            "SetNpcLs persisted",
+        );
     }
 
     /// `player:SetHP/SetMaxHP/SetMP/SetMaxMP/SetTP(value)` — direct

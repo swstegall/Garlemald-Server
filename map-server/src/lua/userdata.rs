@@ -724,6 +724,75 @@ impl UserData for LuaPlayer {
             Ok(())
         });
 
+        // --- NPC Linkshell membership / state ------------------------
+        // C# `Player.AddNpcLs` / `Player.SetNpcLs` / `Player.HasNpcLs`.
+        // Both `AddNpcLs(id)` (single arg, defaults to NPCLS_INACTIVE)
+        // and `SetNpcLs(id, state)` route through the same
+        // `LuaCommand::PlayerSetNpcLs` variant — `apply_player_set_npc_ls`
+        // does the (state → isCalling/isExtra) decode and DB write.
+        // The lowercase `SetNpcLS` alias matches existing script
+        // naming (see man0l1.lua / etc5g0.lua).
+        const NPCLS_INACTIVE: u8 = 1;
+        methods.add_method("AddNpcLs", |_, this, npc_ls_id: u32| {
+            push(
+                &this.queue,
+                LuaCommand::PlayerSetNpcLs {
+                    player_id: this.snapshot.actor_id,
+                    npc_ls_id,
+                    state: NPCLS_INACTIVE,
+                },
+            );
+            Ok(())
+        });
+        let set_npc_ls_handler = |_: &mlua::Lua,
+                                  this: &LuaPlayer,
+                                  (npc_ls_id, state): (u32, u8)|
+         -> mlua::Result<()> {
+            push(
+                &this.queue,
+                LuaCommand::PlayerSetNpcLs {
+                    player_id: this.snapshot.actor_id,
+                    npc_ls_id,
+                    state,
+                },
+            );
+            Ok(())
+        };
+        methods.add_method("SetNpcLs", set_npc_ls_handler);
+        methods.add_method("SetNpcLS", set_npc_ls_handler);
+
+        // `player:SendGameMessageLocalizedDisplayName(quest, msgId,
+        // messageType, npcDisplayNameId)` — sheet-message dispatch
+        // with the NPC display name as the sender. Used heavily by
+        // the man*l*.lua NPC-linkshell narration (`NPCLS_MSGS[pack][step]`).
+        // 8 call sites. Routes through the existing SendMessage path
+        // for now (canonical 0x015C-0x0160 Text Sheet "Custom Sender"
+        // builders are defined but not yet auto-wired); the message
+        // body lands in chat with a synthetic sender placeholder so
+        // the script flow doesn't error.
+        methods.add_method(
+            "SendGameMessageLocalizedDisplayName",
+            |_,
+             this,
+             (_quest, msg_id, message_type, sender_display_name_id): (
+                mlua::AnyUserData,
+                u32,
+                u8,
+                Option<u32>,
+            )| {
+                push(
+                    &this.queue,
+                    LuaCommand::SendMessage {
+                        actor_id: this.snapshot.actor_id,
+                        message_type,
+                        sender: format!("[{}]", sender_display_name_id.unwrap_or(0)),
+                        text: format!("[sheet:{}]", msg_id),
+                    },
+                );
+                Ok(())
+            },
+        );
+
         // --- "Standard NPC" (fellow companion) read-only stubs -------
         // The SNpc subsystem (the cinematic-time fellow NPC chosen
         // during char-make) isn't wired yet — there are no
@@ -3179,6 +3248,9 @@ pub struct LuaQuestHandle {
 impl UserData for LuaQuestHandle {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("GetQuestId", |_, this, _: ()| Ok(this.quest_id));
+        // `quest:getQuestId()` lowercase alias — same MoonSharp
+        // case-insensitivity story as `getSequence` below. 4 sites.
+        methods.add_method("getQuestId", |_, this, _: ()| Ok(this.quest_id));
         methods.add_method("HasQuest", |_, this, _: ()| Ok(this.has_quest));
         methods.add_method("GetSequence", |_, this, _: ()| Ok(this.sequence));
         // Lowercase alias — MoonSharp (Meteor) is case-insensitive; scripts
@@ -3187,6 +3259,32 @@ impl UserData for LuaQuestHandle {
         // a direct lowercase alias rather than force every script to
         // normalise.
         methods.add_method("getSequence", |_, this, _: ()| Ok(this.sequence));
+        // `quest:GetPhase()` — fine-grained progress within the
+        // current sequence. C# `Quest.GetPhase` returns
+        // `currentPhase` from a dedicated DB column; garlemald
+        // doesn't carry a separate phase column yet, so we map
+        // `phase` onto `counters[0]` (which scripts that haven't
+        // adopted the convention can co-opt for objective progress
+        // — the 13 GetPhase call sites only test `== 0` / `== 1`).
+        // If a phase-vs-counter conflict surfaces in a real quest
+        // we'll add a dedicated column then.
+        methods.add_method("GetPhase", |_, this, _: ()| Ok(this.counters[0] as u32));
+        // `quest:SetTimeUpdate(bool)` — toggle the per-tick
+        // `onTimeUpdate(player, quest, timestamp)` hook. The
+        // game-tick driver isn't wired through to per-quest hooks
+        // yet (man200.lua is the only caller, used for a Past
+        // ifrit-fight timer); accept the call so the script
+        // doesn't error and log it for visibility. Real impl would
+        // flip a Quest.is_updating flag the ticker reads.
+        methods.add_method("SetTimeUpdate", |_, this, val: bool| {
+            tracing::debug!(
+                player = this.player_id,
+                quest = this.quest_id,
+                value = val,
+                "SetTimeUpdate captured (per-quest tick driver not wired yet)",
+            );
+            Ok(())
+        });
 
         // `quest:OnNotice(player)` — `AfterQuestWarpDirector` (and
         // any other director that resumes a quest mid-flow) calls this
@@ -3302,6 +3400,84 @@ impl UserData for LuaQuestHandle {
             );
             Ok(())
         });
+        // `quest:StartSequenceForNpcLs(seq)` — variant of StartSequence
+        // used after an NpcLs message chain completes (15 sites). C#:
+        //     currentSequence = sequence; questState.UpdateState();
+        // — which is functionally identical to `StartSequence(seq)`
+        // for our purposes (we don't have a separate questState
+        // refresher to fire). Routing both through the same command.
+        methods.add_method("StartSequenceForNpcLs", |_, this, sequence: u32| {
+            push(
+                &this.queue,
+                LuaCommand::QuestStartSequence {
+                    player_id: this.player_id,
+                    quest_id: this.quest_id,
+                    sequence,
+                },
+            );
+            Ok(())
+        });
+
+        // --- NpcLs message-chain helpers ------------------------------
+        // C# `Quest.NewNpcLsMsg / ReadNpcLsMsg / EndOfNpcLsMsgs`. The
+        // canonical flow is:
+        //   1. NewNpcLsMsg(from)   — player gets an "alert" glow on
+        //                            the npcLs icon (state=ALERT) +
+        //                            "A glow emanates from the
+        //                            <NpcLs> linkpearl." system msg.
+        //   2. (script body)       — emits the actual line via
+        //                            player:SendGameMessageLocalizedDisplayName().
+        //   3. ReadNpcLsMsg()      — increments per-quest msgStep and
+        //                            flips state back to ACTIVE so the
+        //                            player can re-click for the next
+        //                            line.
+        //   4. EndOfNpcLsMsgs()    — final msg shown; state→INACTIVE,
+        //                            per-quest scratchpad cleared.
+        //
+        // garlemald wires step 1 fully (state=ALERT + system message).
+        // Steps 3/4 don't have anywhere to write the per-quest "active
+        // npcLs id" yet (no Quest.npc_ls_from field on the schema), so
+        // they log + no-op. The visible difference: the alert glow
+        // doesn't auto-clear after reading. Acceptable until the
+        // per-quest scratchpad lands.
+        const NPCLS_ALERT: u8 = 3;
+        const MSG_GLOW_EMANATES: u32 = 25119;
+        methods.add_method("NewNpcLsMsg", |_, this, from: u32| {
+            push(
+                &this.queue,
+                LuaCommand::PlayerSetNpcLs {
+                    player_id: this.player_id,
+                    npc_ls_id: from,
+                    state: NPCLS_ALERT,
+                },
+            );
+            push(
+                &this.queue,
+                LuaCommand::SendMessage {
+                    actor_id: this.player_id,
+                    message_type: 0x20,
+                    sender: String::new(),
+                    text: format!("[sheet:{}:{}]", MSG_GLOW_EMANATES, from),
+                },
+            );
+            Ok(())
+        });
+        methods.add_method("ReadNpcLsMsg", |_, this, _: ()| {
+            tracing::debug!(
+                player = this.player_id,
+                quest = this.quest_id,
+                "ReadNpcLsMsg captured (per-quest msgStep + ACTIVE flip not yet wired)",
+            );
+            Ok(())
+        });
+        methods.add_method("EndOfNpcLsMsgs", |_, this, _: ()| {
+            tracing::debug!(
+                player = this.player_id,
+                quest = this.quest_id,
+                "EndOfNpcLsMsgs captured (per-quest npc_ls_from not tracked, can't auto-clear)",
+            );
+            Ok(())
+        });
 
         // --- GetData() → LuaQuestDataHandle -----------------------------
         methods.add_method("GetData", |lua, this, _: ()| {
@@ -3369,6 +3545,30 @@ impl UserData for LuaQuestHandle {
         });
         methods.add_method("GetENpc", |_, _this, _: u32| Ok(Value::Nil));
         methods.add_method("HasENpc", |_, _this, _: u32| Ok(false));
+
+        // --- Guildleve craft helpers (CraftCommand.lua) -------------------
+        // The leve-craft mini-game (CraftCommand.lua) chains these
+        // off `quest:` to read the player's current craft progress.
+        // Garlemald doesn't model leve-craft state yet (the recipe /
+        // objective tables aren't ported), so all helpers return
+        // safe defaults that let the script flow short-circuit:
+        // `hasMaterials() == false` makes CraftCommand bail with the
+        // "no materials" branch instead of attempting to advance the
+        // recipe state machine. 18 call sites, all in CraftCommand.lua.
+        methods.add_method("craftSuccess", |_, _this, _: ()| Ok(()));
+        methods.add_method("getCurrentCrafted", |_, _this, _: ()| Ok(0u32));
+        methods.add_method("getCurrentDifficulty", |_, _this, _: ()| Ok(0u32));
+        methods.add_method("getObjectiveQuantity", |_, _this, _: ()| Ok(0u32));
+        methods.add_method("getRemainingMaterials", |_, _this, _: ()| Ok(0u32));
+        methods.add_method("hasMaterials", |_, _this, _: ()| Ok(false));
+        // `quest:getRecipe()` — CraftCommand chains `.resultItemID`
+        // off the return; returning a stub table with a 0 field
+        // keeps the chain non-crashing.
+        methods.add_method("getRecipe", |lua, _this, _: ()| {
+            let t = lua.create_table()?;
+            t.set("resultItemID", 0u32)?;
+            Ok(t)
+        });
     }
 }
 

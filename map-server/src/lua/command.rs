@@ -371,6 +371,20 @@ pub enum LuaCommand {
         player_id: u32,
         inn_id: u8,
     },
+    /// `player:SetNpcLs(id, state)` / `player:AddNpcLs(id)` and the
+    /// quest-side `quest:NewNpcLsMsg(from)` all funnel here. State
+    /// values mirror C# `Player.NPCLS_*` constants:
+    /// 0 = GONE, 1 = INACTIVE, 2 = ACTIVE, 3 = ALERT. The handler
+    /// translates state → (isCalling, isExtra) bool pair per
+    /// `Player.SetNpcLs` semantics, then persists via the existing
+    /// `save_npc_ls` DB helper. The matching `playerWork.npcLinkshell{Calling,Extra}[N]`
+    /// SetActorProperty packets aren't emitted yet — those property
+    /// paths aren't in the registry.
+    PlayerSetNpcLs {
+        player_id: u32,
+        npc_ls_id: u32,
+        state: u8,
+    },
     /// `WorldManager:WarpToPosition(player, x, y, z, rot)` and
     /// `:DoPlayerMoveInZone(player, x, y, z, rot, spawn_type)` — both
     /// are same-zone teleports. Updates `c.base.position_*` and the
