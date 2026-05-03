@@ -2,6 +2,6 @@ require ("global")
 
 function onEventStarted(player, npc)
     --NOT TALKABLE
-	player:endEvent();
+	player:EndEvent();
 end
 

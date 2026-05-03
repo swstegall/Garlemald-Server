@@ -18,7 +18,7 @@ function onEventStarted(player, equipAbilityWidget, triggername, slot, commandid
         if (player.charaWork.parameterTemp.otherClassAbilityCount[0] >= player.charaWork.parameterTemp.otherClassAbilityCount[1]) then
             --"You cannot set any more actions."
             player:SendGameMessage(GetWorldMaster(), 30720, 0x20, 0, 0);	    
-            player:endEvent();
+            player:EndEvent();
             return;
         end
             
@@ -26,7 +26,7 @@ function onEventStarted(player, equipAbilityWidget, triggername, slot, commandid
         if (player.charaWork.battleSave.skillLevel[ability.job - 1] < ability.level) then
             --"You have not yet acquired that action."
             player:SendGameMessage(GetWorldMaster(), 30742, 0x20, 0, 0);
-            player:endEvent();
+            player:EndEvent();
             return;
         end
 
@@ -40,7 +40,7 @@ function onEventStarted(player, equipAbilityWidget, triggername, slot, commandid
             if (isEquipped == true) then
                 --"That action is already set to an action slot."
                 player:SendGameMessage(GetWorldMaster(), 30719, 0x20, 0);
-                player:endEvent();
+                player:EndEvent();
                 return;
             end
 
@@ -50,7 +50,7 @@ function onEventStarted(player, equipAbilityWidget, triggername, slot, commandid
             if(slot >= 30) then
                 --"You cannot set any more actions."
                 player:SendGameMessage(Server.GetWorldManager().GetActor(), 30720, 0x20, 0);
-                player:endEvent();
+                player:EndEvent();
                 return;
             end
         else
@@ -81,5 +81,5 @@ function onEventStarted(player, equipAbilityWidget, triggername, slot, commandid
         end
     end
 
-	player:endEvent();	
+	player:EndEvent();	
 end

@@ -62,5 +62,5 @@ function onEventStarted(player, npc)
 		callClientFunction(player, "delegateEvent", player, defaultFst, "defaultTalkWithKinnison_001", -1, -1);
 	end	
 	
-	player:endEvent();
+	player:EndEvent();
 end

@@ -12,5 +12,5 @@ function onEventStarted(player, npc)
 	player:SendGameMessage(GetStaticActor("Man0g1"), 353, 0x20);
 	player:SendGameMessage(GetStaticActor("Man0g1"), 354, 0x20);
 	GetWorldManager():DoZoneChange(player, 155, "PrivateAreaMasterPast", 2, 15, 67.034, 4, -1205.6497, -1.074);	
-	player:endEvent();
+	player:EndEvent();
 end

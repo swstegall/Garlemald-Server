@@ -3,6 +3,6 @@ require ("global")
 function onEventStarted(player, npc)
     defaultWil = GetStaticActor("DftWil");
 	callClientFunction(player, "delegateEvent", player, defaultWil, "defaultTalkWithWawaton_001", nil, nil, nil);
-	player:endEvent();
+	player:EndEvent();
 end
 

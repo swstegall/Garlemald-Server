@@ -8,5 +8,5 @@ function onEventStarted(player, npc)
 		GetWorldManager():DoZoneChange(player, 155, nil, 0, 15, 59.252, 4, -1219.342, 0.852);
 	end
 	
-	player:endEvent();
+	player:EndEvent();
 end

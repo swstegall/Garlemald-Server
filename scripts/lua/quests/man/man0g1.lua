@@ -127,7 +127,7 @@ function onStart(player, quest)
     -- Immediately move to the Adventurer's Guild private area
 	callClientFunction(player, "delegateEvent", player, quest, "processEvent100");
 	GetWorldManager():DoZoneChange(player, 155, "PrivateAreaMasterPast", 2, 15, 67.034, 4, -1205.6497, -1.074);	
-	player:endEvent();
+	player:EndEvent();
 end
 
 function onFinish(player, quest)

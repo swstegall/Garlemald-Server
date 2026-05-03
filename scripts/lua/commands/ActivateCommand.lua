@@ -15,6 +15,6 @@ function onEventStarted(player, command, triggerName)
     elseif (player.currentMainState == 0x0002) then
         player.Disengage(0x0000);
 	end		
-	player:endEvent();
+	player:EndEvent();
 	sendSignal("playerActive");
 end;

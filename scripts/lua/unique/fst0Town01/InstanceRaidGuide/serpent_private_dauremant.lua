@@ -6,5 +6,5 @@ end
 
 function onEventStarted(player, npc)    
 	callClientFunction(player, "askEnterInstanceRaid", 16);
-	player:endEvent();
+	player:EndEvent();
 end

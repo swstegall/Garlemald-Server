@@ -14,13 +14,13 @@ function onEventStarted(player, actor, triggerName, pushCommand, unk1, unk2, unk
 	
 	if (actor != nil) then
 		if (actor:GetActorClassId() == 1200052) then
-			player:kickEvent(actor, "commandJudgeMode", "commandJudgeMode");
+			player:KickEvent(actor, "commandJudgeMode", "commandJudgeMode");
 		else
 			printf("TEST");
-			player:kickEvent(actor, "pushCommand", "pushCommand");
+			player:KickEvent(actor, "pushCommand", "pushCommand");
 		end
 	else
-		player:endEvent();
+		player:EndEvent();
 	end
 	
 end

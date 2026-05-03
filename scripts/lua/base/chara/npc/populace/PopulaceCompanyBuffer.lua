@@ -38,6 +38,6 @@ function onEventStarted(player, npc, triggerName)
     end
    
     callClientFunction(player, "eventTalkStepBreak"); 
-    player:endEvent();
+    player:EndEvent();
 end
 

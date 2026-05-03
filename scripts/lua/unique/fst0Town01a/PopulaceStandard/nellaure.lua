@@ -47,5 +47,5 @@ function onEventStarted(player, npc)
 	end
 	
 	
-	player:endEvent();
+	player:EndEvent();
 end

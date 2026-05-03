@@ -129,7 +129,7 @@ function onEventStarted(player, command, triggerName)
 	--Are they in active mode?
 	if (player:GetState() != 2) then
 		player:SendGameMessage(GetWorldMaster(), 32503, 0x20);
-		player:endEvent();
+		player:EndEvent();
 		return;
 	end
 	
@@ -139,6 +139,6 @@ function onEventStarted(player, command, triggerName)
 		player:SendMessage(0x20, "", "That weaponskill is not implemented yet.");
 	end	
 	
-	player:endEvent();	
+	player:EndEvent();	
 	
 end

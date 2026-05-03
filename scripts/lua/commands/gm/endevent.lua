@@ -26,7 +26,7 @@ function onTrigger(player, argc, name, lastName)
         local message = "Sending endEvent()";
     
     if player then
-    	player:endEvent();
+    	player:EndEvent();
         player:SendMessage(messageID, sender, message);
         print(message);
     else

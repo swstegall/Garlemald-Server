@@ -40,6 +40,6 @@ function onEventStarted(player, command, triggerName, npcLsId)
 		player:SendMessage(0x20, "", "That Npc Linkshell is not implemented yet.");
 	end	
 	
-	player:endEvent();	
+	player:EndEvent();	
 	
 end

@@ -116,7 +116,7 @@ function onStateChange(player, quest, sequence)
         quest:SetENpc(TKEBBE, not data:GetFlag(FLAG_SEQ010_TKEBBE) and QFLAG_TALK or QFLAG_OFF);
         quest:SetENpc(LONSYGG);
         quest:SetENpc(BLOCKER1, QFLAG_OFF, false, true);
-        quest:setENpc(PUSH_ADV_GUILD, QFLAG_PUSH, false, true);
+        quest:SetENpc(PUSH_ADV_GUILD, QFLAG_PUSH, false, true);
     end
 end
 

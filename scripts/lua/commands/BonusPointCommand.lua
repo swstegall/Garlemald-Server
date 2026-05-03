@@ -19,5 +19,5 @@ function onEventStarted(player, actor, triggerName)
 	if (result == true) then
 	end
 	
-	player:endEvent();
+	player:EndEvent();
 end

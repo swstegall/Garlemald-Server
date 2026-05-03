@@ -14,5 +14,5 @@ function onEventStarted(player, npc)
 		GetWorldManager():DoZoneChange(player, 133, "PrivateAreaMasterPast", 2, 15, -459.619873, 40.0005722, 196.370377, 2.010813);
 	end
 	
-	player:endEvent();
+	player:EndEvent();
 end

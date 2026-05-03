@@ -46,7 +46,7 @@ function onEventStarted(player, npc)
 		callClientFunction(player, "delegateEvent", player, defaultFst, "defaultTalkWithKhumamoshroca_001", nil, nil, nil);
 	end
 
-	player:endEvent();
+	player:EndEvent();
 	
 end
 

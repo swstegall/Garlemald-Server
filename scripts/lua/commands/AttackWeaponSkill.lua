@@ -14,7 +14,7 @@ function onEventStarted(player, command, triggerName, arg1, arg2, arg3, arg4, ta
 	--Are they in active mode?
 	if (player:GetState() != 2) then
 		player:SendGameMessage(GetWorldMaster(), 32503, 0x20);
-		player:endEvent();
+		player:EndEvent();
 		return;
 	end
 	
@@ -22,5 +22,5 @@ function onEventStarted(player, command, triggerName, arg1, arg2, arg3, arg4, ta
         player.Engage(targetActor);
     end;
     player.WeaponSkill(command.actorId, targetActor);
-	player:endEvent();
+	player:EndEvent();
 end;

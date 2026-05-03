@@ -6,5 +6,5 @@ function onEventStarted(player, npc)
 	-- inline so the script parses under mlua 5.4 (same class of
 	-- tweak as the `!=`→`~=` fix applied to CraftCommand.lua).
 	callClientFunction(player, "delegateEvent", player, defaultSea, "defaultTalkWithAergwynt_001", nil, nil, nil);
-	player:endEvent();
+	player:EndEvent();
 end

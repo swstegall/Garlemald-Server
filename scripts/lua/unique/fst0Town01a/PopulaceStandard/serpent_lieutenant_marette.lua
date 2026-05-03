@@ -14,5 +14,5 @@ function onEventStarted(player, npc)
         callClientFunction(player, "delegateEvent", player, Spl, "processEventELNAURE", 1);
     end
     
-    player:endEvent();
+    player:EndEvent();
 end
