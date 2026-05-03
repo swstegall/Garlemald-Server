@@ -3836,6 +3836,17 @@ impl PacketProcessor {
             }
         };
         let zero_based = npc_ls_id - 1;
+
+        // C# `Player.AddNpcLs` first-add gate: if the player didn't
+        // own this NpcLs (both flags false OR the row didn't exist),
+        // fire the canonical "<NpcLs> linkpearl obtained." toast on
+        // the GONE → owned transition. We probe BEFORE the upsert so
+        // a re-add of an already-owned LS doesn't double-fire.
+        let was_owned: bool = match self.db.load_npc_ls_state(player_id, zero_based).await {
+            Ok(Some((c, e))) => c || e, // any flag true = owned
+            Ok(None) | Err(_) => false, // missing row OR error → treat as not-owned
+        };
+
         if let Err(e) = self
             .db
             .save_npc_ls(player_id, zero_based, is_calling, is_extra)
@@ -3858,6 +3869,33 @@ impl PacketProcessor {
             is_extra,
             "SetNpcLs persisted",
         );
+
+        // First-add toast — fire only when transitioning from "not
+        // owned" to "owned". State 0 (GONE) is not an "ownership"
+        // state itself, so we also gate on the new state being
+        // anything-but-GONE (otherwise SetNpcLs(id, GONE) on a
+        // never-owned LS would fire spuriously).
+        let now_owned = is_calling || is_extra;
+        if !was_owned && now_owned {
+            if let Some(handle) = self.registry.get(player_id).await {
+                if let Some(client) = self.world.client(handle.session_id).await {
+                    let pkt = crate::packets::send::misc::build_text_sheet_no_source_auto(
+                        handle.actor_id,
+                        crate::packets::send::misc::WORLD_MASTER_ACTOR_ID,
+                        /* text_id */ 25118,
+                        crate::packets::send::misc::MESSAGE_TYPE_SYSTEM,
+                        &[common::luaparam::LuaParam::UInt32(npc_ls_id)],
+                        /* prefer_alt */ false,
+                    );
+                    client.send_bytes(pkt.to_bytes()).await;
+                    tracing::debug!(
+                        player = player_id,
+                        npc_ls_id,
+                        "SetNpcLs first-add: 25118 'linkpearl obtained' toast fired",
+                    );
+                }
+            }
+        }
     }
 
     /// `player:EquipAbility(classId, commandId, hotbarSlot, _)` —

@@ -3029,6 +3029,39 @@ impl Database {
         Ok(id)
     }
 
+    /// Read the current `(isCalling, isExtra)` pair for a single
+    /// NpcLs row. Returns `None` if the row doesn't exist (player
+    /// has never owned this linkshell — the C# `AddNpcLs` first-add
+    /// gate). Returns `Some((false, false))` on the rare case where
+    /// the row exists but both flags are false (= NPCLS_GONE
+    /// state, set by `SetNpcLs(id, NPCLS_GONE)` — also a first-add
+    /// candidate per `Player.HasNpcLs` semantics).
+    pub async fn load_npc_ls_state(
+        &self,
+        chara_id: u32,
+        npc_ls_id_zero_based: u32,
+    ) -> Result<Option<(bool, bool)>> {
+        let row = self
+            .conn
+            .call_db(move |c| {
+                let mut stmt = c.prepare(
+                    r"SELECT isCalling, isExtra FROM characters_npclinkshell
+                      WHERE characterId = :cid AND npcLinkshellId = :lsid",
+                )?;
+                let row: rusqlite::Result<(i64, i64)> = stmt.query_row(
+                    named_params! { ":cid": chara_id, ":lsid": npc_ls_id_zero_based },
+                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+                );
+                match row {
+                    Ok((c, e)) => Ok(Some((c != 0, e != 0))),
+                    Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                    Err(e) => Err(e),
+                }
+            })
+            .await?;
+        Ok(row)
+    }
+
     pub async fn save_npc_ls(
         &self,
         chara_id: u32,
