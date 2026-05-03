@@ -581,6 +581,94 @@ impl UserData for LuaPlayer {
             };
             lua.create_userdata(zone)
         });
+
+        // --- Work-table dot-syntax (charaWork.* / playerWork.*) -----
+        // C# `Player` exposes `charaWork` and `playerWork` as plain
+        // C# class instances; MoonSharp auto-bridged dot access to
+        // their public fields. mlua doesn't have that bridge, so we
+        // build snapshot-backed Lua tables on each access. The
+        // surface scripts actually read is tiny (5 paths in total
+        // — verified by `grep "charaWork\." scripts/lua` /
+        // `playerWork\.`):
+        //
+        //   charaWork.commandBorder              — hotbar offset
+        //   charaWork.command[N]                 — equipped command at slot
+        //   charaWork.parameterSave.state_mainSkill[0]      — current class id
+        //   charaWork.parameterSave.state_mainSkillLevel[0] — current class level
+        //   charaWork.parameterTemp.otherClassAbilityCount[0/1] — current/cap
+        //   charaWork.battleSave.skillLevel[job-1]          — per-job skill level
+        //   playerWork.tribe                                — race tribe id
+        //
+        // This fixes the smoke-revealed `onLogin lua hook errored;
+        // attempt to index a nil value (field 'charaWork')` warning
+        // from `player.lua::initClassItems` (which only reads
+        // `state_mainSkill[0]` to pick starter gear).
+        const COMMAND_BORDER: u8 = 0x20;
+        const HOTBAR_SIZE: usize = 30;
+        // Default cross-class ability cap that lets ability equips
+        // proceed past EquipAbilityCommand.lua's gate; real value
+        // would derive from level + class progression.
+        const DEFAULT_OTHER_CLASS_ABILITY_CAP: u32 = 10;
+        // Default per-job skill level high enough to bypass the
+        // EquipAbilityCommand.lua "have you acquired this action
+        // yet?" check (`battleSave.skillLevel[ability.job-1] <
+        // ability.level`). Real value comes from BattleSave when
+        // that data is wired through to the snapshot.
+        const DEFAULT_PER_JOB_SKILL_LEVEL: u32 = 50;
+        fields.add_field_method_get("charaWork", |lua, this| {
+            let cw = lua.create_table()?;
+            cw.set("commandBorder", COMMAND_BORDER)?;
+
+            // command[0..commandBorder+30] — populate with zeros so
+            // `charaWork.command[slot + commandBorder - 1]` reads
+            // back 0 (empty slot) rather than nil. The hotbar
+            // snapshot threading is a separate follow-up.
+            let cmd = lua.create_table()?;
+            for i in 0..(COMMAND_BORDER as usize + HOTBAR_SIZE) {
+                cmd.set(i, 0u32)?;
+            }
+            cw.set("command", cmd)?;
+
+            // parameterSave.state_mainSkill[0] = current class
+            // parameterSave.state_mainSkillLevel[0] = current level
+            let param_save = lua.create_table()?;
+            let main_skill = lua.create_table()?;
+            main_skill.set(0u32, this.snapshot.current_class as u32)?;
+            param_save.set("state_mainSkill", main_skill)?;
+            let main_skill_level = lua.create_table()?;
+            main_skill_level.set(0u32, this.snapshot.current_level.max(1) as u32)?;
+            param_save.set("state_mainSkillLevel", main_skill_level)?;
+            cw.set("parameterSave", param_save)?;
+
+            // parameterTemp.otherClassAbilityCount[0] = current,
+            // [1] = cap. Default cap=10 so EquipAbilityCommand's
+            // gate doesn't reject equips during smoke testing.
+            let param_temp = lua.create_table()?;
+            let cca = lua.create_table()?;
+            cca.set(0u32, 0u32)?;
+            cca.set(1u32, DEFAULT_OTHER_CLASS_ABILITY_CAP)?;
+            param_temp.set("otherClassAbilityCount", cca)?;
+            cw.set("parameterTemp", param_temp)?;
+
+            // battleSave.skillLevel[job-1] for every job slot —
+            // populated to a default high value so action-acquired
+            // gates pass. Real per-job storage lands when BattleSave
+            // is mirrored on the snapshot.
+            let battle_save = lua.create_table()?;
+            let skill_level = lua.create_table()?;
+            for i in 0..50u32 {
+                skill_level.set(i, DEFAULT_PER_JOB_SKILL_LEVEL)?;
+            }
+            battle_save.set("skillLevel", skill_level)?;
+            cw.set("battleSave", battle_save)?;
+
+            Ok(cw)
+        });
+        fields.add_field_method_get("playerWork", |lua, this| {
+            let pw = lua.create_table()?;
+            pw.set("tribe", this.snapshot.tribe as u32)?;
+            Ok(pw)
+        });
     }
 
     #[allow(clippy::too_many_lines)]
@@ -2161,7 +2249,40 @@ impl UserData for LuaPlayer {
         methods.add_method("SetEventStatus", |_, _this, _status: Value| Ok(()));
 
         // --- Equipment / inventory ------------------------------------------
-        methods.add_method("GetEquipment", |_, _this, _: ()| Ok(Value::Nil));
+        // `player:GetEquipment():Set(slots, srcPositions, srcPackage)` —
+        // the script chain in `player.lua::initClassItems` does
+        // `player:GetEquipment():Set({0,10,12,14,15}, {0,1,2,3,4}, 0)`
+        // to bind freshly-added items to gear slots. Return a stub
+        // table whose `Set` is a no-op so the chain doesn't error;
+        // real equipment refresh would route through the existing
+        // SendAppearance path with `appearance_ids` mutated to
+        // reflect the new gear. Smoke-test surfaced this in commit
+        // `81f7218`'s wake — initClassItems ran past
+        // `state_mainSkill[0]` once charaWork was bound, then
+        // tripped on `nil:Set`.
+        methods.add_method("GetEquipment", |lua, this, _: ()| {
+            let t = lua.create_table()?;
+            let actor_id = this.snapshot.actor_id;
+            let set_fn = lua.create_function(
+                move |_, (_self, slots, src_positions, src_package): (
+                    mlua::Table,
+                    mlua::Table,
+                    mlua::Table,
+                    Option<u32>,
+                )| {
+                    tracing::debug!(
+                        actor = actor_id,
+                        slots = slots.len().unwrap_or(0),
+                        src_positions = src_positions.len().unwrap_or(0),
+                        src_package = src_package.unwrap_or(0),
+                        "Equipment:Set captured (gear-slot bind not wired — appearance refresh deferred)",
+                    );
+                    Ok(())
+                },
+            )?;
+            t.set("Set", set_fn)?;
+            Ok(t)
+        });
         methods.add_method("GetItem", |_, _this, _unique_id: u64| Ok(Value::Nil));
         methods.add_method("GetGearset", |_, _this, _class_id: u8| Ok(Value::Nil));
 
