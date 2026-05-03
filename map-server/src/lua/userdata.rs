@@ -125,6 +125,22 @@ impl UserData for LuaActor {
             Ok(())
         });
 
+        // `actor:SetMod(modifier_key, value)` — same B3 plumbing as
+        // `LuaPlayer:SetMod`. Lets scripts apply modifiers to any
+        // actor type (BNpc, NPC, populace) returned from
+        // `SpawnBattleNpcById` / `SpawnActor` / etc.
+        methods.add_method("SetMod", |_, this, (modifier_key, value): (i64, i64)| {
+            push(
+                &this.queue,
+                LuaCommand::SetActorMod {
+                    actor_id: this.actor_id,
+                    modifier_key: modifier_key as u32,
+                    value,
+                },
+            );
+            Ok(())
+        });
+
         // Field-style accessors (scripts do `actor.positionX = ...` too).
         methods.add_meta_method(mlua::MetaMethod::Index, |_, this, key: String| {
             let out: Value = match key.as_str() {
@@ -1600,16 +1616,20 @@ impl UserData for LuaPlayer {
         );
 
         // `player:SetMod(modifier_key, value)` — apply a numeric
-        // modifier (HP lock, speed, etc.). Real path is the
-        // `Modifier::*` registry in `battle/`; combat-tutorial scripts
-        // call it to set `MinimumHpLock`. Phase-A stub: log and no-op
-        // so the content script keeps running.
+        // modifier (HP lock, speed, etc.). B3: queues
+        // `LuaCommand::SetActorMod`, applied via `apply_set_actor_mod`
+        // in `runtime/quest_apply.rs`, which writes through to the
+        // character's `ModifierMap`. Combat math then reads the same
+        // map (e.g. `Character::set_hp` clamps to floor 1 when
+        // `MinimumHpLock >= 1`).
         methods.add_method("SetMod", |_, this, (modifier_key, value): (i64, i64)| {
-            tracing::debug!(
-                actor = format!("0x{:08X}", this.snapshot.actor_id),
-                modifier = modifier_key,
-                value,
-                "LuaPlayer::SetMod (Phase-A stub: routed to log only)",
+            push(
+                &this.queue,
+                LuaCommand::SetActorMod {
+                    actor_id: this.snapshot.actor_id,
+                    modifier_key: modifier_key as u32,
+                    value,
+                },
             );
             Ok(())
         });

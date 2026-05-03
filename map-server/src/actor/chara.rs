@@ -69,9 +69,22 @@ impl Character {
         self.chara.tpp()
     }
 
-    /// Set current HP, clamped to `[0, max_hp]`.
+    /// Set current HP, clamped to `[floor, max_hp]` where `floor` is
+    /// determined by the `Modifier::MinimumHpLock` modifier
+    /// (`MinimumHpLock = 1` → HP can't drop below 1; `0` → normal
+    /// floor of 0). Used by tutorial / scripted-event scripts to
+    /// prevent the player from dying mid-cutscene
+    /// (`SimpleContent30010.lua::onCreate` sets it for the man0g0
+    /// combat tutorial). Mirrors the floor logic the C# damage
+    /// pipeline applies in `Chara.SetHP` when reading the same
+    /// modifier id.
     pub fn set_hp(&mut self, hp: i32) {
-        self.chara.hp = hp.clamp(0, self.chara.max_hp as i32) as i16;
+        let floor = if self.chara.mods.get(Modifier::MinimumHpLock) >= 1.0 {
+            1
+        } else {
+            0
+        };
+        self.chara.hp = hp.clamp(floor, self.chara.max_hp as i32) as i16;
     }
 
     /// Set maximum HP; clamps current HP down to the new max.
@@ -1117,6 +1130,66 @@ mod recalc_tests {
             after_first, after_second,
             "non-emphasis primary should be idempotent across repeated baseline calls"
         );
+    }
+}
+
+#[cfg(test)]
+mod minimum_hp_lock_tests {
+    use super::*;
+    use crate::actor::Character;
+
+    /// Without `MinimumHpLock`, `set_hp` clamps to `[0, max_hp]` —
+    /// taking lethal damage zeros HP.
+    #[test]
+    fn set_hp_floor_is_zero_without_lock() {
+        let mut c = Character::new(1);
+        c.chara.max_hp = 100;
+        c.chara.hp = 100;
+        c.set_hp(-50);
+        assert_eq!(c.chara.hp, 0, "no lock → HP clamps to 0");
+    }
+
+    /// With `MinimumHpLock = 1`, the same lethal damage leaves HP at
+    /// 1. This is the combat-tutorial use case
+    /// (`SimpleContent30010.lua::onCreate`): the player can't die
+    /// to the wolves' first hit.
+    #[test]
+    fn set_hp_floor_is_one_with_lock() {
+        let mut c = Character::new(1);
+        c.chara.max_hp = 100;
+        c.chara.hp = 100;
+        c.chara.mods.set(Modifier::MinimumHpLock, 1.0);
+        c.set_hp(-50);
+        assert_eq!(c.chara.hp, 1, "lock=1 → HP floored at 1");
+    }
+
+    /// `add_hp` routes through `set_hp` so the lock applies to the
+    /// damage path too. This is the path runtime combat code hits
+    /// via `apply_hp_delta`.
+    #[test]
+    fn add_hp_respects_lock() {
+        let mut c = Character::new(1);
+        c.chara.max_hp = 100;
+        c.chara.hp = 100;
+        c.chara.mods.set(Modifier::MinimumHpLock, 1.0);
+        // A 9999-damage swing shouldn't kill the player when locked.
+        c.add_hp(-9999);
+        assert_eq!(c.chara.hp, 1);
+    }
+
+    /// Setting the lock back to 0 restores the normal floor — death
+    /// works again.
+    #[test]
+    fn lock_can_be_cleared() {
+        let mut c = Character::new(1);
+        c.chara.max_hp = 100;
+        c.chara.hp = 100;
+        c.chara.mods.set(Modifier::MinimumHpLock, 1.0);
+        c.set_hp(-50);
+        assert_eq!(c.chara.hp, 1);
+        c.chara.mods.set(Modifier::MinimumHpLock, 0.0);
+        c.set_hp(-50);
+        assert_eq!(c.chara.hp, 0, "cleared lock → death allowed again");
     }
 }
 

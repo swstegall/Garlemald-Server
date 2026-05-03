@@ -370,8 +370,49 @@ pub async fn apply_runtime_lua_command(
                 .await;
             true
         }
+        LC::SetActorMod {
+            actor_id,
+            modifier_key,
+            value,
+        } => {
+            apply_set_actor_mod(actor_id, modifier_key, value, registry).await;
+            true
+        }
         _ => false,
     }
+}
+
+/// B3 of the SEQ_005 unblock plan — port of C# `Chara::SetMod`.
+/// Writes `value` into the target actor's `ModifierMap` keyed by
+/// the numeric modifier id (the Rust `Modifier` enum's `as_u32`).
+/// Tolerant of unknown modifier keys: the map stores them keyed by
+/// the raw u32 even if no enum variant matches, so future scripts
+/// that touch new ids don't abort here.
+async fn apply_set_actor_mod(
+    actor_id: u32,
+    modifier_key: u32,
+    value: i64,
+    registry: &ActorRegistry,
+) {
+    let Some(handle) = registry.get(actor_id).await else {
+        tracing::debug!(
+            actor = format!("0x{actor_id:08X}"),
+            modifier_key,
+            value,
+            "SetActorMod skipped — actor not in registry",
+        );
+        return;
+    };
+    {
+        let mut c = handle.character.write().await;
+        c.chara.mods.set_raw(modifier_key, value as f64);
+    }
+    tracing::debug!(
+        actor = format!("0x{actor_id:08X}"),
+        modifier_key,
+        value,
+        "SetActorMod applied",
+    );
 }
 
 /// Runtime-side counterpart to the processor's
@@ -3495,5 +3536,40 @@ mod tests {
         // Assertion here is "no panic". The function walks out of the
         // `registry.get` branch without touching the LuaEngine.
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// B3: `apply_set_actor_mod` writes the value through to the
+    /// target character's `ModifierMap`. Tests both registered actors
+    /// (success) and unknown actors (quiet skip).
+    #[tokio::test]
+    async fn apply_set_actor_mod_writes_modifier_map() {
+        let registry = ActorRegistry::new();
+        let actor_id = 0x1234_5678u32;
+        let character = Character::new(actor_id);
+        registry
+            .insert(crate::runtime::actor_registry::ActorHandle::new(
+                actor_id,
+                ActorKindTag::Player,
+                /* zone */ 166,
+                /* session */ 0,
+                character,
+            ))
+            .await;
+
+        // MinimumHpLock = 114 → 1.0
+        apply_set_actor_mod(actor_id, 114, 1, &registry).await;
+
+        let handle = registry.get(actor_id).await.expect("registered");
+        let c = handle.character.read().await;
+        let lock = c.chara.mods.get_raw(114);
+        assert_eq!(lock, 1.0);
+    }
+
+    #[tokio::test]
+    async fn apply_set_actor_mod_unknown_actor_is_quiet() {
+        let registry = ActorRegistry::new();
+        // 0xDEADBEEF isn't registered — the call should log+return
+        // without panicking.
+        apply_set_actor_mod(0xDEAD_BEEF, 114, 1, &registry).await;
     }
 }

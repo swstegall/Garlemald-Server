@@ -75,6 +75,18 @@ pub enum LuaCommand {
         z: f32,
         rotation: f32,
     },
+    /// `actor:SetMod(modifier_key, value)` — port of C#
+    /// `Chara::SetMod` (`Map Server/Actors/Chara/Chara.cs`). Writes
+    /// `value` into the actor's `ModifierMap` keyed by `modifier_key`
+    /// (the numeric id from `Modifier`). Used by combat-tutorial /
+    /// scripted-event scripts to set durable per-actor flags like
+    /// `MinimumHpLock`, movement speed multipliers, etc. Combat math
+    /// reads the modifier map on every damage / move event.
+    SetActorMod {
+        actor_id: u32,
+        modifier_key: u32,
+        value: i64,
+    },
     /// `GetWorldManager().SpawnBattleNpcById(id, contentArea)` — port of
     /// C# `WorldManager.SpawnBattleNpcById` (Map Server/WorldManager.cs:514).
     /// Spawns a BattleNpc by joining the four `server_battlenpc_*` seed
