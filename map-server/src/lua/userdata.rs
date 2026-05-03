@@ -1026,25 +1026,33 @@ impl UserData for LuaPlayer {
             },
         );
         // `player:DoClassChange(classId)` / `:PrepareClassChange(classId)`
-        // — full class-change ceremony in C# loads a gear set,
-        // recalculates stats, re-binds hotbar commands, broadcasts
-        // class change packet, etc. Garlemald doesn't model
-        // gear-sets / per-class stat curves yet; logged stubs let
-        // the EquipCommand.lua flow proceed. Real impl is a
-        // larger Tier 4 item.
+        // — promoted from log-stubs to real apply paths. Per the
+        // principle (`feedback_meteor_decomp_authoritative_for_engine_bindings.md`)
+        // these aren't real engine bindings — they're project-meteor
+        // server-side conveniences. Documenting the deviation +
+        // doing the structural minimum: DoClassChange writes
+        // `chara.class` + reloads hotbar from DB for the new class
+        // + broadcasts 0x01A4. Status-effect removal +
+        // stat-recalc + SendCharaExpInfo deferred (the underlying
+        // mechanics aren't ported and aren't in meteor-decomp's
+        // surface either).
         methods.add_method("DoClassChange", |_, this, class_id: u8| {
-            tracing::debug!(
-                player = this.snapshot.actor_id,
-                class_id,
-                "DoClassChange captured (gear-set + stat-recalc + class packet not wired yet)",
+            push(
+                &this.queue,
+                LuaCommand::DoClassChange {
+                    player_id: this.snapshot.actor_id,
+                    class_id,
+                },
             );
             Ok(())
         });
         methods.add_method("PrepareClassChange", |_, this, class_id: u8| {
-            tracing::debug!(
-                player = this.snapshot.actor_id,
-                class_id,
-                "PrepareClassChange captured (SendCharaExpInfo not wired yet)",
+            push(
+                &this.queue,
+                LuaCommand::PrepareClassChange {
+                    player_id: this.snapshot.actor_id,
+                    class_id,
+                },
             );
             Ok(())
         });

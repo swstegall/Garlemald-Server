@@ -257,6 +257,34 @@ pub enum LuaCommand {
         player_id: u32,
         quest_id: u32,
     },
+    /// `player:DoClassChange(classId)` — swap the player's active
+    /// class. C# `Player.DoClassChange` (Map Server/Actors/Chara/
+    /// Player/Player.cs) is mostly stub comments
+    /// (`// load hotbars`, `// Calculate stats`, etc.) — the only
+    /// fully-implemented ceremony steps are
+    /// `LoseOnClassChange`-flagged status-effect removal + first-
+    /// time-class init. Garlemald's apply does the structural
+    /// minimum: write `chara.class = class_id`, reload hotbar from
+    /// DB for the new class, mirror to CharaState.
+    ///
+    /// Per `feedback_meteor_decomp_authoritative_for_engine_bindings.md`:
+    /// `DoClassChange` is NOT in meteor-decomp's authoritative
+    /// engine inventory — it's a project-meteor server-side
+    /// convenience garlemald inherited.
+    DoClassChange {
+        player_id: u32,
+        class_id: u8,
+    },
+    /// `player:PrepareClassChange(classId)` — C# precursor that
+    /// fires `SendCharaExpInfo()`. Garlemald has no
+    /// SendCharaExpInfo packet wired; the apply is currently a
+    /// logged stub that captures the request for future wire-up.
+    /// Same project-meteor-side-convenience designation as
+    /// DoClassChange.
+    PrepareClassChange {
+        player_id: u32,
+        class_id: u8,
+    },
     /// `player:SetSNpc(nickname, actorClassId, classType)` —
     /// writes the per-player Path Companion scratchpad. Mirrors C#
     /// `Player.SetSNpc(string nickname, uint actorClassId, byte classType)`

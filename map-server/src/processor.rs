@@ -1070,6 +1070,12 @@ impl PacketProcessor {
                 self.apply_set_snpc(player_id, nickname, actor_class_id, personality)
                     .await;
             }
+            LC::DoClassChange { player_id, class_id } => {
+                self.apply_do_class_change(player_id, class_id).await;
+            }
+            LC::PrepareClassChange { player_id, class_id } => {
+                self.apply_prepare_class_change(player_id, class_id).await;
+            }
             LC::QuestSetNpcLsFrom {
                 player_id,
                 quest_id,
@@ -4636,6 +4642,96 @@ impl PacketProcessor {
             skin,
             personality,
             "SetSNpc applied",
+        );
+    }
+
+    /// `player:DoClassChange(classId)` apply — minimum-viable port
+    /// of C# `Player.DoClassChange`. The C# method is mostly stub
+    /// comments (`// load hotbars`, `// Calculate stats`, etc.);
+    /// the only fully-implemented ceremony steps are status-effect
+    /// removal + first-time-class init. Garlemald does the
+    /// structural minimum:
+    ///   1. Update `chara.class` to the new class id (so the
+    ///      next snapshot read sees the new active class).
+    ///   2. Reload the hotbar from DB for the new class via
+    ///      `db.load_hotbar` + mirror to `chara.hotbar` so
+    ///      `FindFirstCommandSlotById` and the
+    ///      `charaWork.command[N]` accessor see the new class's
+    ///      equipped commands.
+    ///   3. Broadcast 0x01A4 SetCurrentJobPacket so neighbours'
+    ///      nameplates flip (mirrors apply_set_current_job).
+    ///
+    /// Status-effect removal (LoseOnClassChange flag) + stat
+    /// recalc + SendCharaExpInfo are deferred — neither is in
+    /// meteor-decomp's authoritative API surface and the
+    /// underlying mechanics aren't fully ported. Documented
+    /// deviation per
+    /// `feedback_meteor_decomp_authoritative_for_engine_bindings.md`.
+    async fn apply_do_class_change(&self, player_id: u32, class_id: u8) {
+        let Some(handle) = self.registry.get(player_id).await else {
+            tracing::debug!(player = player_id, class_id, "DoClassChange: actor missing");
+            return;
+        };
+        let actor_id = handle.actor_id;
+
+        // Reload hotbar BEFORE updating chara.class so a partial
+        // failure (DB load fails) leaves the player on their old
+        // class with intact hotbar.
+        let new_hotbar = match self.db.load_hotbar(player_id, class_id).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(
+                    player = player_id, class_id, err = %e,
+                    "DoClassChange: db.load_hotbar failed",
+                );
+                return;
+            }
+        };
+        {
+            let mut c = handle.character.write().await;
+            c.chara.class = class_id as i16;
+            c.chara.hotbar = new_hotbar;
+        }
+
+        // Broadcast 0x01A4 — same packet shape as SetCurrentJob;
+        // the client's per-actor class-id field is reused for
+        // both the "active class" and "active job" indicators.
+        let bytes = crate::packets::send::player::build_set_current_job(actor_id, class_id as u32)
+            .to_bytes();
+        crate::runtime::dispatcher::send_to_self_if_player(
+            &self.registry,
+            &self.world,
+            actor_id,
+            bytes.clone(),
+        )
+        .await;
+        crate::runtime::dispatcher::broadcast_to_neighbours(
+            &self.world,
+            &self.registry,
+            actor_id,
+            bytes,
+        )
+        .await;
+
+        tracing::info!(
+            player = player_id,
+            class_id,
+            "DoClassChange applied (chara.class + hotbar reload + 0x01A4 broadcast; status-effect removal + stat recalc deferred)",
+        );
+    }
+
+    /// `player:PrepareClassChange(classId)` apply — C# precursor
+    /// that calls `SendCharaExpInfo()`. Garlemald doesn't have
+    /// SendCharaExpInfo wired (no opcode builder, not a real
+    /// engine binding per meteor-decomp); log + no-op. The
+    /// EquipCommand.lua flow that calls Prepare→Do treats the
+    /// pair atomically anyway — Prepare being a no-op doesn't
+    /// break the script flow.
+    async fn apply_prepare_class_change(&self, player_id: u32, class_id: u8) {
+        tracing::debug!(
+            player = player_id,
+            class_id,
+            "PrepareClassChange captured (SendCharaExpInfo not wired — no opcode builder)",
         );
     }
 
