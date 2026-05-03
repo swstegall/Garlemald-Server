@@ -2263,6 +2263,8 @@ impl UserData for LuaPlayer {
         methods.add_method("GetEquipment", |lua, this, _: ()| {
             let t = lua.create_table()?;
             let actor_id = this.snapshot.actor_id;
+            // `:Set(slots, srcPositions, srcPackage)` — bulk-bind
+            // bag-slot items to gear slots (used by initClassItems).
             let set_fn = lua.create_function(
                 move |_, (_self, slots, src_positions, src_package): (
                     mlua::Table,
@@ -2281,13 +2283,84 @@ impl UserData for LuaPlayer {
                 },
             )?;
             t.set("Set", set_fn)?;
+            // `:ToggleDBWrite(bool)` — used by loadGearset (in
+            // EquipCommand.lua) to bracket a class-change re-equip
+            // pass without per-slot DB writes. No-op until real
+            // gear DB write batching lands.
+            let toggle_dbwrite_fn = lua.create_function(
+                move |_, (_self, enabled): (mlua::Table, bool)| {
+                    tracing::debug!(
+                        actor = actor_id,
+                        enabled,
+                        "Equipment:ToggleDBWrite captured (no-op — DB write batching not wired)",
+                    );
+                    Ok(())
+                },
+            )?;
+            t.set("ToggleDBWrite", toggle_dbwrite_fn)?;
+            // `:GetItemAtSlot(slot)` — used by loadGearset to read
+            // back the currently-equipped item per slot. Return nil
+            // so the script's `itemAtSlot == nil` branch takes —
+            // that means loadGearset's diff loop sees every slot as
+            // empty + only triggers `equipItem` (skip the
+            // unequip/swap branches). Real impl would return a
+            // userdata mirroring the equipped item's catalog id +
+            // unique id for the diff comparison.
+            let get_item_at_slot_fn = lua.create_function(
+                move |_, (_self, slot): (mlua::Table, u32)| -> mlua::Result<mlua::Value> {
+                    tracing::debug!(
+                        actor = actor_id,
+                        slot,
+                        "Equipment:GetItemAtSlot called (returns nil — gear snapshot not wired)",
+                    );
+                    Ok(mlua::Value::Nil)
+                },
+            )?;
+            t.set("GetItemAtSlot", get_item_at_slot_fn)?;
+            Ok(t)
+        });
+        // `player:GetOtherTrader()` — when in a trade, returns the
+        // other trader as a LuaPlayer-like userdata. C# `Player.
+        // GetOtherTrader`. TradeExecuteCommand.lua chains
+        // `:IsTrading()` / `:IsTradeAccepted()` directly off the
+        // result with no nil-check, so the prior `Ok(Value::Nil)`
+        // stub would crash if anyone initiated a trade. Replace
+        // with a stub-table whose IsTrading/IsTradeAccepted return
+        // false — that makes the trade gate take the "trader
+        // disconnected" branch + cleanly abort. Real impl needs
+        // the trade-partner field on Session + a registry lookup.
+        methods.add_method("GetOtherTrader", |lua, this, _: ()| {
+            let t = lua.create_table()?;
+            let actor_id = this.snapshot.actor_id;
+            let is_trading_fn = lua.create_function(
+                move |_, _self: mlua::Table| {
+                    tracing::debug!(
+                        actor = actor_id,
+                        "GetOtherTrader:IsTrading called (returns false — trade subsystem not wired)",
+                    );
+                    Ok(false)
+                },
+            )?;
+            t.set("IsTrading", is_trading_fn)?;
+            let is_trade_accepted_fn = lua.create_function(
+                move |_, _self: mlua::Table| {
+                    tracing::debug!(
+                        actor = actor_id,
+                        "GetOtherTrader:IsTradeAccepted called (returns false — trade subsystem not wired)",
+                    );
+                    Ok(false)
+                },
+            )?;
+            t.set("IsTradeAccepted", is_trade_accepted_fn)?;
             Ok(t)
         });
         methods.add_method("GetItem", |_, _this, _unique_id: u64| Ok(Value::Nil));
         methods.add_method("GetGearset", |_, _this, _class_id: u8| Ok(Value::Nil));
 
         // --- Trade ----------------------------------------------------------
-        methods.add_method("GetOtherTrader", |_, _this, _: ()| Ok(Value::Nil));
+        // (GetOtherTrader bound above as a stub-table — was previously
+        // `Ok(Value::Nil)` here; removed to avoid the duplicate
+        // registration that would shadow the new stub.)
         methods.add_method("GetTradeOfferings", |_, _this, _: ()| Ok(Value::Nil));
         methods.add_method("AddTradeItem", |_, _this, _: mlua::MultiValue| Ok(()));
         methods.add_method("RemoveTradeItem", |_, _this, _: mlua::MultiValue| Ok(()));
