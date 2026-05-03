@@ -1340,6 +1340,41 @@ impl PacketProcessor {
             } => {
                 self.apply_set_pool(actor_id, kind, value).await;
             }
+            LC::WarpToPosition {
+                actor_id,
+                x,
+                y,
+                z,
+                rotation,
+                spawn_type,
+            } => {
+                self.apply_warp_to_position(actor_id, x, y, z, rotation, spawn_type)
+                    .await;
+            }
+            LC::WarpToPublicArea { player_id, target } => {
+                tracing::warn!(
+                    player = player_id,
+                    ?target,
+                    "WarpToPublicArea: cross-zone warp not yet wired \
+                     (same limitation as DoZoneChange — the loading-screen \
+                     + zone-change packet flow needs to be plumbed through \
+                     before this can do anything visible)"
+                );
+            }
+            LC::WarpToPrivateArea {
+                player_id,
+                area_class,
+                area_index,
+                target,
+            } => {
+                tracing::warn!(
+                    player = player_id,
+                    %area_class,
+                    area_index,
+                    ?target,
+                    "WarpToPrivateArea: cross-zone warp not yet wired"
+                );
+            }
             LC::SpawnMyRetainer {
                 player_id,
                 bell_actor_id,
@@ -3515,6 +3550,76 @@ impl PacketProcessor {
             hp, hp_max, mp, mp_max, tp,
             "SetPool applied + broadcast"
         );
+    }
+
+    /// Same-zone teleport. Called by both `WorldManager:WarpToPosition`
+    /// and `WorldManager:DoPlayerMoveInZone` (the latter just supplies
+    /// its own spawn_type). Mirrors the same-zone branch of the GM
+    /// `!warp` command (`command_processor::handle_warp`):
+    ///
+    ///   1. Mutate `c.base.position_x/y/z/rotation` so subsequent
+    ///      packets read the new pose.
+    ///   2. Refresh `session.destination_x/y/z/rot/spawn_type` so any
+    ///      follow-up zone-in bundle starts from the warped location.
+    ///   3. Emit `SetActorPosition` to the owning client so the player
+    ///      visibly snaps to the target — `is_zoning_player=false`
+    ///      because we're not crossing the loading-screen boundary.
+    ///
+    /// Cross-zone warps need the full `DoZoneChange` flow (loading
+    /// screen + zone-change packets), which isn't wired yet — see
+    /// the `WarpToPublicArea` / `WarpToPrivateArea` arms above.
+    async fn apply_warp_to_position(
+        &self,
+        actor_id: u32,
+        x: f32,
+        y: f32,
+        z: f32,
+        rotation: f32,
+        spawn_type: u8,
+    ) {
+        let Some(handle) = self.registry.get(actor_id).await else {
+            tracing::debug!(actor = actor_id, "WarpToPosition: actor not in registry");
+            return;
+        };
+        let session_id = handle.session_id;
+        {
+            let mut c = handle.character.write().await;
+            c.base.position_x = x;
+            c.base.position_y = y;
+            c.base.position_z = z;
+            c.base.rotation = rotation;
+        }
+        if let Some(mut session) = self.world.session(session_id).await {
+            session.destination_x = x;
+            session.destination_y = y;
+            session.destination_z = z;
+            session.destination_rot = rotation;
+            session.destination_spawn_type = spawn_type;
+            self.world.upsert_session(session).await;
+        }
+        if let Some(client) = self.world.client(session_id).await {
+            let pkt = crate::packets::send::build_set_actor_position(
+                actor_id,
+                actor_id as i32,
+                x,
+                y,
+                z,
+                rotation,
+                spawn_type.into(),
+                false,
+            );
+            client.send_bytes(pkt.to_bytes()).await;
+            tracing::info!(
+                actor = actor_id,
+                x, y, z, rotation, spawn_type,
+                "WarpToPosition applied + SetActorPosition emitted"
+            );
+        } else {
+            tracing::debug!(
+                actor = actor_id,
+                "WarpToPosition: no client handle (offline) — pose updated but no packet sent"
+            );
+        }
     }
 
     async fn apply_add_seals(&self, player_id: u32, gc: u8, amount: i32) {

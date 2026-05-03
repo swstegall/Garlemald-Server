@@ -2313,8 +2313,9 @@ impl UserData for LuaWorldManager {
         // Trade / bazaar / inter-player coordination — most have
         // packet-level counterparts in `packets/recv/` that need
         // dispatching to the right handler.
+        // (DoPlayerMoveInZone is now properly bound below as a typed
+        // WarpToPosition dispatch — the same-zone teleport works.)
         for stub in [
-            "DoPlayerMoveInZone",
             "CreateInvitePartyGroup",
             "CreateTradeGroup",
             "AcceptTrade",
@@ -2361,29 +2362,146 @@ impl UserData for LuaWorldManager {
             });
         }
 
-        // Warp methods. `WarpToPublicArea` / `WarpToPrivateArea` /
-        // `WarpToPosition` are the most-called missing methods (24 +
-        // 16 + 7 call sites respectively). Quest scripts use them
-        // heavily — log-only stubs are safe but quest progression
-        // through warp transitions will silently fail until concrete
-        // handlers route them through `apply_do_zone_change` /
-        // `apply_do_player_move_in_zone`.
-        for stub in [
-            "WarpToPublicArea",
-            "WarpToPrivateArea",
+        // Warp methods. `WarpToPosition` is fully wired (same-zone
+        // teleport — emits a SetActorPosition packet so the client
+        // visibly moves). `WarpToPublicArea` / `WarpToPrivateArea`
+        // are typed-payload stubs flagging the cross-zone limitation
+        // — the cross-zone loading-screen + zone-change flow isn't
+        // wired yet, so these emit a logged warning and skip. Same
+        // limitation as `WorldManager:DoZoneChange` (which also has
+        // no dispatcher arm — pushed but never matched).
+
+        // `WorldManager:WarpToPosition(player, x, y, z, rot)` —
+        // same-zone teleport. Routes through the same SetActorPosition
+        // packet path the GM `!warp` command uses for same-zone
+        // warps. 7 call sites in quest scripts (man200, man206,
+        // man1l0).
+        methods.add_method(
             "WarpToPosition",
-        ] {
-            let name: &'static str = stub;
-            methods.add_method(name, move |_, this, _: mlua::MultiValue| {
+            |_,
+             this,
+             (player, x, y, z, rotation): (
+                mlua::AnyUserData,
+                f32,
+                f32,
+                f32,
+                f32,
+            )| {
+                let p = player.borrow::<LuaPlayer>()?;
                 push(
                     &this.queue,
-                    LuaCommand::LogError(format!(
-                        "WorldManager:{name} (stub — quest warp will silently fail)"
-                    )),
+                    LuaCommand::WarpToPosition {
+                        actor_id: p.snapshot.actor_id,
+                        x,
+                        y,
+                        z,
+                        rotation,
+                        spawn_type: 2, // Meteor "warp by GM" code
+                    },
                 );
                 Ok(())
-            });
-        }
+            },
+        );
+
+        // `WorldManager:DoPlayerMoveInZone(player, x, y, z, rot,
+        // spawn_type)` — same as WarpToPosition but with a
+        // script-supplied spawn_type (man0u0.lua uses 0x11 for
+        // "move during quest"). 3 call sites.
+        methods.add_method(
+            "DoPlayerMoveInZone",
+            |_,
+             this,
+             (player, x, y, z, rotation, spawn_type): (
+                mlua::AnyUserData,
+                f32,
+                f32,
+                f32,
+                f32,
+                Option<u8>,
+            )| {
+                let p = player.borrow::<LuaPlayer>()?;
+                push(
+                    &this.queue,
+                    LuaCommand::WarpToPosition {
+                        actor_id: p.snapshot.actor_id,
+                        x,
+                        y,
+                        z,
+                        rotation,
+                        spawn_type: spawn_type.unwrap_or(0x11),
+                    },
+                );
+                Ok(())
+            },
+        );
+
+        // `WorldManager:WarpToPublicArea(player[, x, y, z, rot])`.
+        // Bare form = "warp to current zone's public-area version
+        // at default position"; full form = specific destination.
+        // 16 call sites — all in quest scripts (man0l1, man1l0,
+        // man0g1). Cross-zone flow not wired; logs + skips.
+        methods.add_method(
+            "WarpToPublicArea",
+            |_,
+             this,
+             (player, x, y, z, rotation): (
+                mlua::AnyUserData,
+                Option<f32>,
+                Option<f32>,
+                Option<f32>,
+                Option<f32>,
+            )| {
+                let p = player.borrow::<LuaPlayer>()?;
+                let target = match (x, y, z, rotation) {
+                    (Some(x), Some(y), Some(z), Some(r)) => Some((x, y, z, r)),
+                    _ => None,
+                };
+                push(
+                    &this.queue,
+                    LuaCommand::WarpToPublicArea {
+                        player_id: p.snapshot.actor_id,
+                        target,
+                    },
+                );
+                Ok(())
+            },
+        );
+
+        // `WorldManager:WarpToPrivateArea(player, area_class,
+        // area_index[, x, y, z, rot])`. Used heavily by past-event
+        // quest scripts (24 call sites — `man0l1`, `man1g0`, `man2l0`,
+        // etc.) to instance the player into a `PrivateAreaMasterPast`
+        // replica. Cross-zone flow not wired; logs + skips.
+        methods.add_method(
+            "WarpToPrivateArea",
+            |_,
+             this,
+             (player, area_class, area_index, x, y, z, rotation): (
+                mlua::AnyUserData,
+                String,
+                u32,
+                Option<f32>,
+                Option<f32>,
+                Option<f32>,
+                Option<f32>,
+            )| {
+                let p = player.borrow::<LuaPlayer>()?;
+                let target = match (x, y, z, rotation) {
+                    (Some(x), Some(y), Some(z), Some(r)) => Some((x, y, z, r)),
+                    _ => None,
+                };
+                push(
+                    &this.queue,
+                    LuaCommand::WarpToPrivateArea {
+                        player_id: p.snapshot.actor_id,
+                        area_class,
+                        area_index,
+                        target,
+                    },
+                );
+                Ok(())
+            },
+        );
 
         // Lookup-style methods that scripts use to resolve a target
         // (actor by name, status effect, battle command). Returning

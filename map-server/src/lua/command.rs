@@ -349,6 +349,50 @@ pub enum LuaCommand {
         player_id: u32,
         homepoint: u32,
     },
+    /// `WorldManager:WarpToPosition(player, x, y, z, rot)` and
+    /// `:DoPlayerMoveInZone(player, x, y, z, rot, spawn_type)` — both
+    /// are same-zone teleports. Updates `c.base.position_*` and the
+    /// session's destination-pos, then emits a `SetActorPosition`
+    /// packet so the client sees the player snap to the new
+    /// location. Cross-zone warps go through `WarpToPublicArea` /
+    /// `WarpToPrivateArea` instead (those have a separate variant
+    /// because their dispatcher needs the loading-screen flow that
+    /// isn't wired yet).
+    WarpToPosition {
+        actor_id: u32,
+        x: f32,
+        y: f32,
+        z: f32,
+        rotation: f32,
+        /// Spawn-code used in the SetActorPosition packet. Default
+        /// = 2 (Meteor's "warp by GM" code, matches the GM `!warp`
+        /// command's same-zone path). DoPlayerMoveInZone callers
+        /// pass their own value (man0u0.lua uses 0x11 for "move
+        /// during quest").
+        spawn_type: u8,
+    },
+    /// `WorldManager:WarpToPublicArea(player[, x, y, z, rot])` —
+    /// quest scripts use this to send the player back to the
+    /// public-area version of their current zone (or to a specific
+    /// position in the destination). Cross-zone warps need the full
+    /// loading-screen + zone-change flow, which isn't wired yet —
+    /// the dispatcher logs the request and skips. 16 call sites in
+    /// the corpus all of which silently fail until the cross-zone
+    /// flow lands.
+    WarpToPublicArea {
+        player_id: u32,
+        target: Option<(f32, f32, f32, f32)>, // (x, y, z, rotation)
+    },
+    /// `WorldManager:WarpToPrivateArea(player, area_class, area_index
+    /// [, x, y, z, rot])` — quest scripts use this to instance the
+    /// player into a private-area replica. Same cross-zone limitation
+    /// as WarpToPublicArea. 24 call sites.
+    WarpToPrivateArea {
+        player_id: u32,
+        area_class: String,
+        area_index: u32,
+        target: Option<(f32, f32, f32, f32)>,
+    },
     /// `player:SetHP(hp)` / `SetMaxHP(hp_max)` / `SetMP(mp)` /
     /// `SetMaxMP(mp_max)` / `SetTP(tp)` — direct pool setters used by
     /// the GM `setmaxhp` / `setmaxmp` commands and (eventually) by
