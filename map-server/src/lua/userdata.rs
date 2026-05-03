@@ -909,6 +909,173 @@ impl UserData for LuaPlayer {
             Ok(())
         });
 
+        // --- Final grab-bag of one-off callsites --------------------
+        // The remaining LuaPlayer gaps are mostly GM-debug commands
+        // or legacy hooks with 1-5 sites apiece. Each closes a TRUE
+        // gap surfaced by the coverage tool; visible behavior would
+        // require subsystem ports that are scoped out of this batch.
+        //
+        // `player:SavePlayTime()` — real impl. 2 sites
+        // (player.lua::onLogin first-login marker + battlenpc.lua).
+        methods.add_method("SavePlayTime", |_, this, _: ()| {
+            push(
+                &this.queue,
+                LuaCommand::SavePlayTime {
+                    player_id: this.snapshot.actor_id,
+                },
+            );
+            Ok(())
+        });
+        // `player:DoBattleAction(actorClassId, actionId, [actionList])`
+        // — GM-debug execute-an-ability dispatcher. 2 sites in
+        // `gm/giveexp.lua` + `gm/ba.lua`. Real impl needs the
+        // BattleAction packet path (BattleEvent dispatch); logged
+        // stub keeps the GM commands non-fatal.
+        methods.add_method(
+            "DoBattleAction",
+            |_, this, args: mlua::MultiValue| {
+                tracing::debug!(
+                    player = this.snapshot.actor_id,
+                    arg_count = args.len(),
+                    "DoBattleAction captured (BattleEvent dispatch path not wired)",
+                );
+                Ok(())
+            },
+        );
+        // `player:GetActorInInstance(actorId)` — find an actor in
+        // the player's current zone/instance by actor id. 2 sites
+        // (CheckCommand.lua, PlaceDrivenCommand.lua). Both
+        // null-check the return; returning nil is safe. Real
+        // impl needs an async registry lookup → LuaActor build,
+        // which doesn't fit a sync getter.
+        methods.add_method("GetActorInInstance", |_, _this, _actor_id: u32| {
+            Ok(Value::Nil)
+        });
+        // `player:ResetMusic()` — clear scripted zone music
+        // override + revert to default. 1 site (CraftCommand.lua
+        // after a craft round). Real impl emits OP_SET_MUSIC.
+        methods.add_method("ResetMusic", |_, this, _: ()| {
+            tracing::debug!(
+                player = this.snapshot.actor_id,
+                "ResetMusic captured (OP_SET_MUSIC builder not wired)",
+            );
+            Ok(())
+        });
+        // `player:SendPacket(path)` — GM-debug send a raw packet
+        // file from disk to the client. 1 site (gm/sendpacket.lua).
+        // Real impl reads the file + emits its contents as a
+        // SubPacket; not wired since it's strictly a debug aid.
+        methods.add_method("SendPacket", |_, this, path: String| {
+            tracing::debug!(
+                player = this.snapshot.actor_id,
+                %path,
+                "SendPacket captured (raw-file packet emit not wired)",
+            );
+            Ok(())
+        });
+        // `player:SetProc(procId, value)` — set a "proc"
+        // (block/evade chance flag). 5 sites: gm/setproc.lua +
+        // effects/{block,evade,counter}_proc.lua. Real impl
+        // writes to ModifierMap proc bits; logged stub for
+        // now (effects scripts already tolerate no-op modifiers).
+        methods.add_method(
+            "SetProc",
+            |_, this, (proc_id, value): (u32, mlua::Value)| {
+                tracing::debug!(
+                    player = this.snapshot.actor_id,
+                    proc_id,
+                    value = ?value,
+                    "SetProc captured (ModifierMap proc bits not wired)",
+                );
+                Ok(())
+            },
+        );
+        // `player:SetSNpc(name, actorClassId, personality)` — set
+        // the player's "fellow NPC" (cinematic-time companion). 2
+        // sites in man200.lua. SNpc subsystem isn't wired (the
+        // GetSNpc* getters return 0 stubs); SetSNpc is the matching
+        // setter stub.
+        methods.add_method(
+            "SetSNpc",
+            |_,
+             this,
+             (name, actor_class_id, personality): (String, u32, u32)| {
+                tracing::debug!(
+                    player = this.snapshot.actor_id,
+                    %name,
+                    actor_class_id,
+                    personality,
+                    "SetSNpc captured (SNpc subsystem not wired)",
+                );
+                Ok(())
+            },
+        );
+        // `player:SetWorkValue(player, workName, uiFunc, value)`
+        // — set a value on a remote work table (work tables are
+        // the per-player property store that backs
+        // `playerWork.*` / `charaWork.*`). 5 sites:
+        // PartyTargetCommand.lua + gm/workvalue.lua. Real impl
+        // dispatches a SetActorProperty packet keyed by the
+        // path; defer until property-path registry covers all
+        // the workName values used here.
+        methods.add_method(
+            "SetWorkValue",
+            |_, this, args: mlua::MultiValue| {
+                tracing::debug!(
+                    player = this.snapshot.actor_id,
+                    arg_count = args.len(),
+                    "SetWorkValue captured (SetActorProperty fan-out for arbitrary paths not wired)",
+                );
+                Ok(())
+            },
+        );
+        // `player:examinePlayer(targetActor)` — open the examine
+        // (gear-inspection) UI on `targetActor`. 1 site
+        // (CheckCommand.lua). Real impl emits the
+        // ExamineActorPacket; logged stub for now.
+        methods.add_method(
+            "examinePlayer",
+            |_, this, _target: mlua::AnyUserData| {
+                tracing::debug!(
+                    player = this.snapshot.actor_id,
+                    "examinePlayer captured (ExamineActorPacket not wired)",
+                );
+                Ok(())
+            },
+        );
+
+        // --- Guildleve trio ---------------------------------------
+        // GM-side leve management (gm/addguildleve.lua,
+        // gm/removeguildleve.lua) + CraftCommand.lua's quest
+        // lookup. The full leve subsystem (LeveDirector,
+        // characters_guildleve table, leve completion state
+        // machine) isn't ported yet; logged stubs let the
+        // commands not crash. 3 sites total.
+        methods.add_method("AddGuildleve", |_, this, gl_id: u32| {
+            tracing::debug!(
+                player = this.snapshot.actor_id,
+                gl_id,
+                "AddGuildleve captured (leve subsystem not wired)",
+            );
+            Ok(())
+        });
+        methods.add_method("RemoveGuildleve", |_, this, gl_id: u32| {
+            tracing::debug!(
+                player = this.snapshot.actor_id,
+                gl_id,
+                "RemoveGuildleve captured (leve subsystem not wired)",
+            );
+            Ok(())
+        });
+        methods.add_method("getQuestGuildleve", |_, this, quest_id: u32| {
+            tracing::debug!(
+                player = this.snapshot.actor_id,
+                quest_id,
+                "getQuestGuildleve captured (returns nil — leve subsystem not wired)",
+            );
+            Ok(Value::Nil)
+        });
+
         // --- NPC Linkshell membership / state ------------------------
         // C# `Player.AddNpcLs` / `Player.SetNpcLs` / `Player.HasNpcLs`.
         // Both `AddNpcLs(id)` (single arg, defaults to NPCLS_INACTIVE)
@@ -1755,6 +1922,11 @@ impl UserData for LuaPlayer {
         };
         methods.add_method("GetItemPackage", get_item_package_handler);
         methods.add_method("getItemPackage", get_item_package_handler);
+        // `player:getInventory(location)` — third alias for the
+        // same GetItemPackage handler. Single Lua call site
+        // (`gm/givecurrency.lua`) chains `:AddItem(...)` off the
+        // return, identical to the GetItemPackage shape.
+        methods.add_method("getInventory", get_item_package_handler);
         methods.add_method("GetQuest", |lua, this, id: u32| {
             // Scripts chain `GetQuest(id):SetQuestFlag(...)` /
             // `:GetData():IncCounter(...)` etc. If the player doesn't have

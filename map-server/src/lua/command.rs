@@ -371,6 +371,11 @@ pub enum LuaCommand {
         player_id: u32,
         inn_id: u8,
     },
+    /// `player:SavePlayTime()` — accumulate elapsed seconds on the
+    /// in-memory `play_time` field (via `Player.get_play_time(true)`)
+    /// and persist via `db.save_player_play_time`. Called by
+    /// `player.lua::onLogin` for first-login tracking + `battlenpc.lua`.
+    SavePlayTime { player_id: u32 },
     /// `player:SendAppearance()` / `actor:SendAppearance()` — re-broadcast
     /// the actor's full appearance (model_id + 28-slot appearance ids)
     /// via 0x00D6 SetActorAppearancePacket. Called by `EquipCommand.lua`

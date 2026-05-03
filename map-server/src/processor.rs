@@ -1393,6 +1393,9 @@ impl PacketProcessor {
             LC::SendAppearance { actor_id } => {
                 self.apply_send_appearance(actor_id).await;
             }
+            LC::SavePlayTime { player_id } => {
+                self.apply_save_play_time(player_id).await;
+            }
             LC::SetPool {
                 actor_id,
                 kind,
@@ -3997,6 +4000,43 @@ impl PacketProcessor {
             command_id,
             slot,
             "EquipAbilityInFirstOpenSlot persisted",
+        );
+    }
+
+    /// `player:SavePlayTime()` — persist the player's play_time so
+    /// the `player.lua::onLogin` first-login marker
+    /// (`GetPlayTime(false) == 0` → "new player") flips after the
+    /// first run. The accumulating last-play-time-update +
+    /// elapsed-seconds math lives on the `Player` wrapper
+    /// (`actor::player::Player::get_play_time(true)`); the
+    /// registry only carries `Character` so we can't reach
+    /// `player.play_time` directly from here. Round-trip through
+    /// the DB: load current value, bump by 1 second (so the
+    /// new-player check fails), persist. Real elapsed-time
+    /// accumulation lands when we plumb `PlayerState` access
+    /// through the registry.
+    async fn apply_save_play_time(&self, player_id: u32) {
+        let current = match self.db.load_player_character(player_id).await {
+            Ok(Some(p)) => p.play_time,
+            _ => 0,
+        };
+        let new_value = current.saturating_add(1).max(1);
+        if let Err(e) = self
+            .db
+            .save_player_play_time(player_id, new_value)
+            .await
+        {
+            tracing::warn!(
+                player = player_id, play_time = new_value,
+                err = %e,
+                "SavePlayTime: DB persist failed",
+            );
+            return;
+        }
+        tracing::debug!(
+            player = player_id,
+            play_time = new_value,
+            "SavePlayTime persisted (registry-side accumulation deferred)",
         );
     }
 
