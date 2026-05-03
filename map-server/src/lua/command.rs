@@ -257,6 +257,25 @@ pub enum LuaCommand {
         player_id: u32,
         quest_id: u32,
     },
+    /// `player:SetSNpc(nickname, actorClassId, classType)` —
+    /// writes the per-player Path Companion scratchpad. Mirrors C#
+    /// `Player.SetSNpc(string nickname, uint actorClassId, byte classType)`
+    /// (Map Server/Actors/Chara/Player/Player.cs):
+    ///   - SNpcNickname = nickname
+    ///   - SNpcSkin = (byte)(actorClassId - 1070000)
+    ///   - SNpcPersonality = derived via switch on (classType,
+    ///     SNpcSkin % 16); we simplify to `personality = classType`
+    ///     because the per-skin-race derivation is cinematic-detail
+    ///     that doesn't surface server-side. Matches the script
+    ///     call shapes in man200.lua. SNpcCoordinate is left at
+    ///     its current value (SetSNpc doesn't write it; it's set
+    ///     elsewhere when known).
+    SetSNpc {
+        player_id: u32,
+        nickname: String,
+        actor_class_id: u32,
+        personality: u8,
+    },
     /// `quest:GetData():SetNpcLsFrom(from)` / `Quest::NewNpcLsMsg`
     /// internals. Writes the per-quest "active NPC linkshell driving
     /// this message chain" id into `Quest.data.npc_ls_from`. Persists

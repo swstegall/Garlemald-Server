@@ -458,6 +458,13 @@ pub struct LoadedPlayer {
     pub homepoint: u32,
     pub homepoint_inn: u8,
 
+    /// Migration-051 SNpc / Path Companion scratchpad. See the
+    /// per-field doc on `actor::CharaState::snpc_*`.
+    pub snpc_nickname: String,
+    pub snpc_skin: u8,
+    pub snpc_personality: u8,
+    pub snpc_coordinate: i16,
+
     pub class_levels: CharaBattleSave,
     pub parameter_save: CharaParameterSave,
     pub appearance: AppearanceFull,

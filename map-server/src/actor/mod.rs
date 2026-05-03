@@ -244,6 +244,21 @@ pub struct CharaState {
     /// snapshot build time, so `FindFirstCommandSlotById` and the
     /// `charaWork.command[N]` accessor see the live equipped state.
     pub hotbar: Vec<crate::gamedata::HotbarEntry>,
+    /// "Standard NPC" / Path Companion scratchpad — set by C#
+    /// `Player.SetSNpc(nickname, actorClassId, classType)` in the
+    /// man200 MSQ branch. Persisted to migration-051 columns
+    /// (snpc_nickname / snpc_skin / snpc_personality /
+    /// snpc_coordinate). Read by the project-meteor-inherited
+    /// `GetSNpc{Nickname,Skin,Personality,Coordinate}` Lua bindings;
+    /// see `feedback_meteor_decomp_authoritative_for_engine_bindings.md`
+    /// — these aren't real engine bindings (engine has only
+    /// `getCutSceneReplaySnpc*` on a different code path), but
+    /// project-meteor invented them as server-side conveniences and
+    /// garlemald inherited them.
+    pub snpc_nickname: String,
+    pub snpc_skin: u8,
+    pub snpc_personality: u8,
+    pub snpc_coordinate: i16,
     /// Set when `player.lua:onBeginLogin` invokes `player:SetLoginDirector(...)`.
     /// Non-zero → the ScriptBind LuaParam layout switches to the
     /// "tutorial with init director" variant C# `Player.CreateScriptBindPacket`
@@ -314,6 +329,10 @@ impl Default for CharaState {
             homepoint: 0,
             homepoint_inn: 0,
             hotbar: Vec::new(),
+            snpc_nickname: String::new(),
+            snpc_skin: 0,
+            snpc_personality: 0,
+            snpc_coordinate: 0,
             login_director_actor_id: 0,
             animation_id: 0,
             current_target: 0,

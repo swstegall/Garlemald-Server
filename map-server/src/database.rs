@@ -1671,7 +1671,8 @@ impl Database {
                                  birthDay, birthMonth, initialTown, tribe, restBonus,
                                  achievementPoints, playTime, destinationZoneId,
                                  destinationSpawnType, currentPrivateArea,
-                                 currentPrivateAreaType, homepoint, homepointInn
+                                 currentPrivateAreaType, homepoint, homepointInn,
+                                 snpc_nickname, snpc_skin, snpc_personality, snpc_coordinate
                           FROM characters WHERE id = :cid",
                         named_params! { ":cid": chara_id },
                         |r| {
@@ -1702,6 +1703,10 @@ impl Database {
                                 current_private_area_type: r.get::<_, u32>(23).unwrap_or_default(),
                                 homepoint: r.get::<_, u32>(24).unwrap_or_default(),
                                 homepoint_inn: r.get::<_, u8>(25).unwrap_or_default(),
+                                snpc_nickname: r.get::<_, String>(26).unwrap_or_default(),
+                                snpc_skin: r.get::<_, u8>(27).unwrap_or_default(),
+                                snpc_personality: r.get::<_, u8>(28).unwrap_or_default(),
+                                snpc_coordinate: r.get::<_, i16>(29).unwrap_or_default(),
                                 ..Default::default()
                             })
                         },
@@ -3027,6 +3032,43 @@ impl Database {
             })
             .await?;
         Ok(id)
+    }
+
+    /// Persist the migration-051 SNpc / Path Companion scratchpad
+    /// (`snpc_nickname`, `snpc_skin`, `snpc_personality`,
+    /// `snpc_coordinate`) for a player. Called from
+    /// `apply_set_snpc` in the `LuaCommand::SetSNpc` apply path —
+    /// mirrors C# `Player.SetSNpc` which writes nickname + the
+    /// derived skin/personality fields.
+    pub async fn save_snpc(
+        &self,
+        chara_id: u32,
+        nickname: String,
+        skin: u8,
+        personality: u8,
+        coordinate: i16,
+    ) -> Result<()> {
+        self.conn
+            .call_db(move |c| {
+                c.execute(
+                    r"UPDATE characters
+                      SET snpc_nickname = :n,
+                          snpc_skin = :s,
+                          snpc_personality = :p,
+                          snpc_coordinate = :c
+                      WHERE id = :cid",
+                    named_params! {
+                        ":cid": chara_id,
+                        ":n": nickname,
+                        ":s": skin,
+                        ":p": personality,
+                        ":c": coordinate,
+                    },
+                )?;
+                Ok(())
+            })
+            .await?;
+        Ok(())
     }
 
     /// Read the current `(isCalling, isExtra)` pair for a single

@@ -326,6 +326,15 @@ pub struct PlayerSnapshot {
     /// per C# default). Constant per-player today; here as a field
     /// so future per-player overrides can flow through one path.
     pub command_border: u8,
+    /// SNpc / Path Companion scratchpad mirror (migration 051). Read
+    /// by `GetSNpc{Nickname,Skin,Personality,Coordinate}` Lua
+    /// bindings. See `feedback_meteor_decomp_authoritative_for_engine_bindings.md`
+    /// — these aren't real engine bindings but garlemald inherits
+    /// them from project-meteor.
+    pub snpc_nickname: String,
+    pub snpc_skin: u8,
+    pub snpc_personality: u8,
+    pub snpc_coordinate: i16,
 
     pub mount_state: u8,
     pub has_chocobo: bool,
@@ -476,6 +485,11 @@ impl From<&crate::actor::Player> for PlayerSnapshot {
             // CharaState here, not the load-time PlayerState.
             hotbar: p.character.chara.hotbar.clone(),
             command_border: 0x20,
+            // SNpc / Path Companion scratchpad — same pattern.
+            snpc_nickname: p.character.chara.snpc_nickname.clone(),
+            snpc_skin: p.character.chara.snpc_skin,
+            snpc_personality: p.character.chara.snpc_personality,
+            snpc_coordinate: p.character.chara.snpc_coordinate,
             // Mount/chocobo state moved to CharaState so the processor
             // can mutate it via the registry. Read from CharaState here
             // — PlayerState stays as the login DTO shape and is copied
@@ -1139,22 +1153,24 @@ impl UserData for LuaPlayer {
                 Ok(())
             },
         );
-        // `player:SetSNpc(name, actorClassId, personality)` — set
-        // the player's "fellow NPC" (cinematic-time companion). 2
-        // sites in man200.lua. SNpc subsystem isn't wired (the
-        // GetSNpc* getters return 0 stubs); SetSNpc is the matching
-        // setter stub.
+        // `player:SetSNpc(nickname, actorClassId, classType)` —
+        // promoted from log-stub to real apply path. Mirrors C#
+        // `Player.SetSNpc(string, uint, byte)` semantics; see
+        // `apply_set_snpc` in processor.rs for the field
+        // computation. 2 sites in man200.lua.
         methods.add_method(
             "SetSNpc",
             |_,
              this,
-             (name, actor_class_id, personality): (String, u32, u32)| {
-                tracing::debug!(
-                    player = this.snapshot.actor_id,
-                    %name,
-                    actor_class_id,
-                    personality,
-                    "SetSNpc captured (SNpc subsystem not wired)",
+             (nickname, actor_class_id, personality): (String, u32, u32)| {
+                push(
+                    &this.queue,
+                    LuaCommand::SetSNpc {
+                        player_id: this.snapshot.actor_id,
+                        nickname,
+                        actor_class_id,
+                        personality: (personality.min(u8::MAX as u32)) as u8,
+                    },
                 );
                 Ok(())
             },
@@ -1294,21 +1310,41 @@ impl UserData for LuaPlayer {
             },
         );
 
-        // --- "Standard NPC" (fellow companion) read-only stubs -------
-        // The SNpc subsystem (the cinematic-time fellow NPC chosen
-        // during char-make) isn't wired yet — there are no
-        // `snpc_skin`/`snpc_nickname`/etc. fields on PlayerState or
-        // CharaState in garlemald, and no `server_player_snpc` table
-        // to read from. The 24 call sites all live inside cinematic
-        // `delegateEvent` calls (man206.lua processes the player's
-        // intro flashback) — returning zeros lets the script flow
-        // continue; the cutscene just renders the player without a
-        // fellow NPC. Real implementation requires porting the
-        // PlayerSNpc table + char-make capture path.
-        methods.add_method("GetSNpcSkin", |_, _this, _: ()| Ok(0u32));
-        methods.add_method("GetSNpcNickname", |_, _this, _: ()| Ok(0u32));
-        methods.add_method("GetSNpcPersonality", |_, _this, _: ()| Ok(0u32));
-        methods.add_method("GetSNpcCoordinate", |_, _this, _: ()| Ok(0u32));
+        // --- "Standard NPC" / Path Companion (fellow companion) -----
+        // C# `Player.GetSNpc{Nickname,Skin,Personality,Coordinate}`
+        // surface — written by `Player.SetSNpc(nickname, actorClassId,
+        // classType)` in the man200 MSQ branch. Backed by migration
+        // 051 columns on `characters` (snpc_nickname / snpc_skin /
+        // snpc_personality / snpc_coordinate) mirrored onto
+        // CharaState at session-begin and into PlayerSnapshot at
+        // build time.
+        //
+        // Per `feedback_meteor_decomp_authoritative_for_engine_bindings.md`
+        // these are project-meteor server-side conveniences, NOT
+        // real engine bindings — the engine has only
+        // `getCutSceneReplaySnpc*` (a different code path that
+        // reads from the cinematic-replay subsystem). garlemald
+        // inherits the project-meteor surface; documenting the
+        // deviation per the principle.
+        //
+        // Type signatures match C# returns: nickname is a String
+        // (not u32 — the previous stub was type-wrong; the script
+        // passes it through callClientFunction RPC where the LuaParam
+        // is now correctly LuaParam::String). Skin/personality are
+        // u8, coordinate is i16 — widened to u32 for the Lua bridge
+        // since mlua maps unsigned ints uniformly.
+        methods.add_method("GetSNpcSkin", |_, this, _: ()| {
+            Ok(this.snapshot.snpc_skin as u32)
+        });
+        methods.add_method("GetSNpcNickname", |_, this, _: ()| {
+            Ok(this.snapshot.snpc_nickname.clone())
+        });
+        methods.add_method("GetSNpcPersonality", |_, this, _: ()| {
+            Ok(this.snapshot.snpc_personality as u32)
+        });
+        methods.add_method("GetSNpcCoordinate", |_, this, _: ()| {
+            Ok(this.snapshot.snpc_coordinate as i32)
+        });
         methods.add_method("GetMountState", |_, this, _: ()| {
             Ok(this.snapshot.mount_state)
         });

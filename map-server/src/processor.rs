@@ -358,6 +358,13 @@ impl PacketProcessor {
         // registry-reachable state. EquipAbility/UnequipAbility/
         // SwapAbilities apply paths mutate this vec in-place.
         character.chara.hotbar = loaded.hotbar.clone();
+        // SNpc / Path Companion hydration — same registry-reachability
+        // motivation. The SetSNpc apply path mutates these in-place +
+        // persists via db.save_snpc.
+        character.chara.snpc_nickname = loaded.snpc_nickname.clone();
+        character.chara.snpc_skin = loaded.snpc_skin;
+        character.chara.snpc_personality = loaded.snpc_personality;
+        character.chara.snpc_coordinate = loaded.snpc_coordinate;
         character.chara.tp = 0;
 
         // Hydrate the quest journal from the DB. `loaded.quest_scenario`
@@ -1052,6 +1059,15 @@ impl PacketProcessor {
                 message_id,
             } => {
                 self.apply_do_emote(actor_id, target_actor_id, emote_id, message_id)
+                    .await;
+            }
+            LC::SetSNpc {
+                player_id,
+                nickname,
+                actor_class_id,
+                personality,
+            } => {
+                self.apply_set_snpc(player_id, nickname, actor_class_id, personality)
                     .await;
             }
             LC::QuestSetNpcLsFrom {
@@ -4571,6 +4587,58 @@ impl PacketProcessor {
         );
     }
 
+    /// `player:SetSNpc(nickname, actorClassId, classType)` apply
+    /// path. Mirrors C# `Player.SetSNpc` (Map Server/Actors/Chara/
+    /// Player/Player.cs):
+    /// - SNpcNickname = nickname (raw string)
+    /// - SNpcSkin = (actorClassId - 1070000) cast to u8
+    /// - SNpcPersonality = `classType` (we skip C#'s race-index
+    ///   switch derivation since the cinematic doesn't expose the
+    ///   intermediate value and the script callers pass the
+    ///   already-resolved personality directly)
+    /// SNpcCoordinate is preserved (SetSNpc doesn't write it).
+    async fn apply_set_snpc(
+        &self,
+        player_id: u32,
+        nickname: String,
+        actor_class_id: u32,
+        personality: u8,
+    ) {
+        let Some(handle) = self.registry.get(player_id).await else {
+            tracing::debug!(player = player_id, "SetSNpc: actor missing");
+            return;
+        };
+        // C# `(byte)(actorClassId - 1070000)` — actorClassId 0 case
+        // would underflow; clamp to 0.
+        let skin = actor_class_id.saturating_sub(1_070_000) as u8;
+        let coordinate = {
+            let mut c = handle.character.write().await;
+            c.chara.snpc_nickname = nickname.clone();
+            c.chara.snpc_skin = skin;
+            c.chara.snpc_personality = personality;
+            c.chara.snpc_coordinate
+        };
+        if let Err(e) = self
+            .db
+            .save_snpc(player_id, nickname.clone(), skin, personality, coordinate)
+            .await
+        {
+            tracing::warn!(
+                player = player_id,
+                actor_class_id, personality, err = %e,
+                "SetSNpc: DB persist failed",
+            );
+            return;
+        }
+        tracing::info!(
+            player = player_id,
+            actor_class_id,
+            skin,
+            personality,
+            "SetSNpc applied",
+        );
+    }
+
     /// `quest:GetData():SetNpcLsFrom(from)` and the
     /// `LuaQuestHandle::NewNpcLsMsg` first step.
     /// Mutates the live Quest's `data.npc_ls_from`, then persists to
@@ -6848,6 +6916,11 @@ fn build_player_snapshot_for_login(c: &Character) -> crate::lua::userdata::Playe
         // apply paths.
         hotbar: c.chara.hotbar.clone(),
         command_border: 0x20,
+        // SNpc / Path Companion scratchpad mirror.
+        snpc_nickname: c.chara.snpc_nickname.clone(),
+        snpc_skin: c.chara.snpc_skin,
+        snpc_personality: c.chara.snpc_personality,
+        snpc_coordinate: c.chara.snpc_coordinate,
         mount_state: c.chara.mount_state,
         has_chocobo: c.chara.has_chocobo,
         chocobo_appearance: c.chara.chocobo_appearance,
