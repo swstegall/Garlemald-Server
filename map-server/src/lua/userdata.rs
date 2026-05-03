@@ -3040,8 +3040,8 @@ impl UserData for LuaWorldManager {
             "DoZoneChangeContent",
             |_,
              this,
-             (player_id, content_area, x, y, z, rotation, spawn_type): (
-                u32,
+             (player, content_area, x, y, z, rotation, spawn_type): (
+                mlua::AnyUserData,
                 mlua::AnyUserData,
                 f32,
                 f32,
@@ -3049,11 +3049,19 @@ impl UserData for LuaWorldManager {
                 f32,
                 Option<u8>,
             )| {
+                // Same fix shape as commit c8c549d's DoZoneChange:
+                // `player` is a LuaPlayer userdata in scripts (the
+                // Lua call shape is `WM:DoZoneChangeContent(player,
+                // contentArea, x, y, z, rot, spawnType)`); typing it
+                // as u32 produced "error converting Lua userdata to
+                // u32" at runtime. Extract actor_id via the LuaPlayer
+                // borrow.
+                let p = player.borrow::<LuaPlayer>()?;
                 let area = content_area.borrow::<LuaContentArea>()?;
                 push(
                     &this.queue,
                     LuaCommand::DoZoneChangeContent {
-                        player_id,
+                        player_id: p.snapshot.actor_id,
                         parent_zone_id: area.parent_zone_id,
                         area_name: area.area_name.clone(),
                         director_actor_id: area.director_actor_id,
