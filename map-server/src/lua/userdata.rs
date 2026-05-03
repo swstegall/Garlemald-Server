@@ -1599,8 +1599,34 @@ impl UserData for LuaPlayer {
             },
         );
 
+        // `player:SetMod(modifier_key, value)` — apply a numeric
+        // modifier (HP lock, speed, etc.). Real path is the
+        // `Modifier::*` registry in `battle/`; combat-tutorial scripts
+        // call it to set `MinimumHpLock`. Phase-A stub: log and no-op
+        // so the content script keeps running.
+        methods.add_method("SetMod", |_, this, (modifier_key, value): (i64, i64)| {
+            tracing::debug!(
+                actor = format!("0x{:08X}", this.snapshot.actor_id),
+                modifier = modifier_key,
+                value,
+                "LuaPlayer::SetMod (Phase-A stub: routed to log only)",
+            );
+            Ok(())
+        });
+
         // --- Lua-side table field access (player.positionX etc.) ------------
-        methods.add_meta_method(mlua::MetaMethod::Index, |_, this, key: String| {
+        methods.add_meta_method(mlua::MetaMethod::Index, |lua, this, key: String| {
+            // `player.currentParty` returns a stub `LuaParty` userdata
+            // so content scripts can chain `:AddMember(actor_id)`.
+            // Real party state lives on world-server; this is the
+            // userdata bridge.
+            if key == "currentParty" {
+                let party = LuaParty {
+                    leader_actor_id: this.snapshot.actor_id,
+                    queue: this.queue.clone(),
+                };
+                return lua.create_userdata(party).map(Value::UserData);
+            }
             let out: Value = match key.as_str() {
                 "positionX" => Value::Number(this.snapshot.pos.0 as f64),
                 "positionY" => Value::Number(this.snapshot.pos.1 as f64),
@@ -1765,10 +1791,10 @@ impl UserData for LuaZone {
             |lua,
              this,
              (
-                _player,
+                player_arg,
                 area_class_path,
                 area_name,
-                _content_script,
+                content_script,
                 director_name,
             ): (mlua::Value, String, String, String, String)| {
                 let parent_zone_id = this.snapshot.zone_id;
@@ -1784,14 +1810,27 @@ impl UserData for LuaZone {
                     parent_zone_id,
                     0x80000 | 1,
                 );
+                // Extract the player's actor id from the first arg so
+                // the runtime handler can look up the player snapshot
+                // and fire the content script's `onCreate` hook
+                // against it. Tolerant: LuaPlayer (preferred), raw
+                // u32, or fall through to 0 if neither.
+                let player_id = match player_arg {
+                    mlua::Value::UserData(ud) => ud
+                        .borrow::<LuaPlayer>()
+                        .map(|p| p.snapshot.actor_id)
+                        .unwrap_or(0),
+                    mlua::Value::Integer(i) => i as u32,
+                    _ => 0,
+                };
                 push(
                     &this.queue,
                     LuaCommand::CreateContentArea {
-                        player_id: 0, // populated by apply when player handle is in scope
+                        player_id,
                         parent_zone_id,
                         area_class_path: area_class_path.clone(),
                         area_name: area_name.clone(),
-                        content_script: _content_script.clone(),
+                        content_script: content_script.clone(),
                         director_name: director_name.clone(),
                         director_actor_id,
                         content_area_actor_id,
@@ -1818,6 +1857,51 @@ impl UserData for LuaZone {
 // lua chain so it can fetch the director, spawn actors, and trigger the
 // content-finished cleanup.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// LuaParty — placeholder party userdata returned by `LuaPlayer.currentParty`
+// (field accessor, see `MetaMethod::Index`). Used by content scripts (e.g.
+// `SimpleContent30010.lua::onCreate`) to call
+// `starterPlayer.currentParty:AddMember(papalymo.actorId)` so combat-tutorial
+// NPCs join the player's party.
+//
+// Phase-A stub: methods log + no-op. Real party plumbing already exists in
+// `world-server/src/group/party.rs` (Party / PartyManager); the next layer
+// of work routes these stub calls through that subsystem. Until then the
+// stub keeps content-script onCreate from aborting on a nil method lookup.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct LuaParty {
+    pub leader_actor_id: u32,
+    pub queue: Arc<Mutex<CommandQueue>>,
+}
+
+impl UserData for LuaParty {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        // `currentParty:AddMember(actor_id)` — invite a (B)NPC into the
+        // player's party. Used by combat-tutorial scripts to add the
+        // ally NPCs (Yda + Papalymo) to the player's roster so the
+        // party-list UI shows them. The real implementation routes
+        // through the existing `PartyManager` in world-server; for
+        // now we log and no-op so the content script keeps running.
+        methods.add_method("AddMember", |_, this, actor_id: u32| {
+            tracing::debug!(
+                leader = format!("0x{:08X}", this.leader_actor_id),
+                member = format!("0x{:08X}", actor_id),
+                "LuaParty::AddMember (Phase-A stub: routed to log only)",
+            );
+            Ok(())
+        });
+
+        // `currentParty:GetLeader()` — return the leader actor id.
+        // Some scripts read this to gate behaviour. Safe to implement
+        // on the snapshot.
+        methods.add_method("GetLeader", |_, this, _: ()| {
+            Ok(this.leader_actor_id)
+        });
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct LuaContentArea {
@@ -1974,6 +2058,66 @@ impl UserData for LuaWorldManager {
                     },
                 );
                 Ok(())
+            },
+        );
+
+        // `GetWorldManager().SpawnBattleNpcById(id, contentArea)` —
+        // dot-callable function used by combat-tutorial content
+        // scripts (`SimpleContent30010.lua::onCreate`) to spawn the
+        // tutorial's named BattleNpcs (Yda + Papalymo + 3 wolves)
+        // into the area. Returns a `LuaActor` userdata so the
+        // calling chain can read `.actorId` to feed party-add /
+        // director-add side-effects.
+        //
+        // Phase-A stub: synthesises a deterministic actor id from
+        // the content-area's director_actor_id + the npc id (so
+        // multiple calls with different ids return distinguishable
+        // userdata) and logs the request. The real implementation
+        // looks up the BattleNpc gamedata row by `id`, materialises
+        // the actor inside the content area's actor list, and
+        // broadcasts the spawn packet trio. Phase B+ work.
+        //
+        // Note: registered as `add_function` (no implicit `self`)
+        // because the script uses `.` access:
+        // `GetWorldManager().SpawnBattleNpcById(...)` — not `:`.
+        methods.add_function(
+            "SpawnBattleNpcById",
+            |lua, (id, content_area): (u32, mlua::AnyUserData)| {
+                let (parent_zone_id, area_name, director_actor_id, queue) = {
+                    let area = content_area.borrow::<LuaContentArea>()?;
+                    (
+                        area.parent_zone_id,
+                        area.area_name.clone(),
+                        area.director_actor_id,
+                        area.queue.clone(),
+                    )
+                };
+                // Synthetic actor id: high 12 bits from the content-area's
+                // director encoding, low 20 bits = the requested id. Stable
+                // per (content-area, id) pair.
+                let synthetic_actor_id =
+                    (director_actor_id & 0xFFF0_0000) | (id & 0x000F_FFFF);
+                tracing::debug!(
+                    npc_id = id,
+                    parent_zone = parent_zone_id,
+                    area = %area_name,
+                    synthetic_actor_id = format!("0x{:08X}", synthetic_actor_id),
+                    "WorldManager.SpawnBattleNpcById (Phase-A stub: returns synthetic LuaActor; real spawn deferred)",
+                );
+                let actor = LuaActor {
+                    actor_id: synthetic_actor_id,
+                    name: format!("battlenpc_{id}"),
+                    class_name: String::new(),
+                    class_path: String::new(),
+                    unique_id: format!("bnpc_{id}"),
+                    zone_id: parent_zone_id,
+                    zone_name: String::new(),
+                    state: 0,
+                    pos: (0.0, 0.0, 0.0),
+                    rotation: 0.0,
+                    queue,
+                };
+                lua.create_userdata(actor)
             },
         );
 

@@ -1441,25 +1441,17 @@ impl PacketProcessor {
                 director_actor_id,
                 content_area_actor_id,
             } => {
-                // Phase 1 stub: log the registration. Full implementation
-                // would materialise a `PrivateAreaContent` under the
-                // parent zone, register a `Director` with the named
-                // script, and start the content-group loop. For now the
-                // existence of the lua handle is enough — the lua chain
-                // proceeds through `:GetContentDirector()` +
-                // `player:AddDirector(director)` +
-                // `:StartDirector(false)` + `KickEvent("noticeEvent")`
-                // + `DoZoneChangeContent(...)` and the player at least
-                // gets warped to the content-area coords.
-                let _ = (player_id, area_class_path, content_script);
-                tracing::info!(
-                    parent_zone = parent_zone_id,
-                    area = %area_name,
-                    director = %director_name,
-                    director_actor_id = format!("0x{:08X}", director_actor_id),
-                    content_area_actor_id = format!("0x{:08X}", content_area_actor_id),
-                    "CreateContentArea applied (stub: lua handle live, server-side instance not yet materialised)",
-                );
+                self.apply_create_content_area(
+                    player_id,
+                    parent_zone_id,
+                    area_class_path,
+                    area_name,
+                    content_script,
+                    director_name,
+                    director_actor_id,
+                    content_area_actor_id,
+                )
+                .await;
             }
             LC::DoZoneChangeContent {
                 player_id,
@@ -1498,6 +1490,153 @@ impl PacketProcessor {
             other => {
                 tracing::debug!(?other, "login lua cmd (unhandled)");
             }
+        }
+    }
+
+    /// Phase A of the SEQ_005 combat-tutorial path. Two responsibilities:
+    ///
+    /// 1. Log the content-area registration so the trace shows the
+    ///    Lua chain reached this step (matching the old stub).
+    /// 2. Fire the content script's `onCreate(player, contentArea,
+    ///    director)` hook — which is what spawns the tutorial NPCs
+    ///    (Yda + Papalymo + 3 wolves) and adds them to the player's
+    ///    party + the director's member list.
+    ///
+    /// Phase A doesn't yet materialise a server-side
+    /// `PrivateAreaContent` (instance isolation, shadowed actor lists,
+    /// etc.). The `onCreate` script will hit no-op-with-logging stubs
+    /// for `SpawnBattleNpcById`, `currentParty:AddMember`, `SetMod`,
+    /// etc. — those stubs are in `lua/userdata.rs`. The point of
+    /// running the script here is to surface every binding the
+    /// tutorial needs in a single trace pass, so subsequent phases
+    /// can fill them in incrementally. See
+    /// `captures/seq005_unblock_plan.md` for the staged port plan.
+    #[allow(clippy::too_many_arguments)]
+    async fn apply_create_content_area(
+        &self,
+        player_id: u32,
+        parent_zone_id: u32,
+        area_class_path: String,
+        area_name: String,
+        content_script: String,
+        director_name: String,
+        director_actor_id: u32,
+        content_area_actor_id: u32,
+    ) {
+        tracing::info!(
+            player = format!("0x{:08X}", player_id),
+            parent_zone = parent_zone_id,
+            area = %area_name,
+            director = %director_name,
+            director_actor_id = format!("0x{:08X}", director_actor_id),
+            content_area_actor_id = format!("0x{:08X}", content_area_actor_id),
+            content_script = %content_script,
+            "CreateContentArea applied (Phase A: lua handle live, content-script onCreate next)",
+        );
+
+        let Some(lua) = self.lua.as_ref() else {
+            tracing::debug!("CreateContentArea: no LuaEngine wired — skipping onCreate");
+            return;
+        };
+        if player_id == 0 {
+            tracing::debug!(
+                "CreateContentArea: player_id was 0 (caller didn't pass a LuaPlayer) — skipping onCreate",
+            );
+            return;
+        }
+
+        // Resolve the content script path (`scripts/lua/content/<name>.lua`).
+        // Missing script → quiet skip; the stub is still applied above.
+        let script_path = lua.resolver().content(&content_script);
+        if !script_path.exists() {
+            tracing::debug!(
+                content_script = %content_script,
+                script = %script_path.display(),
+                "CreateContentArea: content script not on disk — skipping onCreate",
+            );
+            return;
+        }
+
+        // Build the player snapshot from the registry. If the player
+        // isn't in the registry (rare), fall back to logging.
+        let Some(handle) = self.registry.get(player_id).await else {
+            tracing::warn!(
+                player = format!("0x{:08X}", player_id),
+                "CreateContentArea: player handle missing — skipping onCreate",
+            );
+            return;
+        };
+        let snapshot = {
+            let c = handle.character.read().await;
+            build_player_snapshot_from_character(&c)
+        };
+
+        // Build the LuaContentArea + LuaDirectorHandle handles. The
+        // engine re-points their queues to the freshly-installed
+        // script queue inside `call_content_hook`, so the placeholder
+        // queues here are fine.
+        let placeholder_queue = crate::lua::command::CommandQueue::new();
+        let content_area = crate::lua::userdata::LuaContentArea {
+            parent_zone_id,
+            area_name: area_name.clone(),
+            area_class_path: area_class_path.clone(),
+            director_name: director_name.clone(),
+            director_actor_id,
+            queue: placeholder_queue.clone(),
+        };
+        let director = crate::lua::userdata::LuaDirectorHandle {
+            name: director_name.clone(),
+            actor_id: director_actor_id,
+            class_path: format!("/Director/{director_name}"),
+            queue: placeholder_queue,
+        };
+
+        let lua_clone = lua.clone();
+        let script_path_clone = script_path.clone();
+        let snapshot_clone = snapshot;
+        let content_area_clone = content_area;
+        let director_clone = director;
+        let result = tokio::task::spawn_blocking(move || {
+            lua_clone.call_content_hook(
+                &script_path_clone,
+                "onCreate",
+                snapshot_clone,
+                content_area_clone,
+                director_clone,
+            )
+        })
+        .await;
+        let partial = match result {
+            Ok(p) => p,
+            Err(join_err) => {
+                tracing::warn!(
+                    player = format!("0x{:08X}", player_id),
+                    error = %join_err,
+                    "CreateContentArea: onCreate dispatch panicked",
+                );
+                return;
+            }
+        };
+        if let Some(e) = partial.error {
+            // Phase-A stubs log + no-op, so most "errors" here are
+            // expected (missing bindings reported by the script).
+            // Surface at debug to keep the trace clean.
+            tracing::debug!(
+                player = format!("0x{:08X}", player_id),
+                content_script = %content_script,
+                error = %e,
+                "CreateContentArea: onCreate completed with error (likely missing binding — Phase A expected)",
+            );
+        }
+        if !partial.commands.is_empty() {
+            crate::runtime::quest_apply::apply_runtime_lua_commands(
+                partial.commands,
+                &self.registry,
+                &self.db,
+                &self.world,
+                Some(lua),
+            )
+            .await;
         }
     }
 

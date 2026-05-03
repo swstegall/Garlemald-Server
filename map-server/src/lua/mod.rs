@@ -673,6 +673,128 @@ impl LuaEngine {
         PartialLuaCallResult { commands, error }
     }
 
+    /// Run a content script's hook (typically `onCreate`) inside a
+    /// coroutine. Hook signature: `hook(player, contentArea, director)`
+    /// matching `SimpleContent30010.lua::onCreate(starterPlayer,
+    /// contentArea, director)` from the man0g0 SEQ_005 combat tutorial.
+    ///
+    /// Phase-A wiring: the script will likely call several Lua bindings
+    /// that aren't fully implemented (`SpawnBattleNpcById`, `SetMod`,
+    /// `currentParty:AddMember`, etc.) — those are no-op-with-logging
+    /// stubs in `userdata.rs`. This helper still drives the script
+    /// through to completion (or first error) so the calls are visible
+    /// in tracing, and any commands the script emits before/after the
+    /// stub log lines are drained back to the caller.
+    ///
+    /// Mirrors C# `LuaEngine.CallLuaFunction(player, contentArea,
+    /// "onCreate", true)` semantics, sized for the content/onCreate
+    /// path specifically.
+    pub fn call_content_hook(
+        &self,
+        script_path: &Path,
+        hook_name: &str,
+        player_snapshot: userdata::PlayerSnapshot,
+        content_area: userdata::LuaContentArea,
+        director: userdata::LuaDirectorHandle,
+    ) -> PartialLuaCallResult {
+        let (lua, queue) = match self.load_script(script_path) {
+            Ok(pair) => pair,
+            Err(e) => {
+                return PartialLuaCallResult {
+                    commands: Vec::new(),
+                    error: Some(e),
+                };
+            }
+        };
+        // Re-point all three handles at the freshly-installed queue
+        // so commands the hook emits land where the caller drains.
+        let player = userdata::LuaPlayer {
+            snapshot: player_snapshot,
+            queue: queue.clone(),
+        };
+        let content_area = userdata::LuaContentArea {
+            queue: queue.clone(),
+            ..content_area
+        };
+        let director = userdata::LuaDirectorHandle {
+            queue: queue.clone(),
+            ..director
+        };
+
+        let globals = lua.globals();
+        let f: Function = match globals.get(hook_name) {
+            Ok(f) => f,
+            Err(_) => {
+                // Missing hook — quiet no-op, drain script-top-level
+                // commands so anything the require() chain pushed
+                // still reaches the caller.
+                return PartialLuaCallResult {
+                    commands: CommandQueue::drain(&queue),
+                    error: None,
+                };
+            }
+        };
+
+        let player_ud = match lua.create_userdata(player) {
+            Ok(ud) => ud,
+            Err(e) => {
+                return PartialLuaCallResult {
+                    commands: CommandQueue::drain(&queue),
+                    error: Some(anyhow::anyhow!("create_userdata(LuaPlayer): {e}")),
+                };
+            }
+        };
+        let area_ud = match lua.create_userdata(content_area) {
+            Ok(ud) => ud,
+            Err(e) => {
+                return PartialLuaCallResult {
+                    commands: CommandQueue::drain(&queue),
+                    error: Some(anyhow::anyhow!("create_userdata(LuaContentArea): {e}")),
+                };
+            }
+        };
+        let director_ud = match lua.create_userdata(director) {
+            Ok(ud) => ud,
+            Err(e) => {
+                return PartialLuaCallResult {
+                    commands: CommandQueue::drain(&queue),
+                    error: Some(anyhow::anyhow!("create_userdata(LuaDirectorHandle): {e}")),
+                };
+            }
+        };
+
+        let mut mv = MultiValue::new();
+        mv.push_back(Value::UserData(player_ud));
+        mv.push_back(Value::UserData(area_ud));
+        mv.push_back(Value::UserData(director_ud));
+
+        let thread = match lua.create_thread(f) {
+            Ok(t) => t,
+            Err(e) => {
+                return PartialLuaCallResult {
+                    commands: CommandQueue::drain(&queue),
+                    error: Some(anyhow::anyhow!("create_thread({hook_name}): {e}")),
+                };
+            }
+        };
+        let resume_result = thread.resume::<Value>(mv);
+        let commands = CommandQueue::drain(&queue);
+        let (value, error) = match resume_result {
+            Ok(v) => (v, None),
+            Err(e) => (Value::Nil, Some(anyhow::anyhow!("{hook_name}: {e}"))),
+        };
+        if matches!(thread.status(), mlua::ThreadStatus::Resumable) {
+            let directive = scheduler::classify_yield(&value);
+            let parked = ParkedCoroutine {
+                lua: lua.clone(),
+                thread,
+                queue,
+            };
+            self.repark(parked, directive);
+        }
+        PartialLuaCallResult { commands, error }
+    }
+
     /// Drive the scheduler forward: resume any parked coroutine whose time
     /// has come. Callers invoke this once per game tick.
     ///
@@ -1022,6 +1144,110 @@ mod tests {
             .any(|c| matches!(c, LuaCommand::QuestStartSequence { sequence: 99, .. }));
         assert!(seen, "script didn't see sequence=10; got {:?}", result.commands);
 
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn sample_content_area(queue: Arc<Mutex<CommandQueue>>) -> userdata::LuaContentArea {
+        userdata::LuaContentArea {
+            parent_zone_id: 133,
+            area_name: "man0g01".to_string(),
+            area_class_path: "/Area/PrivateArea/Content/PrivateAreaMasterSimpleContent".to_string(),
+            director_name: "Quest/QuestDirectorMan0g001".to_string(),
+            director_actor_id: 0x6608_0001,
+            queue,
+        }
+    }
+
+    fn sample_director(queue: Arc<Mutex<CommandQueue>>) -> userdata::LuaDirectorHandle {
+        userdata::LuaDirectorHandle {
+            name: "Quest/QuestDirectorMan0g001".to_string(),
+            actor_id: 0x6608_0001,
+            class_path: "/Director/Quest/QuestDirectorMan0g001".to_string(),
+            queue,
+        }
+    }
+
+    /// Phase-A smoke test: a synthetic content script's `onCreate`
+    /// runs to completion against the player + content-area + director
+    /// userdata, and any LuaCommands it emits drain back to the caller.
+    #[test]
+    fn call_content_hook_runs_oncreate_and_drains_commands() {
+        let root = tmpdir();
+        std::fs::create_dir_all(root.join("content")).unwrap();
+        std::fs::write(
+            root.join("content/SimpleContent30010.lua"),
+            r#"
+            function onCreate(starterPlayer, contentArea, director)
+                -- Drive `LuaCommand::SetPos` so the test can verify
+                -- the script reached the body and the queue drains.
+                starterPlayer.positionX = 362.0
+                -- Bindings exercised: SetMod (no-op stub),
+                -- currentParty:AddMember (no-op stub).
+                starterPlayer:SetMod(1, 1)
+                local p = starterPlayer.currentParty
+                if p ~= nil then
+                    p:AddMember(0x12345678)
+                end
+                return true
+            end
+            "#,
+        )
+        .unwrap();
+
+        let engine = LuaEngine::new(&root);
+        let script_path = root.join("content/SimpleContent30010.lua");
+        let dummy_queue = CommandQueue::new();
+        let result = engine.call_content_hook(
+            &script_path,
+            "onCreate",
+            sample_snapshot(),
+            sample_content_area(dummy_queue.clone()),
+            sample_director(dummy_queue),
+        );
+        assert!(
+            result.error.is_none(),
+            "onCreate errored: {:?}",
+            result.error
+        );
+        // Position assignment funnels through SetPos.
+        let saw_setpos = result
+            .commands
+            .iter()
+            .any(|c| matches!(c, LuaCommand::SetPos { .. }));
+        assert!(
+            saw_setpos,
+            "expected SetPos from positionX assignment; got {:?}",
+            result.commands
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn call_content_hook_missing_oncreate_is_quiet() {
+        let root = tmpdir();
+        std::fs::create_dir_all(root.join("content")).unwrap();
+        std::fs::write(
+            root.join("content/SimpleContent30010.lua"),
+            "function onUpdate() end\n",
+        )
+        .unwrap();
+
+        let engine = LuaEngine::new(&root);
+        let script_path = root.join("content/SimpleContent30010.lua");
+        let dummy_queue = CommandQueue::new();
+        let result = engine.call_content_hook(
+            &script_path,
+            "onCreate",
+            sample_snapshot(),
+            sample_content_area(dummy_queue.clone()),
+            sample_director(dummy_queue),
+        );
+        assert!(
+            result.error.is_none(),
+            "missing onCreate should be a quiet no-op; got {:?}",
+            result.error,
+        );
+        assert!(result.commands.is_empty());
         let _ = std::fs::remove_dir_all(root);
     }
 }
