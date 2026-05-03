@@ -1333,6 +1333,13 @@ impl PacketProcessor {
             } => {
                 self.apply_set_home_point(player_id, homepoint).await;
             }
+            LC::SetPool {
+                actor_id,
+                kind,
+                value,
+            } => {
+                self.apply_set_pool(actor_id, kind, value).await;
+            }
             LC::SpawnMyRetainer {
                 player_id,
                 bell_actor_id,
@@ -3391,6 +3398,123 @@ impl PacketProcessor {
             }
         }
         tracing::info!(player = player_id, homepoint, "SetHomePoint applied");
+    }
+
+    /// `player:SetHP/SetMaxHP/SetMP/SetMaxMP/SetTP(value)` — direct
+    /// pool setter used by GM `setmaxhp` / `setmaxmp` commands and
+    /// by quest scripts that need to override player pools without
+    /// running the recalc-stats pipeline.
+    ///
+    /// For SetMaxHP / SetMaxMP we ALSO heal current HP / MP up to
+    /// the new max if the player was at-or-below the old max — this
+    /// matches Meteor's `Player.SetMaxHP` "set max + heal to full"
+    /// behaviour that the GM commands script around.
+    ///
+    /// Broadcasts a single `charaWork/stateAtQuicklyForAll` bundle
+    /// (chara + player variants) so the owner self-HUD and neighbour
+    /// nameplate HP bars update immediately. Works on any actor (not
+    /// player-only — bnpc HP setters round-trip the same path).
+    async fn apply_set_pool(
+        &self,
+        actor_id: u32,
+        kind: crate::lua::command::SetPoolKind,
+        value: i32,
+    ) {
+        use crate::lua::command::SetPoolKind;
+        let Some(handle) = self.registry.get(actor_id).await else {
+            tracing::debug!(actor = actor_id, "SetPool: actor not in registry");
+            return;
+        };
+        let value_i16 = value.clamp(0, i16::MAX as i32) as i16;
+        let value_u16 = value.clamp(0, u16::MAX as i32) as u16;
+        let post_pools = {
+            let mut c = handle.character.write().await;
+            match kind {
+                SetPoolKind::Hp => {
+                    c.chara.hp = value_i16.min(c.chara.max_hp);
+                }
+                SetPoolKind::MaxHp => {
+                    let old_max = c.chara.max_hp;
+                    c.chara.max_hp = value_i16;
+                    // Heal-to-full when the player was at/under the
+                    // old cap — Meteor's setmaxhp behaviour.
+                    if c.chara.hp >= old_max || c.chara.hp == 0 {
+                        c.chara.hp = value_i16;
+                    } else {
+                        c.chara.hp = c.chara.hp.min(value_i16);
+                    }
+                }
+                SetPoolKind::Mp => {
+                    c.chara.mp = value_i16.min(c.chara.max_mp);
+                }
+                SetPoolKind::MaxMp => {
+                    let old_max = c.chara.max_mp;
+                    c.chara.max_mp = value_i16;
+                    if c.chara.mp >= old_max || c.chara.mp == 0 {
+                        c.chara.mp = value_i16;
+                    } else {
+                        c.chara.mp = c.chara.mp.min(value_i16);
+                    }
+                }
+                SetPoolKind::Tp => {
+                    c.chara.tp = value_u16;
+                }
+            }
+            (
+                c.chara.hp.max(0) as u16,
+                c.chara.max_hp.max(0) as u16,
+                c.chara.mp.max(0) as u16,
+                c.chara.max_mp.max(0) as u16,
+                c.chara.tp,
+            )
+        };
+        let (hp, hp_max, mp, mp_max, tp) = post_pools;
+        let mut subs =
+            crate::packets::send::actor::build_chara_state_at_quickly_for_all(
+                actor_id, hp, hp_max, mp, mp_max, tp,
+            );
+        // Players also get the player-variant bundle (extra fields:
+        // class slot + main-skill level). Bnpcs don't need it; the
+        // chara variant alone updates their nameplate HP bar.
+        if handle.is_player() {
+            let (class_slot, main_skill_level) = {
+                let c = handle.character.read().await;
+                (c.chara.class.max(0) as u8, c.chara.level.max(1) as u16)
+            };
+            subs.extend(
+                crate::packets::send::actor::build_player_state_at_quickly_for_all(
+                    actor_id,
+                    hp,
+                    hp_max,
+                    class_slot,
+                    main_skill_level,
+                ),
+            );
+        }
+        for sub in subs {
+            let bytes = sub.to_bytes();
+            crate::runtime::dispatcher::send_to_self_if_player(
+                &self.registry,
+                &self.world,
+                actor_id,
+                bytes.clone(),
+            )
+            .await;
+            crate::runtime::dispatcher::broadcast_to_neighbours(
+                &self.world,
+                &self.registry,
+                actor_id,
+                bytes,
+            )
+            .await;
+        }
+        tracing::info!(
+            actor = actor_id,
+            ?kind,
+            value,
+            hp, hp_max, mp, mp_max, tp,
+            "SetPool applied + broadcast"
+        );
     }
 
     async fn apply_add_seals(&self, player_id: u32, gc: u8, amount: i32) {

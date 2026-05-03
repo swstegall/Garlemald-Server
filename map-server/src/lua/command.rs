@@ -28,6 +28,17 @@
 
 use std::sync::{Arc, Mutex};
 
+/// Discriminator for `LuaCommand::SetPool` — picks which pool field
+/// (HP / max HP / MP / max MP / TP) the value applies to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetPoolKind {
+    Hp,
+    MaxHp,
+    Mp,
+    MaxMp,
+    Tp,
+}
+
 /// Every Lua-initiated side effect maps to one of these.
 #[derive(Debug, Clone)]
 pub enum LuaCommand {
@@ -337,6 +348,21 @@ pub enum LuaCommand {
     SetHomePoint {
         player_id: u32,
         homepoint: u32,
+    },
+    /// `player:SetHP(hp)` / `SetMaxHP(hp_max)` / `SetMP(mp)` /
+    /// `SetMaxMP(mp_max)` / `SetTP(tp)` — direct pool setters used by
+    /// the GM `setmaxhp` / `setmaxmp` commands and (eventually) by
+    /// quest scripts that want to override player pools without
+    /// running the recalc-stats pipeline. Unlike `apply_hp_delta` /
+    /// `apply_mp_delta` / `apply_tp_delta` (which adjust by a delta
+    /// and clamp to current max), these set absolute values and
+    /// optionally raise max alongside current. Each variant fires a
+    /// single broadcast via `build_chara_state_at_quickly_for_all` so
+    /// the owner + neighbour clients see the new pool immediately.
+    SetPool {
+        actor_id: u32,
+        kind: SetPoolKind,
+        value: i32,
     },
     /// Mirrors `Player.SetLoginDirector(director)` in C# — used by
     /// `battlenpc.lua` / `player.lua` `onBeginLogin` on the tutorial path.

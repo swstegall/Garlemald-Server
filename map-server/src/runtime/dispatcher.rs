@@ -1182,7 +1182,7 @@ pub(crate) async fn spawn_bundle_fanout(
 // Helpers
 // ---------------------------------------------------------------------------
 
-async fn broadcast_to_neighbours(
+pub(crate) async fn broadcast_to_neighbours(
     world: &WorldManager,
     registry: &ActorRegistry,
     source_actor_id: u32,
@@ -1783,7 +1783,7 @@ pub async fn apply_home_point_revive(
 /// The zone broadcaster excludes the source actor, so Players who die or
 /// revive wouldn't otherwise see their own state-change packet. Send it
 /// directly to their session.
-async fn send_to_self_if_player(
+pub(crate) async fn send_to_self_if_player(
     registry: &ActorRegistry,
     world: &WorldManager,
     owner_actor_id: u32,

@@ -24,14 +24,11 @@ function onTrigger(player, argc, hp, name, lastName)
     
     if player then
         hp = tonumber(hp) or 1;
-        location = INVENTORY_CURRENCY;
 
-        -- TODO: bind a SetMaxHP/SetHP method on LuaPlayer.
-        -- `hpstuff` is a placeholder that doesn't exist; this command
-        -- is currently broken (will produce "attempt to call a nil
-        -- value" at runtime). Surfaced by meteor-decomp's
-        -- garlemald-lua-coverage report.
-        player:hpstuff(hp);
+        -- LuaPlayer:SetMaxHP raises both max HP and current HP
+        -- (heal-to-full when current is at-or-below the old max),
+        -- mirroring Meteor's `Player.SetMaxHP` behaviour.
+        player:SetMaxHP(hp);
     else
         print(sender.."unable to set max hp, ensure player name is valid.");
     end;

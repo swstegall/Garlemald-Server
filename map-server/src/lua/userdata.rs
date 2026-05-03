@@ -594,6 +594,74 @@ impl UserData for LuaPlayer {
         methods.add_method("GetMaxMP", |_, this, _: ()| Ok(this.snapshot.max_mp));
         methods.add_method("GetTP", |_, this, _: ()| Ok(this.snapshot.tp));
 
+        // Direct pool setters — used by GM `setmaxhp` / `setmaxmp`
+        // commands and by quest scripts that want to override player
+        // pools without running the full recalc-stats pipeline. Each
+        // pushes a `LuaCommand::SetPool { actor_id, kind, value }` —
+        // the dispatcher writes the field on `c.chara` and broadcasts
+        // a single `charaWork/stateAtQuicklyForAll` bundle so the
+        // owner + neighbour clients see the change immediately.
+        //
+        // For SetMaxHP / SetMaxMP the dispatcher also raises current
+        // HP / MP up to the new max if it was at-or-below the old
+        // max — matches Meteor's `Player.SetMaxHP` "set max + heal to
+        // full" behaviour that the GM commands rely on.
+        methods.add_method("SetHP", |_, this, hp: i32| {
+            push(
+                &this.queue,
+                LuaCommand::SetPool {
+                    actor_id: this.snapshot.actor_id,
+                    kind: crate::lua::command::SetPoolKind::Hp,
+                    value: hp,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method("SetMaxHP", |_, this, hp_max: i32| {
+            push(
+                &this.queue,
+                LuaCommand::SetPool {
+                    actor_id: this.snapshot.actor_id,
+                    kind: crate::lua::command::SetPoolKind::MaxHp,
+                    value: hp_max,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method("SetMP", |_, this, mp: i32| {
+            push(
+                &this.queue,
+                LuaCommand::SetPool {
+                    actor_id: this.snapshot.actor_id,
+                    kind: crate::lua::command::SetPoolKind::Mp,
+                    value: mp,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method("SetMaxMP", |_, this, mp_max: i32| {
+            push(
+                &this.queue,
+                LuaCommand::SetPool {
+                    actor_id: this.snapshot.actor_id,
+                    kind: crate::lua::command::SetPoolKind::MaxMp,
+                    value: mp_max,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method("SetTP", |_, this, tp: i32| {
+            push(
+                &this.queue,
+                LuaCommand::SetPool {
+                    actor_id: this.snapshot.actor_id,
+                    kind: crate::lua::command::SetPoolKind::Tp,
+                    value: tp,
+                },
+            );
+            Ok(())
+        });
+
         methods.add_method("IsDiscipleOfWar", |_, this, _: ()| {
             Ok(LuaPlayer::is_class_range(
                 this.snapshot.current_class,
