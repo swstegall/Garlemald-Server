@@ -273,9 +273,14 @@ impl ReferencedItemPackage {
             code: destination_code,
         });
         if !items.is_empty() {
+            let modifier_items = items.clone();
             outbox.push(InventoryEvent::PacketItems {
                 owner_actor_id: self.owner_actor_id,
                 items,
+            });
+            outbox.push(InventoryEvent::PacketModifierFrame {
+                owner_actor_id: self.owner_actor_id,
+                items: modifier_items,
             });
         }
         outbox.push(InventoryEvent::PacketSetEnd {

@@ -89,6 +89,18 @@ pub enum InventoryEvent {
         owner_actor_id: u32,
         slots: Vec<u16>,
     },
+    /// Mass-set-modifier sweep — emit a 0x018F begin / 0x0190 body* /
+    /// 0x0191 end frame for these items so the client's per-item
+    /// modifier state (durability / spirit-bind / materia / quality
+    /// channels) stays in sync with the bag UI. Retail emits one of
+    /// these alongside every `PacketItems` burst; project-meteor never
+    /// implemented it, which is why garlemald hadn't either until the
+    /// 2026-05-02 retail-pcap audit.
+    PacketModifierFrame {
+        owner_actor_id: u32,
+        items: Vec<InventoryItem>,
+    },
+
     /// Equipment update. Caller chooses between full resend and single-slot.
     PacketLinkedSingle {
         owner_actor_id: u32,

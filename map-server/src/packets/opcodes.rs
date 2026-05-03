@@ -32,6 +32,17 @@ pub const OP_SEND_MESSAGE_PUBLIC: u16 = 0x0003;
 pub const OP_SET_MAP: u16 = 0x0005;
 pub const OP_DELETE_ALL_ACTORS: u16 = 0x0007;
 pub const OP_PONG: u16 = 0x0008;
+/// Wiki: "Mass Delete Actor Body (x10)" — chunked-actor-delete body
+/// frame, 10 actor ids per packet. Retail uses it during big zone
+/// transitions (`teleport_to_camp_tranquil`, `moving_around_gridania`).
+/// Garlemald currently uses the x1 path only and has no x10 builder.
+pub const OP_MASS_DELETE_ACTOR_X10: u16 = 0x0009;
+/// Wiki: "Mass Delete Actor Body (x20)" — same but 20 ids/packet.
+/// Seen 2× in retail captures (`move_out_of_room`, `moving_around_gridania`).
+pub const OP_MASS_DELETE_ACTOR_X20: u16 = 0x000A;
+/// Wiki: "Mass Delete Actor Body (x40)" — same but 40 ids/packet.
+/// Not observed in the 56-capture survey, but defined for completeness.
+pub const OP_MASS_DELETE_ACTOR_X40: u16 = 0x000B;
 pub const OP_SET_MUSIC: u16 = 0x000C;
 pub const OP_SET_WEATHER: u16 = 0x000D;
 pub const OP_LOGOUT: u16 = 0x000E;
@@ -132,6 +143,10 @@ pub const OP_SET_ACTOR_BG_PROPERTIES: u16 = 0x00D8;
 pub const OP_PLAY_BG_ANIMATION: u16 = 0x00D9;
 pub const OP_PLAY_ANIMATION_ON_ACTOR: u16 = 0x00DA;
 pub const OP_SET_ACTOR_TARGET: u16 = 0x00DB;
+/// Wiki: "Reset Head". Resets a previously-set head/eye-tracking
+/// orientation set via 0x00DB (Set Head to Actor) or 0x00DC (Set Head
+/// to Position). Retail emits 43× across combat/event captures.
+pub const OP_RESET_HEAD: u16 = 0x00DE;
 pub const OP_ACTOR_DO_EMOTE: u16 = 0x00E1;
 pub const OP_0XE2_PACKET: u16 = 0x00E2;
 pub const OP_ACTOR_SPECIAL_GRAPHIC: u16 = 0x00E3;
@@ -167,6 +182,38 @@ pub const OP_GAME_MESSAGE_ACTOR3: u16 = 0x0159;
 pub const OP_GAME_MESSAGE_ACTOR4: u16 = 0x015A;
 pub const OP_GAME_MESSAGE_ACTOR5: u16 = 0x015B;
 
+// "Text Sheet Message" family — server text-id messages routed to the
+// client's chat / event log. Three sender variants × five payload-size
+// tiers each. Retail captures use the No-Source-Actor path heavily for
+// system messages ("You harvest…", "Quest accepted", etc.); garlemald
+// today only emits the Source-Actor variants (0x0157-0x015B).
+pub const OP_TEXT_SHEET_CUSTOM_SENDER_X48: u16 = 0x015C;
+pub const OP_TEXT_SHEET_CUSTOM_SENDER_X58: u16 = 0x015D;
+pub const OP_TEXT_SHEET_CUSTOM_SENDER_X68: u16 = 0x015E;
+pub const OP_TEXT_SHEET_CUSTOM_SENDER_X78: u16 = 0x015F;
+pub const OP_TEXT_SHEET_CUSTOM_SENDER_X98: u16 = 0x0160;
+/// Wiki: "Text Sheet Message (DispId Sender) (30b)". Retail: 4× in
+/// `accept_leve.pcapng`. Sender is a display-id (e.g. a leve / quest
+/// title-card) rather than a runtime actor id.
+pub const OP_TEXT_SHEET_DISPID_SENDER_X30: u16 = 0x0161;
+pub const OP_TEXT_SHEET_DISPID_SENDER_X38: u16 = 0x0162;
+pub const OP_TEXT_SHEET_DISPID_SENDER_X40: u16 = 0x0163;
+pub const OP_TEXT_SHEET_DISPID_SENDER_X50: u16 = 0x0164;
+pub const OP_TEXT_SHEET_DISPID_SENDER_X60: u16 = 0x0165;
+/// Wiki: "Text Sheet Message (No Source Actor) (28b)". Retail: 34× —
+/// `checkbed`, `gather_wood`, `local_leve_complete`, etc. Smallest of
+/// the no-actor variants (single text-id + minimal params).
+pub const OP_TEXT_SHEET_NO_ACTOR_X28: u16 = 0x0166;
+/// Wiki: "Text Sheet Message (No Source Actor) (38b)". Retail: 78× —
+/// the most-emitted system message variant in the survey.
+pub const OP_TEXT_SHEET_NO_ACTOR_X38: u16 = 0x0167;
+/// Wiki: "Text Sheet Message (No Source Actor) (38b)" — second 38-byte
+/// variant. Retail: 41×.
+pub const OP_TEXT_SHEET_NO_ACTOR_X38_ALT: u16 = 0x0168;
+/// Wiki: "Text Sheet Message (No Source Actor) (48b)". Retail: 51×.
+pub const OP_TEXT_SHEET_NO_ACTOR_X48: u16 = 0x0169;
+pub const OP_TEXT_SHEET_NO_ACTOR_X68: u16 = 0x016A;
+
 pub const OP_SET_ACTOR_IS_ZONING: u16 = 0x017B;
 pub const OP_SET_ACTOR_STATUS: u16 = 0x0177;
 pub const OP_SET_ACTOR_STATUS_ALL: u16 = 0x0179;
@@ -182,8 +229,26 @@ pub const OP_CONTENT_MEMBERS_X08: u16 = 0x0183;
 pub const OP_CONTENT_MEMBERS_X16: u16 = 0x0184;
 pub const OP_CONTENT_MEMBERS_X32: u16 = 0x0185;
 pub const OP_CONTENT_MEMBERS_X64: u16 = 0x0186;
+/// Wiki: "Set Occupancy Group (DOUBLE CHECK!)". Retail emits 44× in
+/// combat / quest captures. Likely manages duty/instance occupancy
+/// state — exact payload unconfirmed.
+pub const OP_SET_OCCUPANCY_GROUP: u16 = 0x0187;
 pub const OP_CREATE_NAMED_GROUP: u16 = 0x0188;
 pub const OP_CREATE_NAMED_GROUP_MULTIPLE: u16 = 0x0189;
+/// Wiki: "Set Active Linkshell". Retail: 1× in `login.pcapng`.
+/// Implementation already exists at
+/// `world-server/src/packets/send.rs::build_set_active_linkshell`
+/// (no const previously — added here so the call site is greppable).
+pub const OP_SET_ACTIVE_LINKSHELL: u16 = 0x018A;
+/// Wiki: "Set Group LayoutID". Retail: 287× across combat captures.
+/// Per-group UI layout id (party-list ordering, cross-world group
+/// formatting). Garlemald has no builder.
+pub const OP_SET_GROUP_LAYOUT_ID: u16 = 0x018B;
+/// Wiki: "Party Map Marker Update (x16, variable)". Retail: 592×
+/// across 38 captures — the most-emitted of the new-to-garlemald set.
+/// Variable-length party-map-marker chunk (icons on the world map for
+/// party members).
+pub const OP_PARTY_MAP_MARKER_UPDATE: u16 = 0x018D;
 
 // ---------------------------------------------------------------------------
 // Events
@@ -220,9 +285,38 @@ pub const OP_SEND_MESSAGE: u16 = 0x00CA;
 pub const OP_GAME_MESSAGE: u16 = 0x01FD;
 
 // ---------------------------------------------------------------------------
-// Player state (0x0190–0x01AF range)
+// Item-modifier mass emission (0x018F-0x0191). Retail emits these in a
+// begin / body* / end framing per inventory bag during the initial bag
+// snapshot. The body packet (0x0190) is the highest-volume opcode in
+// the entire 56-capture survey at **5,569 emissions**, so this is one
+// of the larger conformance gaps.
+// ---------------------------------------------------------------------------
+/// Wiki: "Mass Set Item Modifier Begin". Frame-start marker for a
+/// burst of 0x0190 bodies.
+pub const OP_MASS_SET_ITEM_MODIFIER_BEGIN: u16 = 0x018F;
+/// Wiki: "Mass Set Item Modifier" — per-slot modifier emission inside
+/// a begin/end frame. Carries durability / spirit-bind / materia /
+/// stack metadata for one item. Retail: 5569×.
+pub const OP_MASS_SET_ITEM_MODIFIER: u16 = 0x0190;
+/// Wiki: "Mass Set Item Modifier End". Frame-end marker.
+pub const OP_MASS_SET_ITEM_MODIFIER_END: u16 = 0x0191;
+/// Wiki: "Send Addiction Limit Message". Play-time / parental-control
+/// message; observed once in `login.pcapng`.
+pub const OP_SEND_ADDICTION_LIMIT_MESSAGE: u16 = 0x0192;
+/// Wiki: "Stops control (0x14) and starts (0x15)". Movement-control
+/// gate emitted around cutscene / interactive-event boundaries.
+/// Retail: 9× across `gridania_to_coerthas`, `move_out_of_room`,
+/// `party_battle_leve`, and others.
+pub const OP_SET_CONTROL_STATE: u16 = 0x0193;
+
+// ---------------------------------------------------------------------------
+// Player state (0x0194–0x01AF range)
 // ---------------------------------------------------------------------------
 pub const OP_SET_GRAND_COMPANY: u16 = 0x0194;
+/// Wiki: "Set Emnity Indicator" (sic). Retail: 149× across
+/// `combat_autoattack`, `combat_skills`, `party_battle_leve`,
+/// `war_quest_update2`. Per-mob enmity / hate UI indicator.
+pub const OP_SET_ENMITY_INDICATOR: u16 = 0x0195;
 pub const OP_SET_SPECIAL_EVENT_WORK: u16 = 0x0196;
 pub const OP_SET_CURRENT_MOUNT_CHOCOBO: u16 = 0x0197;
 pub const OP_SET_CHOCOBO_NAME: u16 = 0x0198;

@@ -757,9 +757,20 @@ impl ItemPackage {
             code: self.code,
         });
         if !dirty_items.is_empty() {
+            // Modifier sweep mirrors retail's behaviour: every
+            // `PacketItems` is followed by a 0x018F/0x0190/0x0191
+            // frame so the per-item-instance durability / quality /
+            // materia state lands client-side. See
+            // `captures/retail_pcap_gap_analysis.md` for the
+            // ground-truth byte trace.
+            let modifier_items = dirty_items.clone();
             outbox.push(InventoryEvent::PacketItems {
                 owner_actor_id: self.owner_actor_id,
                 items: dirty_items,
+            });
+            outbox.push(InventoryEvent::PacketModifierFrame {
+                owner_actor_id: self.owner_actor_id,
+                items: modifier_items,
             });
         }
         if !dirty_tail_slots.is_empty() {
@@ -784,9 +795,14 @@ impl ItemPackage {
         });
         let items: Vec<InventoryItem> = self.iter_items().cloned().collect();
         if !items.is_empty() {
+            let modifier_items = items.clone();
             outbox.push(InventoryEvent::PacketItems {
                 owner_actor_id: self.owner_actor_id,
                 items,
+            });
+            outbox.push(InventoryEvent::PacketModifierFrame {
+                owner_actor_id: self.owner_actor_id,
+                items: modifier_items,
             });
         }
         outbox.push(InventoryEvent::PacketSetEnd {

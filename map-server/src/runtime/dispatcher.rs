@@ -841,6 +841,20 @@ pub async fn dispatch_inventory_event(
                 client.send_bytes(sub.to_bytes()).await;
             }
         }
+        InventoryEvent::PacketModifierFrame {
+            owner_actor_id,
+            items,
+        } => {
+            let Some(client) = resolve_client(registry, world, *owner_actor_id).await else {
+                return;
+            };
+            for sub in tx::actor_inventory::build_mass_set_item_modifier_frame(
+                *owner_actor_id,
+                items,
+            ) {
+                client.send_bytes(sub.to_bytes()).await;
+            }
+        }
         InventoryEvent::PacketRemoveSlots {
             owner_actor_id,
             slots,

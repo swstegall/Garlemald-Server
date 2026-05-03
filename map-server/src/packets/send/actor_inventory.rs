@@ -449,6 +449,96 @@ pub fn build_set_initial_equipment(actor_id: u32, slots: &[(u16, u32)]) -> Vec<S
     packets
 }
 
+// ---------------------------------------------------------------------------
+// Mass Set Item Modifier (0x018F begin / 0x0190 body / 0x0191 end).
+//
+// Frame structure:
+//   0x018F  body 8 bytes of zeros — "begin" marker
+//   0x0190  one per item; body 0x68 bytes:
+//     u64 unique_id              (offset 0x00)
+//     ItemModifier (0x2E bytes)  (offset 0x08, see encode_item_modifier)
+//     50 bytes of zero padding   (offset 0x36..0x68)
+//   0x0191  body 8 bytes of zeros — "end" marker
+//
+// Format anchors:
+//   • Wiki page `Game_Opcodes:Mass_Set_Item_Modifier` (data size 0x68)
+//   • Wiki page `Item_Modifier` (says 0x2A but the actual layout per Meteor
+//     C# `ItemModifier::WriteBytes` and retail captures is 0x2E)
+//   • Retail bytes captured under `ffxiv_traces/repair_items.pcapng`,
+//     `ffxiv_traces/combat_skills.pcapng`, etc., decoded via
+//     `packet-diff/cargo run --bin pcap-survey -- … --dump-opcode 0x0190`
+//
+// Project Meteor never figured this opcode out (no builder exists), so
+// this is a net-new emit garlemald gets to add.
+// ---------------------------------------------------------------------------
+
+/// 0x018F MassSetItemModifierBegin — opens a 0x0190 burst.
+pub fn build_mass_set_item_modifier_begin(actor_id: u32) -> SubPacket {
+    SubPacket::new(OP_MASS_SET_ITEM_MODIFIER_BEGIN, actor_id, body(0x28))
+}
+
+/// 0x0191 MassSetItemModifierEnd — closes a 0x0190 burst. The client
+/// applies the per-item modifier deltas to the bag UI on this packet.
+pub fn build_mass_set_item_modifier_end(actor_id: u32) -> SubPacket {
+    SubPacket::new(OP_MASS_SET_ITEM_MODIFIER_END, actor_id, body(0x28))
+}
+
+/// 0x0190 MassSetItemModifier — one per item.
+///
+/// `unique_id` is the server-side per-item-instance id (Meteor's
+/// `serverItemId`, an auto-increment INT pool); the client's bag UI
+/// keys modifier state by this id, so it must match the `unique_id`
+/// used in the corresponding `0x0148/0x014A InventoryListX*` emission
+/// for the same slot.
+pub fn build_mass_set_item_modifier(actor_id: u32, item: &InventoryItem) -> SubPacket {
+    let mut data = body(0x88);
+    let mut c = Cursor::new(&mut data[..]);
+    c.write_u64::<LittleEndian>(item.unique_id).unwrap();
+    encode_item_modifier(&mut c, &item.tag);
+    SubPacket::new(OP_MASS_SET_ITEM_MODIFIER, actor_id, data)
+}
+
+/// Write the 46-byte ItemModifier struct at the cursor's current position.
+/// Layout matches Meteor's `ItemModifier::WriteBytes` and decodes 1:1 with
+/// the bytes captured in `ffxiv_traces/*.pcapng`.
+fn encode_item_modifier(c: &mut Cursor<&mut [u8]>, tag: &crate::data::ItemTag) {
+    c.write_u32::<LittleEndian>(tag.durability).unwrap();
+    c.write_u16::<LittleEndian>(tag.use_count).unwrap();
+    c.write_u32::<LittleEndian>(tag.materia_id).unwrap();
+    c.write_u32::<LittleEndian>(tag.materia_life).unwrap();
+    c.write_u8(tag.main_quality).unwrap();
+    c.write_u8(tag.sub_quality[0]).unwrap();
+    c.write_u8(tag.sub_quality[1]).unwrap();
+    c.write_u8(tag.sub_quality[2]).unwrap();
+    c.write_u32::<LittleEndian>(tag.polish).unwrap();
+    c.write_u32::<LittleEndian>(tag.param1).unwrap();
+    c.write_u32::<LittleEndian>(tag.param2).unwrap();
+    c.write_u32::<LittleEndian>(tag.param3).unwrap();
+    c.write_u16::<LittleEndian>(tag.spiritbind).unwrap();
+    for b in tag.materia_type {
+        c.write_u8(b).unwrap();
+    }
+    for b in tag.materia_grade {
+        c.write_u8(b).unwrap();
+    }
+}
+
+/// Convenience: emit a full begin/body*/end frame for `items`. Yields
+/// one Vec containing 2 + items.len() SubPackets so the caller can
+/// extend its outbox in one shot.
+pub fn build_mass_set_item_modifier_frame(
+    actor_id: u32,
+    items: &[InventoryItem],
+) -> Vec<SubPacket> {
+    let mut out = Vec::with_capacity(2 + items.len());
+    out.push(build_mass_set_item_modifier_begin(actor_id));
+    for item in items {
+        out.push(build_mass_set_item_modifier(actor_id, item));
+    }
+    out.push(build_mass_set_item_modifier_end(actor_id));
+    out
+}
+
 fn encode_item(item: &InventoryItem) -> Vec<u8> {
     let mut out = vec![0u8; 0x70];
     let mut c = Cursor::new(&mut out[..]);
@@ -472,4 +562,105 @@ fn encode_item(item: &InventoryItem) -> Vec<u8> {
     }
     c.write_u8(item.quality).unwrap();
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data::{InventoryItem, ItemTag};
+
+    /// Reproduce the 0x0190 body bytes captured from
+    /// `ffxiv_traces/repair_items.pcapng` record #1 (and confirmed
+    /// identical in `harvest.pcapng`, `combat_skills.pcapng`, etc. for
+    /// the same item unique-id 0x07460059). The retail item is in its
+    /// NQ-default state: durability 0, use_count 1, mainQuality 1,
+    /// subQuality [1,1,1], everything else zero.
+    #[test]
+    fn mass_set_item_modifier_matches_retail_capture() {
+        let item = InventoryItem {
+            unique_id: 0x0746_0059,
+            tag: ItemTag {
+                durability: 0,
+                use_count: 1,
+                materia_id: 0,
+                materia_life: 0,
+                main_quality: 1,
+                sub_quality: [1, 1, 1],
+                polish: 0,
+                param1: 0,
+                param2: 0,
+                param3: 0,
+                spiritbind: 0,
+                materia_type: [0; 5],
+                materia_grade: [0; 5],
+            },
+            ..InventoryItem::default()
+        };
+        let pkt = build_mass_set_item_modifier(0x029B_2941, &item);
+        // The body slice is everything after SubPacketHeader+GameMessageHeader,
+        // i.e. exactly the 0x68 bytes the wiki documents.
+        let body = &pkt.data;
+        assert_eq!(body.len(), 0x68);
+
+        // Captured ground truth — see
+        // `captures/retail_pcap_gap_analysis.md` for derivation.
+        // Byte 0x00..0x08 = u64 unique_id (LE).
+        // Byte 0x08..0x36 = ItemModifier struct (46 bytes).
+        // Byte 0x36..0x68 = 50 bytes of zero padding.
+        #[rustfmt::skip]
+        let expected: [u8; 0x68] = [
+            0x59, 0x00, 0x46, 0x07, 0x00, 0x00, 0x00, 0x00, // unique_id
+            0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, // life=0, use=1, materiaId(lo)=0
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, // materiaId(hi)=0, materiaLife=0, mainQuality=1, subQ[0]=1
+            0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // subQ[1]=1, subQ[2]=1, polish=0, param1(lo)
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // param1(hi), param2
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // param3, fitness, materiaType[0..2]
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // padding starts here (50 bytes)
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        assert_eq!(body, &expected[..]);
+    }
+
+    /// Begin and end markers are both 0x28-byte SubPackets with empty
+    /// (8-byte zero) bodies — confirmed against
+    /// `ffxiv_traces/repair_items.pcapng` records #1 of opcode 0x018F
+    /// and 0x0191.
+    #[test]
+    fn mass_set_item_modifier_brackets_have_zero_bodies() {
+        let begin = build_mass_set_item_modifier_begin(0x029B_2941);
+        let end = build_mass_set_item_modifier_end(0x029B_2941);
+        assert_eq!(begin.data.len(), 8);
+        assert!(begin.data.iter().all(|b| *b == 0));
+        assert_eq!(end.data.len(), 8);
+        assert!(end.data.iter().all(|b| *b == 0));
+        assert_eq!(begin.game_message.opcode, OP_MASS_SET_ITEM_MODIFIER_BEGIN);
+        assert_eq!(end.game_message.opcode, OP_MASS_SET_ITEM_MODIFIER_END);
+    }
+
+    #[test]
+    fn mass_set_item_modifier_frame_emits_begin_body_end() {
+        let items = vec![
+            InventoryItem { unique_id: 1, ..Default::default() },
+            InventoryItem { unique_id: 2, ..Default::default() },
+            InventoryItem { unique_id: 3, ..Default::default() },
+        ];
+        let frame = build_mass_set_item_modifier_frame(0x029B_2941, &items);
+        assert_eq!(frame.len(), 5);
+        assert_eq!(
+            frame[0].game_message.opcode,
+            OP_MASS_SET_ITEM_MODIFIER_BEGIN
+        );
+        assert!(frame[1..4]
+            .iter()
+            .all(|p| p.game_message.opcode == OP_MASS_SET_ITEM_MODIFIER));
+        assert_eq!(
+            frame[4].game_message.opcode,
+            OP_MASS_SET_ITEM_MODIFIER_END
+        );
+    }
 }

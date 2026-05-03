@@ -1750,6 +1750,35 @@ impl WorldManager {
                 sub.set_target_id(session_id);
                 client.send_bytes(sub.to_bytes()).await;
             }
+
+            // 0x018D PartyMapMarkerUpdate — the "where is each party
+            // member on the world map" overlay. Retail emits this on
+            // a periodic interval (see wiki note); for now we send a
+            // single solo-marker emission as part of the zone-in
+            // bundle so the world map starts populated. A periodic
+            // resend can be added later via a ticker hook.
+            //
+            // NOTE: `unknown` per-marker field is seeded as 0; wiki
+            // describes it as opaque ("each player has a different
+            // value"), and the client doesn't appear to validate it.
+            // If a future capture lights up an actual constraint,
+            // refine via a per-character salt.
+            let marker = tx::groups::PartyMapMarker {
+                player_id: actor_id,
+                unknown: 0,
+                x: position.x,
+                y: position.y,
+                z: position.z,
+                orientation: rotation,
+            };
+            let mut sub = tx::groups::build_party_map_marker_update(
+                actor_id,
+                tx::groups::PARTY_MAP_MARKER_SOLO_GROUP_ID,
+                tx::groups::PARTY_MAP_MARKER_GROUP_TYPE_PLAYER_PARTY,
+                &[marker],
+            );
+            sub.set_target_id(session_id);
+            client.send_bytes(sub.to_bytes()).await;
         }
         tracing::info!(
             session = session_id,

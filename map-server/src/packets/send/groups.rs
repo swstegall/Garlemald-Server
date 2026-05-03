@@ -409,3 +409,182 @@ pub fn build_synch_group_work_values(
     }
     SubPacket::new(OP_SYNCH_GROUP_WORK_VALUES, source_actor_id, data)
 }
+
+// ---------------------------------------------------------------------------
+// 0x018D PartyMapMarkerUpdate — party-member icon overlay on the world map.
+//
+// Wire format (per wiki + retail bytes from `ffxiv_traces/chat_say.pcapng`
+// record #1 of opcode 0x018D, decoded byte-by-byte):
+//
+//   body size = 0x298 (664 bytes)
+//   0x00  u64 player_group_id          — solo retail uses 0x80000000_0077E9AC,
+//                                         party uses Meteor's
+//                                         `((leader_id as u64) << 32) | 0xB36F92`
+//   0x08  u32 group_type               — 10001 (0x2711) = PlayerPartyGroup
+//   0x0C  u32 zero/padding
+//   0x10  marker[16] @ 40 bytes each   = 640 bytes
+//   0x290 u32 num_entries              — count of populated marker slots
+//   0x294 u32 zero/padding
+//
+// Per-marker layout (40 bytes), at marker-relative offsets:
+//   0x00  u32 player_id (actor id)
+//   0x04  u32 zero/padding
+//   0x08  u32 unknown                  — wiki: "each player has a different
+//                                         value" — likely a per-character
+//                                         hash or session salt; client
+//                                         appears not to validate
+//   0x0C  u64 zero/padding
+//   0x14  f32 x
+//   0x18  f32 y
+//   0x1C  f32 z
+//   0x20  f32 orientation
+//   0x24  u32 zero/padding
+//
+// Retail emits this on a regular interval (every position broadcast in
+// our captures); see the wiki note: "Sent from the server at a regular
+// interval, likely due to client not being programmed to send a request
+// for such data when the player opens the map."
+//
+// Project Meteor never implemented this; with the retail-pcap audit
+// (2026-05-02), garlemald becomes the first 1.x port to emit it.
+
+/// One marker slot inside a 0x018D packet. `unknown` is opaque per the
+/// wiki — pass 0 for a clean default; production code may want to seed
+/// it from a per-character salt for full retail conformance.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PartyMapMarker {
+    pub player_id: u32,
+    pub unknown: u32,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub orientation: f32,
+}
+
+/// 0x10001 / 10001 — `Group::PlayerPartyGroup` per Meteor
+/// `World Server/DataObjects/Group/Group.cs`.
+pub const PARTY_MAP_MARKER_GROUP_TYPE_PLAYER_PARTY: u32 = 10001;
+
+/// playerGroupID retail uses for an unparty'd player. Magic constant
+/// captured from `ffxiv_traces/chat_say.pcapng`; the high 0x80000000
+/// bit looks like a "synthetic / solo group" flag, but we don't have
+/// enough datapoints to confirm. Use this verbatim for solo emissions
+/// until we capture another player's solo packet.
+pub const PARTY_MAP_MARKER_SOLO_GROUP_ID: u64 = 0x8000_0000_0077_E9AC;
+
+/// 0x018D PartyMapMarkerUpdate. Up to 16 markers per packet — extra
+/// markers in `markers` are silently truncated.
+pub fn build_party_map_marker_update(
+    actor_id: u32,
+    player_group_id: u64,
+    group_type: u32,
+    markers: &[PartyMapMarker],
+) -> SubPacket {
+    const PACKET_SIZE: usize = 0x2B8;
+    const MARKER_SIZE: usize = 0x28;
+    const MARKERS_OFFSET: usize = 0x10;
+    const NUM_ENTRIES_OFFSET: usize = 0x290;
+    const MAX_MARKERS: usize = 16;
+
+    let mut data = body(PACKET_SIZE);
+    {
+        let mut c = Cursor::new(&mut data[..]);
+        c.write_u64::<LittleEndian>(player_group_id).unwrap();
+        c.write_u32::<LittleEndian>(group_type).unwrap();
+        // 4-byte pad at 0x0C..0x10 already zero from `body()`.
+    }
+    let n = markers.len().min(MAX_MARKERS);
+    for (i, m) in markers.iter().take(MAX_MARKERS).enumerate() {
+        let off = MARKERS_OFFSET + i * MARKER_SIZE;
+        let mut c = Cursor::new(&mut data[off..off + MARKER_SIZE]);
+        c.write_u32::<LittleEndian>(m.player_id).unwrap();
+        c.write_u32::<LittleEndian>(0).unwrap(); // 0x04 pad
+        c.write_u32::<LittleEndian>(m.unknown).unwrap();
+        c.write_u64::<LittleEndian>(0).unwrap(); // 0x0C..0x14 pad
+        c.write_f32::<LittleEndian>(m.x).unwrap();
+        c.write_f32::<LittleEndian>(m.y).unwrap();
+        c.write_f32::<LittleEndian>(m.z).unwrap();
+        c.write_f32::<LittleEndian>(m.orientation).unwrap();
+        c.write_u32::<LittleEndian>(0).unwrap(); // 0x24 pad
+    }
+    data[NUM_ENTRIES_OFFSET..NUM_ENTRIES_OFFSET + 4]
+        .copy_from_slice(&(n as u32).to_le_bytes());
+    SubPacket::new(OP_PARTY_MAP_MARKER_UPDATE, actor_id, data)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Reproduce the body bytes captured from
+    /// `ffxiv_traces/chat_say.pcapng` record #1 of opcode 0x018D — solo
+    /// player at `(1822.97, 149.47, 1728.025)`, orientation -2.354 rad,
+    /// actor id 0x029B2941, with the captured solo group id and the
+    /// per-marker `unknown` field 0x00C17909.
+    #[test]
+    fn party_map_marker_matches_retail_capture() {
+        let marker = PartyMapMarker {
+            player_id: 0x029B_2941,
+            unknown: 0x00C1_7909,
+            x: f32::from_le_bytes([0x80, 0xF3, 0xE3, 0x44]), // 1822.9688
+            y: f32::from_le_bytes([0xFA, 0x78, 0x15, 0x43]), // 149.47256
+            z: f32::from_le_bytes([0xCB, 0x00, 0xD8, 0x44]), // 1728.0247
+            orientation: f32::from_le_bytes([0x17, 0xA8, 0x16, 0xC0]), // -2.3540878
+        };
+        let pkt = build_party_map_marker_update(
+            0x029B_2941,
+            PARTY_MAP_MARKER_SOLO_GROUP_ID,
+            PARTY_MAP_MARKER_GROUP_TYPE_PLAYER_PARTY,
+            &[marker],
+        );
+        let body = &pkt.data;
+        assert_eq!(body.len(), 0x298);
+
+        // Header: playerGroupID + groupType + pad.
+        assert_eq!(
+            &body[0x00..0x10],
+            &[0xAC, 0xE9, 0x77, 0x00, 0x00, 0x00, 0x00, 0x80,
+              0x11, 0x27, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        );
+
+        // Marker 0 — full 40-byte slot.
+        assert_eq!(
+            &body[0x10..0x38],
+            &[
+                0x41, 0x29, 0x9B, 0x02, 0x00, 0x00, 0x00, 0x00, // playerID + pad
+                0x09, 0x79, 0xC1, 0x00, 0x00, 0x00, 0x00, 0x00, // unknown + pad
+                0x00, 0x00, 0x00, 0x00, 0x80, 0xF3, 0xE3, 0x44, // pad + X
+                0xFA, 0x78, 0x15, 0x43, 0xCB, 0x00, 0xD8, 0x44, // Y + Z
+                0x17, 0xA8, 0x16, 0xC0, 0x00, 0x00, 0x00, 0x00, // O + trailing pad
+            ],
+        );
+
+        // Empty marker slots (15 of them, 600 bytes) must be all zero.
+        assert!(body[0x38..0x290].iter().all(|b| *b == 0));
+
+        // numEntries u32 then 4 bytes trailing pad.
+        assert_eq!(&body[0x290..0x298], &[0x01, 0, 0, 0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn party_map_marker_truncates_above_16() {
+        let m = PartyMapMarker {
+            player_id: 1,
+            ..Default::default()
+        };
+        let pkt = build_party_map_marker_update(0x029B_2941, 0, 10001, &vec![m; 20]);
+        // numEntries clamps to 16 even when the caller hands in more.
+        let n = u32::from_le_bytes(pkt.data[0x290..0x294].try_into().unwrap());
+        assert_eq!(n, 16);
+    }
+
+    #[test]
+    fn party_map_marker_empty_yields_zero_count() {
+        let pkt = build_party_map_marker_update(0x029B_2941, 0, 10001, &[]);
+        assert_eq!(pkt.data.len(), 0x298);
+        let n = u32::from_le_bytes(pkt.data[0x290..0x294].try_into().unwrap());
+        assert_eq!(n, 0);
+        // Marker block stays all zero.
+        assert!(pkt.data[0x10..0x290].iter().all(|b| *b == 0));
+    }
+}

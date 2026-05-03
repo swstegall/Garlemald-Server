@@ -181,6 +181,14 @@ pub struct InventoryItem {
     pub tag: ItemTag,
 }
 
+/// Per-item modifier set, mirrors `DataObjects/InventoryItem.cs::ItemModifier`
+/// plus the fields needed by the 0x0190 `MassSetItemModifier` packet (which
+/// the C# fork never emits but retail does — see
+/// `captures/retail_pcap_gap_analysis.md`).
+///
+/// Wire format is 0x2E (46) bytes — wiki says 0x2A but Meteor's
+/// `WriteBytes` and the actual retail captures show 0x2E. The discrepancy
+/// is the wiki collapsing the `materiaType[5]` + `materiaGrade[5]` arrays.
 #[derive(Debug, Clone, Default)]
 pub struct ItemTag {
     pub durability: u32,
@@ -188,11 +196,17 @@ pub struct ItemTag {
     pub materia_id: u32,
     pub materia_life: u32,
     pub main_quality: u8,
+    /// Three sub-quality channels (1.x's per-stat NQ/HQ tier). Retail
+    /// captures show `[1, 1, 1]` as the NQ-default state, not all-zero.
+    pub sub_quality: [u8; 3],
     pub polish: u32,
     pub param1: u32,
     pub param2: u32,
     pub param3: u32,
     pub spiritbind: u16,
+    /// Up to 5 materia slots: type id at index `i`, grade at index `i`.
+    pub materia_type: [u8; 5],
+    pub materia_grade: [u8; 5],
 }
 
 /// Mainhand/offhand weapon stats ported from `gamedata_items_weapon`.
