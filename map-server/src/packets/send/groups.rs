@@ -580,6 +580,68 @@ pub fn build_set_group_layout_id(
 /// actors. Real (game-data) NPCs use their populace name id instead.
 pub const SET_GROUP_LAYOUT_ID_PLAYER_DISPLAY_NAME: u32 = 0xFFFF_FFFF;
 
+// ---------------------------------------------------------------------------
+// 0x0187 SetOccupancyGroup — claim/unclaim mob group ownership.
+//
+// Wire format (per wiki + retail bytes from
+// `ffxiv_traces/combat_skills.pcapng` 0x0187 records #1 and #2):
+//
+//   body size = 0x40 (64 bytes) — fixed
+//   0x00  u64 monster_group_id      — the mob group being (un)claimed
+//   0x08  u32 group_type            — 10002 (0x2712) = MonsterPartyGroup
+//                                     for field mobs; 30012 = Simple
+//                                     ContentGroup (e.g. Ifrit ad clones)
+//   0x0C  u32 zero/padding
+//   0x10  u64 player_group_id       — claiming player party group
+//                                     (0 = clear claim; same group-id
+//                                     space as 0x018D / 0x018B)
+//   0x18  u32 unknown               — wiki: "always 0xFFFFFFFF"
+//                                     (confirmed in both captures)
+//   0x1C  36 bytes zero/padding
+//
+// Captured behaviour: same monsterGroup emitted twice — first with
+// playerGroup=0 to clear any prior claim, then with the player's
+// solo group id to register fresh claim. Wiki note also says
+// `hateType` modifier on the work struct depends on whether a group
+// is set as occupied at the time of `hateType` being called, and is
+// not retroactive — so this packet is load-bearing for nameplate
+// label colour even after a single `0x00DB SetActorTarget` happens.
+//
+// Project Meteor never implements this; their `MonsterParty` /
+// `HateContainer` plumbing exists but the claim broadcast does not.
+
+/// `groupType` for monster parties (field mobs). Same value as
+/// `GroupTypeId::MONSTER_PARTY` in the higher-level group system.
+pub const SET_OCCUPANCY_GROUP_TYPE_MONSTER_PARTY: u32 = 10002;
+
+/// `groupType` for simple content groups (e.g. Ifrit's clone-ad
+/// groups in 1.x).
+pub const SET_OCCUPANCY_GROUP_TYPE_SIMPLE_CONTENT: u32 = 30012;
+
+/// `unknown` field — wiki and retail captures agree this is always
+/// `0xFFFFFFFF`.
+pub const SET_OCCUPANCY_GROUP_UNKNOWN_CONST: u32 = 0xFFFF_FFFF;
+
+/// 0x0187 SetOccupancyGroup. Pass `player_group_id = 0` to clear an
+/// existing claim; otherwise pass the player's party / solo group
+/// id (same id space as 0x018D PartyMapMarker).
+pub fn build_set_occupancy_group(
+    actor_id: u32,
+    monster_group_id: u64,
+    group_type: u32,
+    player_group_id: u64,
+) -> SubPacket {
+    let mut data = body(0x60);
+    let mut c = Cursor::new(&mut data[..]);
+    c.write_u64::<LittleEndian>(monster_group_id).unwrap();
+    c.write_u32::<LittleEndian>(group_type).unwrap();
+    c.write_u32::<LittleEndian>(0).unwrap(); // pad at 0x0C
+    c.write_u64::<LittleEndian>(player_group_id).unwrap();
+    c.write_u32::<LittleEndian>(SET_OCCUPANCY_GROUP_UNKNOWN_CONST).unwrap();
+    // Remaining 36 bytes already zero from `body()`.
+    SubPacket::new(OP_SET_OCCUPANCY_GROUP, actor_id, data)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -687,6 +749,70 @@ mod tests {
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         ];
         assert_eq!(body, &expected[..]);
+    }
+
+    /// Reproduce the two 0x0187 packets captured from
+    /// `ffxiv_traces/combat_skills.pcapng` — same monster group, first
+    /// emitted with player_group=0 to clear claim, then with the solo
+    /// player group to register fresh claim.
+    #[test]
+    fn set_occupancy_group_lifecycle_matches_retail_capture() {
+        let monster_group: u64 = 0x2680_0000_0000_25FB;
+
+        // #1: clear claim (player_group=0).
+        let p1 = build_set_occupancy_group(
+            0x029B_2941,
+            monster_group,
+            SET_OCCUPANCY_GROUP_TYPE_MONSTER_PARTY,
+            0,
+        );
+        assert_eq!(p1.data.len(), 0x40);
+        let mut expected1 = [0u8; 0x40];
+        expected1[..8].copy_from_slice(&monster_group.to_le_bytes());
+        expected1[8..12].copy_from_slice(&10002u32.to_le_bytes());
+        // 0x0C..0x10 zero pad
+        // 0x10..0x18 player_group_id zero
+        expected1[0x18..0x1C].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        assert_eq!(p1.data, expected1);
+        // Spot-check against the literal captured bytes.
+        assert_eq!(
+            &p1.data[..0x20],
+            &[
+                0xFB, 0x25, 0x00, 0x00, 0x00, 0x00, 0x80, 0x26,
+                0x12, 0x27, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        // #2: claim by solo player group (same id space as 0x018D).
+        let p2 = build_set_occupancy_group(
+            0x029B_2941,
+            monster_group,
+            SET_OCCUPANCY_GROUP_TYPE_MONSTER_PARTY,
+            PARTY_MAP_MARKER_SOLO_GROUP_ID,
+        );
+        assert_eq!(
+            &p2.data[..0x20],
+            &[
+                0xFB, 0x25, 0x00, 0x00, 0x00, 0x00, 0x80, 0x26,
+                0x12, 0x27, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0xAC, 0xE9, 0x77, 0x00, 0x00, 0x00, 0x00, 0x80,
+                0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00,
+            ],
+        );
+    }
+
+    #[test]
+    fn set_occupancy_group_simple_content_type() {
+        let pkt = build_set_occupancy_group(
+            1,
+            0xFEDC_BA98_7654_3210,
+            SET_OCCUPANCY_GROUP_TYPE_SIMPLE_CONTENT,
+            0,
+        );
+        let group_type = u32::from_le_bytes(pkt.data[8..12].try_into().unwrap());
+        assert_eq!(group_type, 30012);
     }
 
     #[test]
