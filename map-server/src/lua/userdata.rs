@@ -3577,6 +3577,33 @@ impl UserData for LuaDirectorHandle {
             );
             Ok(())
         });
+        // `director:GetZone()` — used by content-director main()
+        // coroutines via `main(director, contentGroup) →
+        // onCreateContentArea(director:GetPlayerMembers(), director,
+        // director:GetZone(), contentGroup)`. The script's
+        // onCreateContentArea (in QuestDirectorMan0g001.lua and
+        // siblings) doesn't actually READ any field off the zone —
+        // it just passes through. Returning a placeholder LuaZone
+        // unblocks the main coroutine so subsequent KickEvent →
+        // onEventStarted → noticeEvent body fires the cinematic
+        // packets the client is waiting on after a content-area warp.
+        // Smoke-revealed 2026-05-03: missing this binding caused the
+        // director main coroutine to error at `attempt to call a nil
+        // value (method 'GetZone')`, the noticeEvent never fired,
+        // client hung at "Now Loading".
+        methods.add_method("GetZone", |lua, this, _: ()| {
+            let zone = LuaZone {
+                snapshot: ZoneSnapshot {
+                    zone_id: 0,
+                    zone_name: String::new(),
+                    player_ids: Vec::new(),
+                    npc_ids: Vec::new(),
+                    monster_ids: Vec::new(),
+                },
+                queue: this.queue.clone(),
+            };
+            lua.create_userdata(zone)
+        });
         methods.add_method("SetLeader", |_, _this, _actor: Value| Ok(()));
         methods.add_method("IsInstanceRaid", |_, _this, _: ()| Ok(false));
         // `director:EndGuildleve(was_completed)` — drives the
