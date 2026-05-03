@@ -153,6 +153,40 @@ impl UserData for LuaActor {
         methods.add_method("IsEngaged", |_, _this, _: ()| Ok(false));
         // `actor:GetSpeed()` — current move speed. Default 0.
         methods.add_method("GetSpeed", |_, _this, _: ()| Ok(0i64));
+        // `actor:SendAppearance()` — same as the LuaPlayer binding,
+        // routed through the same LuaCommand::SendAppearance variant.
+        // 1 site (`gm/graphic.lua` after a `appearanceIds[slot]`
+        // mutation).
+        methods.add_method("SendAppearance", |_, this, _: ()| {
+            push(
+                &this.queue,
+                LuaCommand::SendAppearance {
+                    actor_id: this.actor_id,
+                },
+            );
+            Ok(())
+        });
+        // `actor:PlayMapObjAnimation(player, animationId)` — fires a
+        // map-object animation visible only to `player`. Used by the
+        // GM `testmapobj` command (1 site). Garlemald doesn't model
+        // map-object actors as a distinct kind yet (the door / lever
+        // / chest spawns ride on the regular Actor pipe with a
+        // class-path discriminator), so the canonical
+        // 0x011D-class wire packet isn't built. Logged stub keeps
+        // the GM command from erroring; visible behavior would
+        // require porting MapObjAnimationPacket + the matching
+        // PlayAnimationPacket fan-out.
+        methods.add_method(
+            "PlayMapObjAnimation",
+            |_, this, (_player, animation_id): (mlua::AnyUserData, u32)| {
+                tracing::debug!(
+                    actor = this.actor_id,
+                    animation_id,
+                    "PlayMapObjAnimation captured (MapObjAnimationPacket builder not wired)",
+                );
+                Ok(())
+            },
+        );
 
         // Field-style accessors (scripts do `actor.positionX = ...` too).
         methods.add_meta_method(mlua::MetaMethod::Index, |_, this, key: String| {
@@ -857,6 +891,19 @@ impl UserData for LuaPlayer {
                 LuaCommand::SetCurrentJob {
                     player_id: this.snapshot.actor_id,
                     job_id,
+                },
+            );
+            Ok(())
+        });
+        // `player:SendAppearance()` — rebroadcast the player's
+        // current model + 28-slot appearance table after a gear
+        // swap. Called by EquipCommand.lua after equipping/
+        // unequipping items. 3 sites on LuaPlayer + 1 on LuaActor.
+        methods.add_method("SendAppearance", |_, this, _: ()| {
+            push(
+                &this.queue,
+                LuaCommand::SendAppearance {
+                    actor_id: this.snapshot.actor_id,
                 },
             );
             Ok(())
@@ -2270,6 +2317,20 @@ impl UserData for LuaZone {
                 lua.create_userdata(handle)
             },
         );
+        // `zone:FindActorInZoneByUniqueID(uniqueId)` — find an actor
+        // by its string `unique_id` (e.g. `"etc5l3_nashu"`). The
+        // single Lua call site (etc5l3.lua) chains
+        // `:ChangeState(...)` off the return, so we need to give
+        // back something indexable for the script not to crash.
+        // ZoneSnapshot doesn't carry per-actor unique_ids yet
+        // (it's actor_ids only), so we return nil — the etc5l3
+        // band-aid sit-on-floor effect won't play, but the script
+        // proceeds. Real impl needs unique_id → actor_id resolution
+        // via the registry + a (registry, unique_id) lookup table.
+        methods.add_method(
+            "FindActorInZoneByUniqueID",
+            |_, _this, _unique_id: String| Ok(Value::Nil),
+        );
     }
 }
 
@@ -2993,6 +3054,32 @@ impl UserData for LuaDirectorHandle {
         });
         methods.add_method("RemoveMember", |_, _this, _member: Value| Ok(()));
         methods.add_method("GetContentMembers", |_, _this, _: ()| Ok(Vec::<u32>::new()));
+        // `director:GetPlayerMembers()` — return only the player
+        // members of the director's content group. Same shape as
+        // `GetContentMembers` for now (empty Vec). 2 call sites:
+        // GuildleveCommon.lua reads `members[1]` for the leader,
+        // QuestDirectorMan0g001.lua passes the result to
+        // `onCreateContentArea`. With an empty Vec the script's
+        // `members[1]` indexing returns nil, but the scripts
+        // already null-check that path. Real impl would read
+        // `Session.transient_director_members[director_actor_id]`
+        // filtered to player actor kinds.
+        methods.add_method("GetPlayerMembers", |_, _this, _: ()| Ok(Vec::<u32>::new()));
+        // `director:StartContentGroup()` — kick the director's
+        // group activity forward. C# `ContentGroup.StartContentGroup`
+        // marks the group as "active" and broadcasts a sync packet.
+        // Garlemald's content-group lifecycle isn't wired through
+        // yet (the group is implicit in transient_director_members),
+        // so this is a logged stub. 4 call sites in content/*.lua
+        // and Quest director scripts.
+        methods.add_method("StartContentGroup", |_, this, _: ()| {
+            tracing::debug!(
+                director = this.actor_id,
+                name = %this.name,
+                "StartContentGroup captured (content-group sync packet not wired yet)",
+            );
+            Ok(())
+        });
         methods.add_method("SetLeader", |_, _this, _actor: Value| Ok(()));
         methods.add_method("IsInstanceRaid", |_, _this, _: ()| Ok(false));
         // `director:EndGuildleve(was_completed)` — drives the

@@ -371,6 +371,12 @@ pub enum LuaCommand {
         player_id: u32,
         inn_id: u8,
     },
+    /// `player:SendAppearance()` / `actor:SendAppearance()` — re-broadcast
+    /// the actor's full appearance (model_id + 28-slot appearance ids)
+    /// via 0x00D6 SetActorAppearancePacket. Called by `EquipCommand.lua`
+    /// after a gear swap and by `gm/graphic.lua` after an appearance edit.
+    /// 4 call sites total (3 on LuaPlayer + 1 on LuaActor).
+    SendAppearance { actor_id: u32 },
     /// `player:EquipAbility(classId, commandId, hotbarSlot, printMessage)`
     /// — write a command to the hotbar slot for the given class. C#
     /// `Player.EquipAbility` (Map Server/Actors/Chara/Player/Player.cs).

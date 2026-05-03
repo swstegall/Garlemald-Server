@@ -1390,6 +1390,9 @@ impl PacketProcessor {
             LC::SetCurrentJob { player_id, job_id } => {
                 self.apply_set_current_job(player_id, job_id).await;
             }
+            LC::SendAppearance { actor_id } => {
+                self.apply_send_appearance(actor_id).await;
+            }
             LC::SetPool {
                 actor_id,
                 kind,
@@ -3994,6 +3997,48 @@ impl PacketProcessor {
             command_id,
             slot,
             "EquipAbilityInFirstOpenSlot persisted",
+        );
+    }
+
+    /// `player:SendAppearance()` / `actor:SendAppearance()` —
+    /// rebroadcast 0x00D6 SetActorAppearancePacket from the actor's
+    /// current `chara.model_id` + `chara.appearance_ids` (28-slot
+    /// equipment table). Same fan-out shape as DoEmote: send to
+    /// self if player, broadcast to in-zone neighbours so all
+    /// witnesses see the new gear.
+    async fn apply_send_appearance(&self, actor_id: u32) {
+        let Some(handle) = self.registry.get(actor_id).await else {
+            tracing::debug!(actor = actor_id, "SendAppearance: actor not in registry");
+            return;
+        };
+        let (model_id, appearance_ids) = {
+            let c = handle.character.read().await;
+            (c.chara.model_id, c.chara.appearance_ids)
+        };
+        let bytes = crate::packets::send::actor::build_set_actor_appearance(
+            actor_id,
+            model_id,
+            &appearance_ids,
+        )
+        .to_bytes();
+        crate::runtime::dispatcher::send_to_self_if_player(
+            &self.registry,
+            &self.world,
+            actor_id,
+            bytes.clone(),
+        )
+        .await;
+        crate::runtime::dispatcher::broadcast_to_neighbours(
+            &self.world,
+            &self.registry,
+            actor_id,
+            bytes,
+        )
+        .await;
+        tracing::info!(
+            actor = actor_id,
+            model_id,
+            "SendAppearance applied + 0x00D6 broadcast",
         );
     }
 
