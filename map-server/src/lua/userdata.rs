@@ -309,6 +309,19 @@ pub struct PlayerSnapshot {
     pub homepoint: u32,
     pub homepoint_inn: u8,
 
+    /// Snapshot of `Player.hotbar` at LuaPlayer build time. Used by
+    /// `FindFirstCommandSlotById` (real lookup against the equipped
+    /// list) + the `charaWork.command[N]` field accessor (returns
+    /// the command_id at slot `N - command_border`). Empty for
+    /// transient hook callbacks built from `Character` only — those
+    /// snapshots don't drive the equip-ability flow so the empty-
+    /// hotbar fallback (every slot reads as 0) is safe.
+    pub hotbar: Vec<crate::gamedata::HotbarEntry>,
+    /// `charaWork.commandBorder` — hotbar slot offset (0x20 / 32
+    /// per C# default). Constant per-player today; here as a field
+    /// so future per-player overrides can flow through one path.
+    pub command_border: u8,
+
     pub mount_state: u8,
     pub has_chocobo: bool,
     pub chocobo_appearance: u8,
@@ -449,6 +462,13 @@ impl From<&crate::actor::Player> for PlayerSnapshot {
             birth_day: 0,
             homepoint: p.player.homepoint,
             homepoint_inn: p.player.homepoint_inn,
+            // Hotbar lives on CharaState (mirrored at session-begin
+            // from LoadedPlayer.hotbar) — registry-reachable so the
+            // EquipAbility/UnequipAbility/SwapAbilities apply paths
+            // can mutate it; the snapshot reads from the live
+            // CharaState here, not the load-time PlayerState.
+            hotbar: p.character.chara.hotbar.clone(),
+            command_border: 0x20,
             // Mount/chocobo state moved to CharaState so the processor
             // can mutate it via the registry. Read from CharaState here
             // — PlayerState stays as the login DTO shape and is copied
@@ -616,16 +636,32 @@ impl UserData for LuaPlayer {
         // that data is wired through to the snapshot.
         const DEFAULT_PER_JOB_SKILL_LEVEL: u32 = 50;
         fields.add_field_method_get("charaWork", |lua, this| {
+            // Use the per-snapshot command_border (defaults to
+            // 0x20 / 32 from the From<&Player> impl + the
+            // build_player_snapshot_for_login defaults).
+            let border = if this.snapshot.command_border == 0 {
+                COMMAND_BORDER
+            } else {
+                this.snapshot.command_border
+            };
             let cw = lua.create_table()?;
-            cw.set("commandBorder", COMMAND_BORDER)?;
+            cw.set("commandBorder", border)?;
 
-            // command[0..commandBorder+30] — populate with zeros so
-            // `charaWork.command[slot + commandBorder - 1]` reads
-            // back 0 (empty slot) rather than nil. The hotbar
-            // snapshot threading is a separate follow-up.
+            // command[0..commandBorder+30] — populate from the
+            // snapshot hotbar (real lookup post-`81f7218` follow-up).
+            // For each equipped row, `command[slot + commandBorder]`
+            // gets the `0xA0F00000 | command_id` mask the C# wire
+            // expects. Empty slots (and snapshots without hotbar
+            // population) read as 0.
             let cmd = lua.create_table()?;
-            for i in 0..(COMMAND_BORDER as usize + HOTBAR_SIZE) {
+            for i in 0..(border as usize + HOTBAR_SIZE) {
                 cmd.set(i, 0u32)?;
+            }
+            for entry in &this.snapshot.hotbar {
+                let absolute_slot = entry.hotbar_slot as usize + border as usize;
+                if absolute_slot < border as usize + HOTBAR_SIZE {
+                    cmd.set(absolute_slot, entry.command_id)?;
+                }
             }
             cw.set("command", cmd)?;
 
@@ -938,17 +974,35 @@ impl UserData for LuaPlayer {
         // `player:FindFirstCommandSlotById(commandId)` — C# walks
         // `charaWork.command[commandBorder..commandBorder+30]` looking
         // for `commandId | 0xA0F00000` and returns the first match
-        // (or `commandBorder + 30` if not found). Garlemald doesn't
-        // mirror `charaWork.command[]` on the snapshot yet (would
-        // require threading hotbar through every snapshot build site),
-        // so we always return the "not found" sentinel — scripts then
-        // take the "newly-equipping" branch in EquipAbilityCommand.lua,
-        // which is the desired path for first-time equips. The
-        // already-equipped early-out (and the "swap with existing
-        // slot" branch) are skipped until snapshot-side hotbar lands.
+        // (or `commandBorder + 30` if not found). Snapshot-side
+        // hotbar landed in this commit, so the lookup is now real:
+        // walk the equipped commands and return the absolute slot
+        // (zero-based DB slot + commandBorder offset). Empty hotbar
+        // still falls through to the not-found sentinel — that's the
+        // path transient quest_apply / quest_hook snapshots take, and
+        // matches the original "newly-equipping" branch behavior.
         methods.add_method(
             "FindFirstCommandSlotById",
-            |_, _this, _command_id: u32| Ok(0x20u16 + 30),
+            |_, this, command_id: u32| {
+                let border = this.snapshot.command_border as u16;
+                let needle = if command_id != 0 {
+                    command_id | 0xA0F00000
+                } else {
+                    0
+                };
+                for entry in &this.snapshot.hotbar {
+                    if entry.command_id == needle {
+                        // DB stores 0-based slot; client-facing index
+                        // is `slot + commandBorder`.
+                        return Ok(entry.hotbar_slot + border);
+                    }
+                }
+                // Not found → return the past-end sentinel that
+                // EquipAbilityCommand.lua's `isEquipped = oldSlot <
+                // commandBorder + 30` check uses to short-circuit
+                // the swap path.
+                Ok(border + 30)
+            },
         );
         // `player:DoClassChange(classId)` / `:PrepareClassChange(classId)`
         // — full class-change ceremony in C# loads a gear set,

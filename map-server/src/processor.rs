@@ -353,6 +353,11 @@ impl PacketProcessor {
         // reads this without a DB round-trip.
         character.chara.homepoint = loaded.homepoint;
         character.chara.homepoint_inn = loaded.homepoint_inn;
+        // Hotbar hydration — mirror the loaded equipped commands into
+        // CharaState so `PlayerSnapshot::hotbar` reads from the live
+        // registry-reachable state. EquipAbility/UnequipAbility/
+        // SwapAbilities apply paths mutate this vec in-place.
+        character.chara.hotbar = loaded.hotbar.clone();
         character.chara.tp = 0;
 
         // Hydrate the quest journal from the DB. `loaded.quest_scenario`
@@ -3848,12 +3853,37 @@ impl PacketProcessor {
             );
             return;
         }
+        // Mirror the in-memory CharaState hotbar so subsequent
+        // PlayerSnapshot builds (and FindFirstCommandSlotById /
+        // charaWork.command[N] reads) see the new equip
+        // immediately, not just after next character load. C# wire
+        // mask: `0xA0F00000 | command_id`.
+        if let Some(handle) = self.registry.get(player_id).await {
+            let mut c = handle.character.write().await;
+            let masked = command_id | 0xA0F00000;
+            // Replace existing entry at this slot, or push.
+            if let Some(entry) = c
+                .chara
+                .hotbar
+                .iter_mut()
+                .find(|e| e.hotbar_slot == zero_based_slot)
+            {
+                entry.command_id = masked;
+                entry.recast_time = 0;
+            } else {
+                c.chara.hotbar.push(crate::gamedata::HotbarEntry {
+                    hotbar_slot: zero_based_slot,
+                    command_id: masked,
+                    recast_time: 0,
+                });
+            }
+        }
         tracing::info!(
             player = player_id,
             class_id,
             command_id,
             hotbar_slot,
-            "EquipAbility persisted",
+            "EquipAbility persisted + snapshot mirror",
         );
     }
 
@@ -3876,11 +3906,16 @@ impl PacketProcessor {
             );
             return;
         }
+        // Mirror the snapshot hotbar drop.
+        if let Some(handle) = self.registry.get(player_id).await {
+            let mut c = handle.character.write().await;
+            c.chara.hotbar.retain(|e| e.hotbar_slot != hotbar_slot);
+        }
         tracing::info!(
             player = player_id,
             class_id,
             hotbar_slot,
-            "UnequipAbility persisted",
+            "UnequipAbility persisted + snapshot mirror",
         );
     }
 
@@ -3942,12 +3977,27 @@ impl PacketProcessor {
             );
             return;
         }
+        // Mirror the snapshot hotbar swap so subsequent reads
+        // (FindFirstCommandSlotById, charaWork.command[N]) see
+        // the new slot mapping immediately.
+        if let Some(handle) = self.registry.get(player_id).await {
+            let mut c = handle.character.write().await;
+            for entry in c.chara.hotbar.iter_mut() {
+                if entry.hotbar_slot == zero_1 {
+                    entry.command_id = cmd_2.0;
+                    entry.recast_time = cmd_2.1;
+                } else if entry.hotbar_slot == zero_2 {
+                    entry.command_id = cmd_1.0;
+                    entry.recast_time = cmd_1.1;
+                }
+            }
+        }
         tracing::info!(
             player = player_id,
             class_id,
             slot_1 = hotbar_slot_1,
             slot_2 = hotbar_slot_2,
-            "SwapAbilities persisted (both slots swapped)",
+            "SwapAbilities persisted (both slots swapped) + snapshot mirror",
         );
     }
 
@@ -3994,12 +4044,27 @@ impl PacketProcessor {
             );
             return;
         }
+        // Mirror the snapshot hotbar push.
+        if let Some(handle) = self.registry.get(player_id).await {
+            let mut c = handle.character.write().await;
+            let masked = command_id | 0xA0F00000;
+            if let Some(entry) = c.chara.hotbar.iter_mut().find(|e| e.hotbar_slot == slot) {
+                entry.command_id = masked;
+                entry.recast_time = 0;
+            } else {
+                c.chara.hotbar.push(crate::gamedata::HotbarEntry {
+                    hotbar_slot: slot,
+                    command_id: masked,
+                    recast_time: 0,
+                });
+            }
+        }
         tracing::info!(
             player = player_id,
             class_id,
             command_id,
             slot,
-            "EquipAbilityInFirstOpenSlot persisted",
+            "EquipAbilityInFirstOpenSlot persisted + snapshot mirror",
         );
     }
 
@@ -6470,6 +6535,13 @@ fn build_player_snapshot_for_login(c: &Character) -> crate::lua::userdata::Playe
         birth_day: c.chara.birthday_day,
         homepoint: 0,
         homepoint_inn: 0,
+        // Hotbar mirrored to CharaState at session-begin (see the
+        // `character.chara.hotbar = loaded.hotbar.clone()` line in
+        // the LoadedPlayer hydration above). Registry-reachable +
+        // mutable by the EquipAbility/UnequipAbility/SwapAbilities
+        // apply paths.
+        hotbar: c.chara.hotbar.clone(),
+        command_border: 0x20,
         mount_state: c.chara.mount_state,
         has_chocobo: c.chara.has_chocobo,
         chocobo_appearance: c.chara.chocobo_appearance,

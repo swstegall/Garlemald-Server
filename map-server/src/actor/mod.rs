@@ -234,6 +234,16 @@ pub struct CharaState {
     // city inn room.
     pub homepoint: u32,
     pub homepoint_inn: u8,
+    /// Equipped hotbar (current class's commands, slot-keyed by
+    /// `hotbar_slot` 0..29). Mirrored from `LoadedPlayer.hotbar` at
+    /// session-begin into CharaState — same registry-reachability
+    /// motivation as `homepoint` / `gc_current` / `mount_state`
+    /// above. The `LuaCommand::EquipAbility` / `UnequipAbility` /
+    /// `SwapAbilities` apply paths mutate this vec in-place + persist
+    /// to DB; the `PlayerSnapshot::hotbar` field reads from here at
+    /// snapshot build time, so `FindFirstCommandSlotById` and the
+    /// `charaWork.command[N]` accessor see the live equipped state.
+    pub hotbar: Vec<crate::gamedata::HotbarEntry>,
     /// Set when `player.lua:onBeginLogin` invokes `player:SetLoginDirector(...)`.
     /// Non-zero → the ScriptBind LuaParam layout switches to the
     /// "tutorial with init director" variant C# `Player.CreateScriptBindPacket`
@@ -303,6 +313,7 @@ impl Default for CharaState {
             gc_rank_uldah: 127,
             homepoint: 0,
             homepoint_inn: 0,
+            hotbar: Vec::new(),
             login_director_actor_id: 0,
             animation_id: 0,
             current_target: 0,
