@@ -2303,10 +2303,16 @@ impl UserData for LuaWorldManager {
             },
         );
 
-        // The remaining WorldManager methods (DoPlayerMoveInZone,
-        // CreateInvitePartyGroup, CreateTradeGroup, AcceptTrade, …) queue
-        // log-only stubs so scripts don't abort. Concrete handlers ship in
-        // later phases.
+        // The remaining WorldManager methods queue log-only stubs so
+        // scripts don't abort with `attempt to call a nil value`.
+        // Concrete handlers ship in later phases. The full list was
+        // surfaced by meteor-decomp's garlemald-lua-coverage report —
+        // every method below has at least one call site under
+        // `scripts/lua/`.
+        //
+        // Trade / bazaar / inter-player coordination — most have
+        // packet-level counterparts in `packets/recv/` that need
+        // dispatching to the right handler.
         for stub in [
             "DoPlayerMoveInZone",
             "CreateInvitePartyGroup",
@@ -2318,6 +2324,7 @@ impl UserData for LuaWorldManager {
             "GroupInviteResult",
             "ReloadZone",
             "AddToBazaar",
+            "RemoveFromBazaar",
             "BazaarBuyOperation",
             "BazaarSellOperation",
         ] {
@@ -2331,8 +2338,87 @@ impl UserData for LuaWorldManager {
             });
         }
 
+        // World-Linkshell management — 7 methods, all called from the
+        // linkshell UI scripts. Stubs for now; real impl needs
+        // round-tripping through the world-server (linkshell metadata
+        // lives there, not on map-server).
+        for stub in [
+            "RequestWorldLinkshellCreate",
+            "RequestWorldLinkshellInviteMember",
+            "RequestWorldLinkshellCancelInvite",
+            "RequestWorldLinkshellKick",
+            "RequestWorldLinkshellLeave",
+            "RequestWorldLinkshellChangeActive",
+            "RequestWorldLinkshellRankChange",
+        ] {
+            let name: &'static str = stub;
+            methods.add_method(name, move |_, this, _: mlua::MultiValue| {
+                push(
+                    &this.queue,
+                    LuaCommand::LogError(format!("WorldManager:{name} (stub — needs world-server round-trip)")),
+                );
+                Ok(())
+            });
+        }
+
+        // Warp methods. `WarpToPublicArea` / `WarpToPrivateArea` /
+        // `WarpToPosition` are the most-called missing methods (24 +
+        // 16 + 7 call sites respectively). Quest scripts use them
+        // heavily — log-only stubs are safe but quest progression
+        // through warp transitions will silently fail until concrete
+        // handlers route them through `apply_do_zone_change` /
+        // `apply_do_player_move_in_zone`.
+        for stub in [
+            "WarpToPublicArea",
+            "WarpToPrivateArea",
+            "WarpToPosition",
+        ] {
+            let name: &'static str = stub;
+            methods.add_method(name, move |_, this, _: mlua::MultiValue| {
+                push(
+                    &this.queue,
+                    LuaCommand::LogError(format!(
+                        "WorldManager:{name} (stub — quest warp will silently fail)"
+                    )),
+                );
+                Ok(())
+            });
+        }
+
+        // Lookup-style methods that scripts use to resolve a target
+        // (actor by name, status effect, battle command). Returning
+        // Nil lets callers check `if x then ... end` without crashing,
+        // even though the lookup will always come up empty until the
+        // real registry plumbing lands.
         methods.add_method("GetPCInWorld", |_, _, _name: String| {
             Ok(Value::Nil) // TODO: resolve to LuaPlayer once player registry is live
+        });
+        methods.add_method("GetActorInWorld", |_, _, _: mlua::MultiValue| {
+            // TODO: resolve actor by id/zone — used by 7 call sites
+            // (mostly NPC scripts cross-referencing each other).
+            Ok(Value::Nil)
+        });
+        methods.add_method(
+            "GetActorInWorldByUniqueId",
+            |_, _, _unique_id: String| {
+                // TODO: resolve to LuaActor / LuaNpc by unique_id.
+                // Heavy use (12 call sites) — most NPC interaction
+                // scripts under unique/ use this pattern:
+                //     other = GetWorldManager():GetActorInWorldByUniqueId("name")
+                //     if other then other:DoSomething() end
+                // Returning Nil keeps the `if other then` guard
+                // working; concrete impl needs to scan the actor
+                // registry by unique_id for an NPC match.
+                Ok(Value::Nil)
+            },
+        );
+        methods.add_method("GetBattleCommand", |_, _, _id: u32| {
+            // TODO: return LuaBattleCommand by id (1 call site).
+            Ok(Value::Nil)
+        });
+        methods.add_method("GetStatusEffect", |_, _, _id: u32| {
+            // TODO: return LuaStatusEffect by id (2 call sites).
+            Ok(Value::Nil)
         });
 
         // `GetWorldManager():GetArea(zoneId)` — retail returns the
