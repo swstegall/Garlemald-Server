@@ -371,6 +371,50 @@ pub enum LuaCommand {
         player_id: u32,
         inn_id: u8,
     },
+    /// `player:EquipAbility(classId, commandId, hotbarSlot, printMessage)`
+    /// — write a command to the hotbar slot for the given class. C#
+    /// `Player.EquipAbility` (Map Server/Actors/Chara/Player/Player.cs).
+    /// Wraps `db.equip_ability` for the persist; the in-memory hotbar
+    /// snapshot refresh + `charaWork.command[N]` SetActorProperty fan-out
+    /// is deferred (next login picks up the DB row).
+    EquipAbility {
+        player_id: u32,
+        class_id: u8,
+        command_id: u32,
+        hotbar_slot: u16,
+    },
+    /// `player:UnequipAbility(slot)` — wipe a command out of the
+    /// hotbar slot for the player's current class.
+    UnequipAbility {
+        player_id: u32,
+        class_id: u8,
+        hotbar_slot: u16,
+    },
+    /// `player:SwapAbilities(slot1, slot2)` — swap two hotbar slots
+    /// in-place. Round-trips through DB to keep persistence in sync.
+    SwapAbilities {
+        player_id: u32,
+        class_id: u8,
+        hotbar_slot_1: u16,
+        hotbar_slot_2: u16,
+    },
+    /// `player:EquipAbilityInFirstOpenSlot(classId, commandId)` —
+    /// looks up the first empty hotbar slot for `classId` then writes
+    /// `commandId` there. Used by the GM `eaction` / `equipactions`
+    /// commands to one-shot-grant a command without UI.
+    EquipAbilityInFirstOpenSlot {
+        player_id: u32,
+        class_id: u8,
+        command_id: u32,
+    },
+    /// `player:SetCurrentJob(jobId)` — sets the player's current
+    /// job, broadcasts `SetCurrentJobPacket` (0x01A4) and re-loads
+    /// the job's hotbar from DB. C# `Player.SetCurrentJob`
+    /// (Map Server/Actors/Chara/Player/Player.cs:1300).
+    SetCurrentJob {
+        player_id: u32,
+        job_id: u8,
+    },
     /// `player:SetNpcLs(id, state)` / `player:AddNpcLs(id)` and the
     /// quest-side `quest:NewNpcLsMsg(from)` all funnel here. State
     /// values mirror C# `Player.NPCLS_*` constants:

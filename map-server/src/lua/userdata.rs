@@ -724,6 +724,144 @@ impl UserData for LuaPlayer {
             Ok(())
         });
 
+        // --- Class / job / hotbar ability slots ----------------------
+        // Wraps the existing `db.equip_ability` / `db.unequip_ability` /
+        // `db.find_first_command_slot` helpers via per-method
+        // LuaCommand variants. C# wire layer:
+        // Map Server/Actors/Chara/Player/Player.cs.
+        //
+        // Hotbar slot indices on the wire are 1.x-style "absolute"
+        // values starting at `commandBorder` (0x20 / 32); the DB
+        // rows use 0-based slot indices, so the apply methods do
+        // `slot - commandBorder` before persisting. Bindings pass
+        // through the absolute value unchanged.
+        methods.add_method(
+            "EquipAbility",
+            |_, this, (class_id, command_id, hotbar_slot, _print_message): (
+                u8,
+                u32,
+                u16,
+                Option<bool>,
+            )| {
+                push(
+                    &this.queue,
+                    LuaCommand::EquipAbility {
+                        player_id: this.snapshot.actor_id,
+                        class_id,
+                        command_id,
+                        hotbar_slot,
+                    },
+                );
+                Ok(())
+            },
+        );
+        // C# `Player.UnequipAbility(slot)` decrements `slot` by 1
+        // before saving (1-indexed → 0-indexed). The single Lua
+        // call site (EquipAbilityCommand.lua) already passes a
+        // pre-computed 0-based slot, so we forward as-is.
+        methods.add_method("UnequipAbility", |_, this, hotbar_slot: u16| {
+            push(
+                &this.queue,
+                LuaCommand::UnequipAbility {
+                    player_id: this.snapshot.actor_id,
+                    class_id: if this.snapshot.current_job != 0 {
+                        this.snapshot.current_job
+                    } else {
+                        this.snapshot.current_class
+                    },
+                    hotbar_slot,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method(
+            "SwapAbilities",
+            |_, this, (slot_1, slot_2): (u16, u16)| {
+                push(
+                    &this.queue,
+                    LuaCommand::SwapAbilities {
+                        player_id: this.snapshot.actor_id,
+                        class_id: if this.snapshot.current_job != 0 {
+                            this.snapshot.current_job
+                        } else {
+                            this.snapshot.current_class
+                        },
+                        hotbar_slot_1: slot_1,
+                        hotbar_slot_2: slot_2,
+                    },
+                );
+                Ok(())
+            },
+        );
+        methods.add_method(
+            "EquipAbilityInFirstOpenSlot",
+            |_, this, (class_id, command_id): (u8, u32)| {
+                push(
+                    &this.queue,
+                    LuaCommand::EquipAbilityInFirstOpenSlot {
+                        player_id: this.snapshot.actor_id,
+                        class_id,
+                        command_id,
+                    },
+                );
+                // C# returns bool ("did we equip?"); we always return
+                // true and let the apply method log a "hotbar full"
+                // debug line if it can't actually slot the command.
+                // Both callers (gm/eaction.lua, gm/equipactions.lua)
+                // ignore the return value or only use it for a
+                // success message.
+                Ok(true)
+            },
+        );
+        // `player:FindFirstCommandSlotById(commandId)` — C# walks
+        // `charaWork.command[commandBorder..commandBorder+30]` looking
+        // for `commandId | 0xA0F00000` and returns the first match
+        // (or `commandBorder + 30` if not found). Garlemald doesn't
+        // mirror `charaWork.command[]` on the snapshot yet (would
+        // require threading hotbar through every snapshot build site),
+        // so we always return the "not found" sentinel — scripts then
+        // take the "newly-equipping" branch in EquipAbilityCommand.lua,
+        // which is the desired path for first-time equips. The
+        // already-equipped early-out (and the "swap with existing
+        // slot" branch) are skipped until snapshot-side hotbar lands.
+        methods.add_method(
+            "FindFirstCommandSlotById",
+            |_, _this, _command_id: u32| Ok(0x20u16 + 30),
+        );
+        // `player:DoClassChange(classId)` / `:PrepareClassChange(classId)`
+        // — full class-change ceremony in C# loads a gear set,
+        // recalculates stats, re-binds hotbar commands, broadcasts
+        // class change packet, etc. Garlemald doesn't model
+        // gear-sets / per-class stat curves yet; logged stubs let
+        // the EquipCommand.lua flow proceed. Real impl is a
+        // larger Tier 4 item.
+        methods.add_method("DoClassChange", |_, this, class_id: u8| {
+            tracing::debug!(
+                player = this.snapshot.actor_id,
+                class_id,
+                "DoClassChange captured (gear-set + stat-recalc + class packet not wired yet)",
+            );
+            Ok(())
+        });
+        methods.add_method("PrepareClassChange", |_, this, class_id: u8| {
+            tracing::debug!(
+                player = this.snapshot.actor_id,
+                class_id,
+                "PrepareClassChange captured (SendCharaExpInfo not wired yet)",
+            );
+            Ok(())
+        });
+        methods.add_method("SetCurrentJob", |_, this, job_id: u8| {
+            push(
+                &this.queue,
+                LuaCommand::SetCurrentJob {
+                    player_id: this.snapshot.actor_id,
+                    job_id,
+                },
+            );
+            Ok(())
+        });
+
         // --- NPC Linkshell membership / state ------------------------
         // C# `Player.AddNpcLs` / `Player.SetNpcLs` / `Player.HasNpcLs`.
         // Both `AddNpcLs(id)` (single arg, defaults to NPCLS_INACTIVE)

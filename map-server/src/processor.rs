@@ -1353,6 +1353,43 @@ impl PacketProcessor {
                 self.apply_player_set_npc_ls(player_id, npc_ls_id, state)
                     .await;
             }
+            LC::EquipAbility {
+                player_id,
+                class_id,
+                command_id,
+                hotbar_slot,
+            } => {
+                self.apply_equip_ability(player_id, class_id, command_id, hotbar_slot)
+                    .await;
+            }
+            LC::UnequipAbility {
+                player_id,
+                class_id,
+                hotbar_slot,
+            } => {
+                self.apply_unequip_ability(player_id, class_id, hotbar_slot)
+                    .await;
+            }
+            LC::SwapAbilities {
+                player_id,
+                class_id,
+                hotbar_slot_1,
+                hotbar_slot_2,
+            } => {
+                self.apply_swap_abilities(player_id, class_id, hotbar_slot_1, hotbar_slot_2)
+                    .await;
+            }
+            LC::EquipAbilityInFirstOpenSlot {
+                player_id,
+                class_id,
+                command_id,
+            } => {
+                self.apply_equip_ability_in_first_open_slot(player_id, class_id, command_id)
+                    .await;
+            }
+            LC::SetCurrentJob { player_id, job_id } => {
+                self.apply_set_current_job(player_id, job_id).await;
+            }
             LC::SetPool {
                 actor_id,
                 kind,
@@ -3774,6 +3811,227 @@ impl PacketProcessor {
             is_calling,
             is_extra,
             "SetNpcLs persisted",
+        );
+    }
+
+    /// `player:EquipAbility(classId, commandId, hotbarSlot, _)` —
+    /// persist a single hotbar slot to DB. C#
+    /// `Player.EquipAbility` decrements `hotbarSlot` by `commandBorder`
+    /// (32) before saving the 0-based DB row; we mirror that math
+    /// here. The in-memory hotbar snapshot + the
+    /// `charaWork.command[N]` SetActorProperty fan-out are deferred
+    /// — the next character load picks the row up.
+    async fn apply_equip_ability(
+        &self,
+        player_id: u32,
+        class_id: u8,
+        command_id: u32,
+        hotbar_slot: u16,
+    ) {
+        const COMMAND_BORDER: u16 = 0x20;
+        let zero_based_slot = hotbar_slot.saturating_sub(COMMAND_BORDER);
+        if let Err(e) = self
+            .db
+            .equip_ability(player_id, class_id, zero_based_slot, command_id, 0)
+            .await
+        {
+            tracing::warn!(
+                player = player_id, class_id, command_id, hotbar_slot,
+                err = %e,
+                "EquipAbility: DB persist failed",
+            );
+            return;
+        }
+        tracing::info!(
+            player = player_id,
+            class_id,
+            command_id,
+            hotbar_slot,
+            "EquipAbility persisted",
+        );
+    }
+
+    /// `player:UnequipAbility(slot)` — DELETE the hotbar row for the
+    /// player's current class + slot. C# decrements `slot` by 1 (its
+    /// scripts pass 1-indexed slots) plus `commandBorder`; the
+    /// scripts that hit this binding (EquipAbilityCommand.lua) already
+    /// pre-massage the slot index before calling, so we accept a raw
+    /// 0-based slot.
+    async fn apply_unequip_ability(&self, player_id: u32, class_id: u8, hotbar_slot: u16) {
+        if let Err(e) = self
+            .db
+            .unequip_ability(player_id, class_id, hotbar_slot)
+            .await
+        {
+            tracing::warn!(
+                player = player_id, class_id, hotbar_slot,
+                err = %e,
+                "UnequipAbility: DB persist failed",
+            );
+            return;
+        }
+        tracing::info!(
+            player = player_id,
+            class_id,
+            hotbar_slot,
+            "UnequipAbility persisted",
+        );
+    }
+
+    /// `player:SwapAbilities(slot1, slot2)` — exchange two hotbar
+    /// slots. Round-trips through `db.load_hotbar` to read the
+    /// current commands then re-writes both rows.
+    async fn apply_swap_abilities(
+        &self,
+        player_id: u32,
+        class_id: u8,
+        hotbar_slot_1: u16,
+        hotbar_slot_2: u16,
+    ) {
+        const COMMAND_BORDER: u16 = 0x20;
+        let zero_1 = hotbar_slot_1.saturating_sub(COMMAND_BORDER);
+        let zero_2 = hotbar_slot_2.saturating_sub(COMMAND_BORDER);
+        let entries = match self.db.load_hotbar(player_id, class_id).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(
+                    player = player_id, class_id,
+                    err = %e,
+                    "SwapAbilities: DB load failed",
+                );
+                return;
+            }
+        };
+        let cmd_1 = entries
+            .iter()
+            .find(|e| e.hotbar_slot == zero_1)
+            .map(|e| (e.command_id, e.recast_time))
+            .unwrap_or((0, 0));
+        let cmd_2 = entries
+            .iter()
+            .find(|e| e.hotbar_slot == zero_2)
+            .map(|e| (e.command_id, e.recast_time))
+            .unwrap_or((0, 0));
+        if let Err(e) = self
+            .db
+            .equip_ability(player_id, class_id, zero_1, cmd_2.0, cmd_2.1)
+            .await
+        {
+            tracing::warn!(
+                player = player_id, class_id, slot = zero_1,
+                err = %e,
+                "SwapAbilities: DB write slot1 failed",
+            );
+            return;
+        }
+        if let Err(e) = self
+            .db
+            .equip_ability(player_id, class_id, zero_2, cmd_1.0, cmd_1.1)
+            .await
+        {
+            tracing::warn!(
+                player = player_id, class_id, slot = zero_2,
+                err = %e,
+                "SwapAbilities: DB write slot2 failed",
+            );
+            return;
+        }
+        tracing::info!(
+            player = player_id,
+            class_id,
+            slot_1 = hotbar_slot_1,
+            slot_2 = hotbar_slot_2,
+            "SwapAbilities persisted (both slots swapped)",
+        );
+    }
+
+    /// `player:EquipAbilityInFirstOpenSlot(classId, commandId)` —
+    /// composite: find the first empty slot via
+    /// `db.find_first_command_slot`, then `equip_ability` there.
+    async fn apply_equip_ability_in_first_open_slot(
+        &self,
+        player_id: u32,
+        class_id: u8,
+        command_id: u32,
+    ) {
+        let slot = match self.db.find_first_command_slot(player_id, class_id).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(
+                    player = player_id, class_id,
+                    err = %e,
+                    "EquipAbilityInFirstOpenSlot: find_first_command_slot failed",
+                );
+                return;
+            }
+        };
+        // The hotbar holds 30 commands; reject if the helper returned
+        // an out-of-range index (means the bar is full).
+        if slot >= 30 {
+            tracing::debug!(
+                player = player_id,
+                class_id,
+                command_id,
+                "EquipAbilityInFirstOpenSlot: hotbar full",
+            );
+            return;
+        }
+        if let Err(e) = self
+            .db
+            .equip_ability(player_id, class_id, slot, command_id, 0)
+            .await
+        {
+            tracing::warn!(
+                player = player_id, class_id, command_id, slot,
+                err = %e,
+                "EquipAbilityInFirstOpenSlot: DB persist failed",
+            );
+            return;
+        }
+        tracing::info!(
+            player = player_id,
+            class_id,
+            command_id,
+            slot,
+            "EquipAbilityInFirstOpenSlot persisted",
+        );
+    }
+
+    /// `player:SetCurrentJob(jobId)` — flips the player's
+    /// `current_job` field, broadcasts `SetCurrentJobPacket` (0x01A4)
+    /// to the player + neighbours so the nameplate flips, and
+    /// re-loads the hotbar from DB for the new job. C#
+    /// `Player.SetCurrentJob` (Map Server/Actors/Chara/Player/Player.cs:1300).
+    async fn apply_set_current_job(&self, player_id: u32, job_id: u8) {
+        let Some(handle) = self.registry.get(player_id).await else {
+            tracing::debug!(player = player_id, job_id, "SetCurrentJob: actor missing");
+            return;
+        };
+        let actor_id = handle.actor_id;
+        {
+            let mut c = handle.character.write().await;
+            c.chara.current_job = job_id as u16;
+        }
+        let bytes = crate::packets::send::player::build_set_current_job(actor_id, job_id as u32)
+            .to_bytes();
+        crate::runtime::dispatcher::send_to_self_if_player(
+            &self.registry,
+            &self.world,
+            actor_id,
+            bytes.clone(),
+        )
+        .await;
+        crate::runtime::dispatcher::broadcast_to_neighbours(
+            &self.world,
+            &self.registry,
+            actor_id,
+            bytes,
+        )
+        .await;
+        tracing::info!(
+            player = player_id,
+            job_id,
+            "SetCurrentJob applied + 0x01A4 broadcast (hotbar reload deferred to next character load)",
         );
     }
 
