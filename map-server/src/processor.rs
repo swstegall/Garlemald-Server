@@ -3920,6 +3920,26 @@ impl PacketProcessor {
             hotbar_slot,
             "EquipAbility persisted + snapshot mirror",
         );
+
+        // Fan out the canonical "<command> equipped" toast.
+        // Mirror C# `Player.EquipAbility`'s
+        // `SendGameMessage(WorldMaster, 30603, 0x20, 0, commandId)`.
+        if let Some(handle) = self.registry.get(player_id).await {
+            if let Some(client) = self.world.client(handle.session_id).await {
+                let pkt = crate::packets::send::misc::build_text_sheet_no_source_auto(
+                    handle.actor_id,
+                    crate::packets::send::misc::WORLD_MASTER_ACTOR_ID,
+                    /* text_id */ 30603,
+                    crate::packets::send::misc::MESSAGE_TYPE_SYSTEM,
+                    &[
+                        common::luaparam::LuaParam::UInt32(0),
+                        common::luaparam::LuaParam::UInt32(command_id),
+                    ],
+                    /* prefer_alt */ false,
+                );
+                client.send_bytes(pkt.to_bytes()).await;
+            }
+        }
     }
 
     /// `player:UnequipAbility(slot)` — DELETE the hotbar row for the
@@ -3929,6 +3949,22 @@ impl PacketProcessor {
     /// pre-massage the slot index before calling, so we accept a raw
     /// 0-based slot.
     async fn apply_unequip_ability(&self, player_id: u32, class_id: u8, hotbar_slot: u16) {
+        // Capture the soon-to-be-dropped command_id from the in-memory
+        // hotbar snapshot — needed to build the 30604 toast below.
+        // C# wire format strips the `0xA0F00000` mask via XOR; we do
+        // the same here so the LuaParam carries the raw command id.
+        let unmasked_command_id: u32 = if let Some(handle) = self.registry.get(player_id).await {
+            let c = handle.character.read().await;
+            c.chara
+                .hotbar
+                .iter()
+                .find(|e| e.hotbar_slot == hotbar_slot)
+                .map(|e| e.command_id ^ 0xA0F00000)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
         if let Err(e) = self
             .db
             .unequip_ability(player_id, class_id, hotbar_slot)
@@ -3941,17 +3977,41 @@ impl PacketProcessor {
             );
             return;
         }
-        // Mirror the snapshot hotbar drop.
-        if let Some(handle) = self.registry.get(player_id).await {
+        // Mirror the snapshot hotbar drop + capture handle for the
+        // toast fan-out below.
+        let session_id = if let Some(handle) = self.registry.get(player_id).await {
             let mut c = handle.character.write().await;
             c.chara.hotbar.retain(|e| e.hotbar_slot != hotbar_slot);
-        }
+            handle.session_id
+        } else {
+            0
+        };
         tracing::info!(
             player = player_id,
             class_id,
             hotbar_slot,
             "UnequipAbility persisted + snapshot mirror",
         );
+
+        // Fan out the canonical "<command> unequipped" toast — only
+        // when there was a command in the slot (matches C#'s
+        // `if (printMessage && commandId != 0)` gate).
+        if unmasked_command_id != 0 && session_id != 0 {
+            if let Some(client) = self.world.client(session_id).await {
+                let pkt = crate::packets::send::misc::build_text_sheet_no_source_auto(
+                    player_id,
+                    crate::packets::send::misc::WORLD_MASTER_ACTOR_ID,
+                    /* text_id */ 30604,
+                    crate::packets::send::misc::MESSAGE_TYPE_SYSTEM,
+                    &[
+                        common::luaparam::LuaParam::UInt32(0),
+                        common::luaparam::LuaParam::UInt32(unmasked_command_id),
+                    ],
+                    /* prefer_alt */ false,
+                );
+                client.send_bytes(pkt.to_bytes()).await;
+            }
+        }
     }
 
     /// `player:SwapAbilities(slot1, slot2)` — exchange two hotbar
@@ -4101,6 +4161,26 @@ impl PacketProcessor {
             slot,
             "EquipAbilityInFirstOpenSlot persisted + snapshot mirror",
         );
+
+        // Sibling auto-fire of the EquipAbility 30603 toast — same
+        // wire shape, same C# precedent (Player.EquipAbility passes
+        // `printMessage = true` from EquipAbilityInFirstOpenSlot).
+        if let Some(handle) = self.registry.get(player_id).await {
+            if let Some(client) = self.world.client(handle.session_id).await {
+                let pkt = crate::packets::send::misc::build_text_sheet_no_source_auto(
+                    handle.actor_id,
+                    crate::packets::send::misc::WORLD_MASTER_ACTOR_ID,
+                    /* text_id */ 30603,
+                    crate::packets::send::misc::MESSAGE_TYPE_SYSTEM,
+                    &[
+                        common::luaparam::LuaParam::UInt32(0),
+                        common::luaparam::LuaParam::UInt32(command_id),
+                    ],
+                    /* prefer_alt */ false,
+                );
+                client.send_bytes(pkt.to_bytes()).await;
+            }
+        }
     }
 
     /// `player:SavePlayTime()` — persist the player's play_time so
@@ -5444,6 +5524,21 @@ impl PacketProcessor {
             quest = quest_id,
             "AbandonQuest applied",
         );
+
+        // Fan out the canonical "<Quest> abandoned." toast.
+        // Mirror C# `WorldManager.AbandonQuest`'s
+        // `SendGameMessage(this, WorldMaster, 25236, 0x20, abandoned.GetQuestId())`.
+        if let Some(client) = self.world.client(handle.session_id).await {
+            let pkt = crate::packets::send::misc::build_text_sheet_no_source_auto(
+                handle.actor_id,
+                crate::packets::send::misc::WORLD_MASTER_ACTOR_ID,
+                /* text_id */ 25236,
+                crate::packets::send::misc::MESSAGE_TYPE_SYSTEM,
+                &[common::luaparam::LuaParam::UInt32(quest_id)],
+                /* prefer_alt */ false,
+            );
+            client.send_bytes(pkt.to_bytes()).await;
+        }
     }
 
     /// Build a `PlayerSnapshot` + `LuaQuestHandle`, invoke the named
