@@ -272,6 +272,11 @@ pub struct QuestStateSnapshot {
     pub sequence: u32,
     pub flags: u32,
     pub counters: [u16; 3],
+    /// Migration-050 NpcLs scratchpad — read by `LuaQuestHandle`'s
+    /// `NewNpcLsMsg` / `ReadNpcLsMsg` / `EndOfNpcLsMsgs` to know
+    /// which NPC linkshell is driving the active message chain.
+    pub npc_ls_from: u32,
+    pub npc_ls_msg_step: u8,
 }
 
 // ---------------------------------------------------------------------------
@@ -422,6 +427,8 @@ impl From<&crate::actor::Player> for PlayerSnapshot {
                     q.get_counter(1),
                     q.get_counter(2),
                 ],
+                npc_ls_from: q.get_npc_ls_from(),
+                npc_ls_msg_step: q.get_npc_ls_msg_step(),
             })
             .collect();
         let completed_quests: Vec<u32> = p.character.quest_journal.iter_completed().collect();
@@ -2087,6 +2094,8 @@ impl UserData for LuaPlayer {
                     sequence: 0,
                     flags: 0,
                     counters: [0; 3],
+                    npc_ls_from: 0,
+                    npc_ls_msg_step: 0,
                 });
             let handle = LuaQuestHandle {
                 player_id: this.snapshot.actor_id,
@@ -2095,6 +2104,8 @@ impl UserData for LuaPlayer {
                 sequence: state.sequence,
                 flags: state.flags,
                 counters: state.counters,
+                npc_ls_from: state.npc_ls_from,
+                npc_ls_msg_step: state.npc_ls_msg_step,
                 queue: this.queue.clone(),
             };
             lua.create_userdata(handle)
@@ -2169,6 +2180,8 @@ impl UserData for LuaPlayer {
                         sequence: 0,
                         flags: 0,
                         counters: [0; 3],
+                        npc_ls_from: 0,
+                        npc_ls_msg_step: 0,
                     });
                 let handle = LuaQuestHandle {
                     player_id: this.snapshot.actor_id,
@@ -2177,6 +2190,8 @@ impl UserData for LuaPlayer {
                     sequence: state.sequence,
                     flags: state.flags,
                     counters: state.counters,
+                    npc_ls_from: state.npc_ls_from,
+                    npc_ls_msg_step: state.npc_ls_msg_step,
                     queue: this.queue.clone(),
                 };
                 table.set(i + 1, lua.create_userdata(handle)?)?;
@@ -2203,6 +2218,8 @@ impl UserData for LuaPlayer {
                             sequence: 0,
                             flags: 0,
                             counters: [0; 3],
+                            npc_ls_from: 0,
+                            npc_ls_msg_step: 0,
                         });
                     let handle = LuaQuestHandle {
                         player_id: this.snapshot.actor_id,
@@ -2211,6 +2228,8 @@ impl UserData for LuaPlayer {
                         sequence: state.sequence,
                         flags: state.flags,
                         counters: state.counters,
+                        npc_ls_from: state.npc_ls_from,
+                        npc_ls_msg_step: state.npc_ls_msg_step,
                         queue: this.queue.clone(),
                     };
                     Ok(Value::UserData(lua.create_userdata(handle)?))
@@ -3887,6 +3906,12 @@ pub struct LuaQuestHandle {
     pub flags: u32,
     /// Mirror of `QuestData.counters`.
     pub counters: [u16; 3],
+    /// Mirror of `QuestData.npc_ls_from` — set by `Quest::NewNpcLsMsg`,
+    /// read by `ReadNpcLsMsg` / `EndOfNpcLsMsgs` to know which NPC LS
+    /// to flip back to ACTIVE / INACTIVE state.
+    pub npc_ls_from: u32,
+    /// Mirror of `QuestData.npc_ls_msg_step`.
+    pub npc_ls_msg_step: u8,
     pub queue: Arc<Mutex<CommandQueue>>,
 }
 
@@ -4085,9 +4110,29 @@ impl UserData for LuaQuestHandle {
         // they log + no-op. The visible difference: the alert glow
         // doesn't auto-clear after reading. Acceptable until the
         // per-quest scratchpad lands.
+        const NPCLS_INACTIVE: u8 = 1;
+        const NPCLS_ACTIVE: u8 = 2;
         const NPCLS_ALERT: u8 = 3;
         const MSG_GLOW_EMANATES: u32 = 25119;
         methods.add_method("NewNpcLsMsg", |_, this, from: u32| {
+            // Mirror C# `Quest::NewNpcLsMsg`:
+            // 1. owner.AddNpcLs(from) if !HasNpcLs (PlayerSetNpcLs
+            //    with state=INACTIVE handles the add; the next
+            //    SetNpcLs(ALERT) overwrites).
+            // 2. data.SetNpcLsFrom(from) — write per-quest scratchpad
+            //    (now persisted via migration 050).
+            // 3. owner.SetNpcLs(from, NPCLS_ALERT) — flip the icon
+            //    glow on.
+            // 4. Send the "A glow emanates from the <NpcLs> linkpearl"
+            //    system message (id 25119).
+            push(
+                &this.queue,
+                LuaCommand::QuestSetNpcLsFrom {
+                    player_id: this.player_id,
+                    quest_id: this.quest_id,
+                    from,
+                },
+            );
             push(
                 &this.queue,
                 LuaCommand::PlayerSetNpcLs {
@@ -4108,18 +4153,57 @@ impl UserData for LuaQuestHandle {
             Ok(())
         });
         methods.add_method("ReadNpcLsMsg", |_, this, _: ()| {
-            tracing::debug!(
-                player = this.player_id,
-                quest = this.quest_id,
-                "ReadNpcLsMsg captured (per-quest msgStep + ACTIVE flip not yet wired)",
+            // Mirror C# `Quest::ReadNpcLsMsg`:
+            // 1. data.IncrementNpcLsMsgStep() — bump per-quest counter.
+            // 2. owner.SetNpcLs(data.GetNpcLsFrom(), NPCLS_ACTIVE) —
+            //    flip the icon back to "active" so the player can
+            //    re-click for the next line.
+            // Snapshot may be stale by 1 (we read npc_ls_from from
+            // the value at GetData time); if the script chained
+            // NewNpcLsMsg then ReadNpcLsMsg in the same hook the
+            // snapshot lookup still resolves to the right id because
+            // both commands queue against the same player.
+            push(
+                &this.queue,
+                LuaCommand::QuestIncrementNpcLsMsgStep {
+                    player_id: this.player_id,
+                    quest_id: this.quest_id,
+                },
             );
+            if this.npc_ls_from != 0 {
+                push(
+                    &this.queue,
+                    LuaCommand::PlayerSetNpcLs {
+                        player_id: this.player_id,
+                        npc_ls_id: this.npc_ls_from,
+                        state: NPCLS_ACTIVE,
+                    },
+                );
+            }
             Ok(())
         });
         methods.add_method("EndOfNpcLsMsgs", |_, this, _: ()| {
-            tracing::debug!(
-                player = this.player_id,
-                quest = this.quest_id,
-                "EndOfNpcLsMsgs captured (per-quest npc_ls_from not tracked, can't auto-clear)",
+            // Mirror C# `Quest::EndOfNpcLsMsgs`:
+            // 1. owner.SetNpcLs(data.GetNpcLsFrom(), NPCLS_INACTIVE) —
+            //    flip the icon to "inactive" (no glow, but still in
+            //    the player's collection).
+            // 2. data.ClearNpcLs() — zero the per-quest scratchpad.
+            if this.npc_ls_from != 0 {
+                push(
+                    &this.queue,
+                    LuaCommand::PlayerSetNpcLs {
+                        player_id: this.player_id,
+                        npc_ls_id: this.npc_ls_from,
+                        state: NPCLS_INACTIVE,
+                    },
+                );
+            }
+            push(
+                &this.queue,
+                LuaCommand::QuestClearNpcLs {
+                    player_id: this.player_id,
+                    quest_id: this.quest_id,
+                },
             );
             Ok(())
         });
@@ -4131,6 +4215,8 @@ impl UserData for LuaQuestHandle {
                 quest_id: this.quest_id,
                 flags: this.flags,
                 counters: this.counters,
+                npc_ls_from: this.npc_ls_from,
+                npc_ls_msg_step: this.npc_ls_msg_step,
                 queue: this.queue.clone(),
             };
             lua.create_userdata(handle)
@@ -4225,6 +4311,8 @@ pub struct LuaQuestDataHandle {
     pub quest_id: u32,
     pub flags: u32,
     pub counters: [u16; 3],
+    pub npc_ls_from: u32,
+    pub npc_ls_msg_step: u8,
     pub queue: Arc<Mutex<CommandQueue>>,
 }
 
@@ -4336,11 +4424,43 @@ impl UserData for LuaQuestDataHandle {
         // --- Time / NpcLs — not persisted by the new schema yet ---------
         methods.add_method("SetTimeNow", |_, _this, _: ()| Ok(()));
         methods.add_method("GetTime", |_, _this, _: ()| Ok(0u32));
-        methods.add_method("SetNpcLsFrom", |_, _this, _: u32| Ok(()));
-        methods.add_method("IncrementNpcLsMsgStep", |_, _this, _: ()| Ok(()));
-        methods.add_method("GetNpcLsFrom", |_, _this, _: ()| Ok(0u32));
-        methods.add_method("GetMsgStep", |_, _this, _: ()| Ok(0u8));
-        methods.add_method("ClearNpcLs", |_, _this, _: ()| Ok(()));
+        // Migration-050 NpcLs scratchpad — backed by the new
+        // `npc_ls_from` / `npc_ls_msg_step` columns. Setters dispatch
+        // LuaCommand variants so the live Quest + DB row stay in
+        // sync; getters read from the snapshot.
+        methods.add_method("SetNpcLsFrom", |_, this, from: u32| {
+            push(
+                &this.queue,
+                LuaCommand::QuestSetNpcLsFrom {
+                    player_id: this.player_id,
+                    quest_id: this.quest_id,
+                    from,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method("IncrementNpcLsMsgStep", |_, this, _: ()| {
+            push(
+                &this.queue,
+                LuaCommand::QuestIncrementNpcLsMsgStep {
+                    player_id: this.player_id,
+                    quest_id: this.quest_id,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method("GetNpcLsFrom", |_, this, _: ()| Ok(this.npc_ls_from));
+        methods.add_method("GetMsgStep", |_, this, _: ()| Ok(this.npc_ls_msg_step));
+        methods.add_method("ClearNpcLs", |_, this, _: ()| {
+            push(
+                &this.queue,
+                LuaCommand::QuestClearNpcLs {
+                    player_id: this.player_id,
+                    quest_id: this.quest_id,
+                },
+            );
+            Ok(())
+        });
     }
 }
 

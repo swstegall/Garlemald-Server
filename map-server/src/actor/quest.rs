@@ -97,6 +97,17 @@ pub fn quest_id_to_bit(quest_id: u32) -> Option<usize> {
 pub struct QuestData {
     flags: u32,
     counters: [u16; 3],
+    /// Per-quest NpcLs scratchpad, mirrored from C# `QuestData.npcLsFrom`.
+    /// 0 = no chain active. Set by `Quest::NewNpcLsMsg`, read by
+    /// `ReadNpcLsMsg` / `EndOfNpcLsMsgs` to know which NPC linkshell
+    /// to flip back to ACTIVE / INACTIVE state. Persisted to DB column
+    /// `npc_ls_from` (migration 050).
+    npc_ls_from: u32,
+    /// Per-quest message-step counter. Incremented by `ReadNpcLsMsg`
+    /// between successive lines of the same NpcLs chain. Cleared on
+    /// `EndOfNpcLsMsgs`. Persisted to DB column `npc_ls_msg_step`
+    /// (migration 050).
+    npc_ls_msg_step: u8,
     dirty: bool,
 }
 
@@ -106,6 +117,8 @@ impl QuestData {
         Self {
             flags: 0,
             counters: [0; 3],
+            npc_ls_from: 0,
+            npc_ls_msg_step: 0,
             dirty: false,
         }
     }
@@ -116,8 +129,64 @@ impl QuestData {
         Self {
             flags,
             counters: [counter1, counter2, counter3],
+            npc_ls_from: 0,
+            npc_ls_msg_step: 0,
             dirty: false,
         }
+    }
+
+    /// Hydrate from the full DB row including the migration-050 NpcLs
+    /// scratchpad columns.
+    pub const fn from_parts_with_npc_ls(
+        flags: u32,
+        counter1: u16,
+        counter2: u16,
+        counter3: u16,
+        npc_ls_from: u32,
+        npc_ls_msg_step: u8,
+    ) -> Self {
+        Self {
+            flags,
+            counters: [counter1, counter2, counter3],
+            npc_ls_from,
+            npc_ls_msg_step,
+            dirty: false,
+        }
+    }
+
+    /// `GetNpcLsFrom()` — id of the NPC linkshell currently driving
+    /// this quest's message chain (1..=40). 0 = no chain active.
+    pub const fn npc_ls_from(self) -> u32 {
+        self.npc_ls_from
+    }
+
+    /// `GetMsgStep()` — 0-based message-step counter for the active
+    /// NpcLs chain.
+    pub const fn npc_ls_msg_step(self) -> u8 {
+        self.npc_ls_msg_step
+    }
+
+    /// `SetNpcLsFrom(from)` — flag a new NPC linkshell as driving
+    /// this quest's chain.
+    pub fn set_npc_ls_from(&mut self, from: u32) {
+        self.npc_ls_from = from;
+        self.dirty = true;
+    }
+
+    /// `IncrementNpcLsMsgStep()` — bump the per-chain message-step
+    /// counter. Saturates at u8::MAX (255 lines is way past any real
+    /// chain length).
+    pub fn inc_npc_ls_msg_step(&mut self) -> u8 {
+        self.npc_ls_msg_step = self.npc_ls_msg_step.saturating_add(1);
+        self.dirty = true;
+        self.npc_ls_msg_step
+    }
+
+    /// `ClearNpcLs()` — zero both scratchpad fields after a chain ends.
+    pub fn clear_npc_ls(&mut self) {
+        self.npc_ls_from = 0;
+        self.npc_ls_msg_step = 0;
+        self.dirty = true;
     }
 
     pub const fn flags(self) -> u32 {
@@ -209,6 +278,8 @@ impl QuestData {
     pub fn clear(&mut self) {
         self.flags = 0;
         self.counters = [0; 3];
+        self.npc_ls_from = 0;
+        self.npc_ls_msg_step = 0;
         self.dirty = true;
     }
 }
@@ -425,11 +496,37 @@ impl Quest {
         counter2: u16,
         counter3: u16,
     ) -> Self {
+        Self::from_db_row_with_npc_ls(
+            actor_id, name, sequence, flags, counter1, counter2, counter3, 0, 0,
+        )
+    }
+
+    /// Migration-050 hydrate: includes the per-quest NpcLs scratchpad
+    /// (`npc_ls_from`, `npc_ls_msg_step`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_db_row_with_npc_ls(
+        actor_id: u32,
+        name: impl Into<String>,
+        sequence: u32,
+        flags: u32,
+        counter1: u16,
+        counter2: u16,
+        counter3: u16,
+        npc_ls_from: u32,
+        npc_ls_msg_step: u8,
+    ) -> Self {
         Self {
             actor_id,
             name: name.into(),
             sequence,
-            data: QuestData::from_parts(flags, counter1, counter2, counter3),
+            data: QuestData::from_parts_with_npc_ls(
+                flags,
+                counter1,
+                counter2,
+                counter3,
+                npc_ls_from,
+                npc_ls_msg_step,
+            ),
             state: QuestState::new(),
         }
     }
@@ -484,6 +581,28 @@ impl Quest {
 
     pub fn dec_counter(&mut self, idx: usize) -> u16 {
         self.data.dec_counter(idx)
+    }
+
+    /// Per-quest NpcLs scratchpad accessors — proxy through QuestData.
+    /// See `QuestData::set_npc_ls_from` etc. for semantics.
+    pub fn get_npc_ls_from(&self) -> u32 {
+        self.data.npc_ls_from()
+    }
+
+    pub fn get_npc_ls_msg_step(&self) -> u8 {
+        self.data.npc_ls_msg_step()
+    }
+
+    pub fn set_npc_ls_from(&mut self, from: u32) {
+        self.data.set_npc_ls_from(from);
+    }
+
+    pub fn inc_npc_ls_msg_step(&mut self) -> u8 {
+        self.data.inc_npc_ls_msg_step()
+    }
+
+    pub fn clear_npc_ls(&mut self) {
+        self.data.clear_npc_ls();
     }
 
     pub fn clear_data(&mut self) {

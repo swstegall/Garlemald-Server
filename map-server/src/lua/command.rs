@@ -257,6 +257,30 @@ pub enum LuaCommand {
         player_id: u32,
         quest_id: u32,
     },
+    /// `quest:GetData():SetNpcLsFrom(from)` / `Quest::NewNpcLsMsg`
+    /// internals. Writes the per-quest "active NPC linkshell driving
+    /// this message chain" id into `Quest.data.npc_ls_from`. Persists
+    /// to the migration-050 column via `db.save_quest_npc_ls`.
+    QuestSetNpcLsFrom {
+        player_id: u32,
+        quest_id: u32,
+        from: u32,
+    },
+    /// `quest:GetData():IncrementNpcLsMsgStep()` / `Quest::ReadNpcLsMsg`
+    /// internals. Bumps `Quest.data.npc_ls_msg_step` by 1 (saturating
+    /// at 255) so successive ReadNpcLsMsg calls advance through the
+    /// chain. Persists to DB.
+    QuestIncrementNpcLsMsgStep {
+        player_id: u32,
+        quest_id: u32,
+    },
+    /// `quest:GetData():ClearNpcLs()` / `Quest::EndOfNpcLsMsgs`
+    /// internals. Zeros both `npc_ls_from` and `npc_ls_msg_step` —
+    /// signal that the chain is over.
+    QuestClearNpcLs {
+        player_id: u32,
+        quest_id: u32,
+    },
     /// `player:DoEmote(targetActorId, emoteId, messageId)` — actor
     /// performs an emote animation pointed at `targetActorId` with
     /// `messageId` driving the chat-log line. Wire format is the

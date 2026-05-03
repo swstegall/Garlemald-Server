@@ -374,7 +374,7 @@ impl PacketProcessor {
             }
             let actor_aid = crate::actor::quest::quest_actor_id(row.quest_id);
             character.quest_journal.slots[slot] =
-                Some(crate::actor::quest::Quest::from_db_row(
+                Some(crate::actor::quest::Quest::from_db_row_with_npc_ls(
                     actor_aid,
                     String::new(),
                     row.sequence,
@@ -382,6 +382,8 @@ impl PacketProcessor {
                     row.counter1,
                     row.counter2,
                     row.counter3,
+                    row.npc_ls_from,
+                    row.npc_ls_msg_step,
                 ));
         }
         match self.db.load_completed_quests(actor_id).await {
@@ -1051,6 +1053,27 @@ impl PacketProcessor {
             } => {
                 self.apply_do_emote(actor_id, target_actor_id, emote_id, message_id)
                     .await;
+            }
+            LC::QuestSetNpcLsFrom {
+                player_id,
+                quest_id,
+                from,
+            } => {
+                self.apply_quest_set_npc_ls_from(player_id, quest_id, from)
+                    .await;
+            }
+            LC::QuestIncrementNpcLsMsgStep {
+                player_id,
+                quest_id,
+            } => {
+                self.apply_quest_increment_npc_ls_msg_step(player_id, quest_id)
+                    .await;
+            }
+            LC::QuestClearNpcLs {
+                player_id,
+                quest_id,
+            } => {
+                self.apply_quest_clear_npc_ls(player_id, quest_id).await;
             }
             LC::QuestClearData {
                 player_id,
@@ -4430,6 +4453,98 @@ impl PacketProcessor {
         );
     }
 
+    /// `quest:GetData():SetNpcLsFrom(from)` and the
+    /// `LuaQuestHandle::NewNpcLsMsg` first step.
+    /// Mutates the live Quest's `data.npc_ls_from`, then persists to
+    /// the migration-050 column. Silently no-ops if the player isn't
+    /// in the registry or the quest isn't in their journal.
+    async fn apply_quest_set_npc_ls_from(&self, player_id: u32, quest_id: u32, from: u32) {
+        let Some(handle) = self.registry.get(player_id).await else {
+            return;
+        };
+        let slot = {
+            let mut c = handle.character.write().await;
+            let Some(slot) = c.quest_journal.slot_of(quest_id) else {
+                return;
+            };
+            if let Some(q) = c.quest_journal.slots[slot].as_mut() {
+                q.set_npc_ls_from(from);
+            }
+            slot as i32
+        };
+        if let Err(e) = self
+            .db
+            .save_quest_npc_ls(player_id, slot, from, /* msg_step preserved */ {
+                let c = handle.character.read().await;
+                c.quest_journal
+                    .get(quest_id)
+                    .map(|q| q.get_npc_ls_msg_step())
+                    .unwrap_or(0)
+            })
+            .await
+        {
+            tracing::warn!(
+                player = player_id, quest = quest_id, from, err = %e,
+                "QuestSetNpcLsFrom: DB persist failed",
+            );
+        }
+    }
+
+    /// `quest:GetData():IncrementNpcLsMsgStep()` and the
+    /// `LuaQuestHandle::ReadNpcLsMsg` first step.
+    async fn apply_quest_increment_npc_ls_msg_step(&self, player_id: u32, quest_id: u32) {
+        let Some(handle) = self.registry.get(player_id).await else {
+            return;
+        };
+        let (slot, npc_ls_from, new_step) = {
+            let mut c = handle.character.write().await;
+            let Some(slot) = c.quest_journal.slot_of(quest_id) else {
+                return;
+            };
+            let (from, step) = if let Some(q) = c.quest_journal.slots[slot].as_mut() {
+                let step = q.inc_npc_ls_msg_step();
+                (q.get_npc_ls_from(), step)
+            } else {
+                return;
+            };
+            (slot as i32, from, step)
+        };
+        if let Err(e) = self
+            .db
+            .save_quest_npc_ls(player_id, slot, npc_ls_from, new_step)
+            .await
+        {
+            tracing::warn!(
+                player = player_id, quest = quest_id, err = %e,
+                "QuestIncrementNpcLsMsgStep: DB persist failed",
+            );
+        }
+    }
+
+    /// `quest:GetData():ClearNpcLs()` and the
+    /// `LuaQuestHandle::EndOfNpcLsMsgs` last step.
+    async fn apply_quest_clear_npc_ls(&self, player_id: u32, quest_id: u32) {
+        let Some(handle) = self.registry.get(player_id).await else {
+            return;
+        };
+        let slot = {
+            let mut c = handle.character.write().await;
+            let Some(slot) = c.quest_journal.slot_of(quest_id) else {
+                return;
+            };
+            if let Some(q) = c.quest_journal.slots[slot].as_mut() {
+                q.clear_npc_ls();
+            }
+            slot as i32
+        };
+        if let Err(e) = self.db.save_quest_npc_ls(player_id, slot, 0, 0).await {
+            tracing::warn!(
+                player = player_id, quest = quest_id, err = %e,
+                "QuestClearNpcLs: DB persist failed",
+            );
+        }
+    }
+
     async fn apply_add_seals(&self, player_id: u32, gc: u8, amount: i32) {
         if !crate::actor::gc::is_valid_gc(gc) {
             tracing::debug!(player = player_id, gc, "AddSeals: invalid gc id");
@@ -5348,8 +5463,16 @@ impl PacketProcessor {
             let quest = c
                 .quest_journal
                 .get(quest_id)
-                .map(|q| (q.get_sequence(), q.get_flags(), q.get_counter(0), q.get_counter(1), q.get_counter(2)))
-                .unwrap_or((0, 0, 0, 0, 0));
+                .map(|q| (
+                    q.get_sequence(),
+                    q.get_flags(),
+                    q.get_counter(0),
+                    q.get_counter(1),
+                    q.get_counter(2),
+                    q.get_npc_ls_from(),
+                    q.get_npc_ls_msg_step(),
+                ))
+                .unwrap_or((0, 0, 0, 0, 0, 0, 0));
             let handle = crate::lua::LuaQuestHandle {
                 player_id: snapshot.actor_id,
                 quest_id,
@@ -5357,6 +5480,8 @@ impl PacketProcessor {
                 sequence: quest.0,
                 flags: quest.1,
                 counters: [quest.2, quest.3, quest.4],
+                npc_ls_from: quest.5,
+                npc_ls_msg_step: quest.6,
                 queue: crate::lua::command::CommandQueue::new(),
             };
             (snapshot, handle)
@@ -5468,6 +5593,8 @@ impl PacketProcessor {
                 sequence: q.get_sequence(),
                 flags: q.get_flags(),
                 counters: [q.get_counter(0), q.get_counter(1), q.get_counter(2)],
+            npc_ls_from: q.get_npc_ls_from(),
+            npc_ls_msg_step: q.get_npc_ls_msg_step(),
                 queue: crate::lua::command::CommandQueue::new(),
             };
             (snap, qh)
@@ -6616,6 +6743,8 @@ fn build_player_snapshot_from_character(c: &Character) -> crate::lua::userdata::
             sequence: q.get_sequence(),
             flags: q.get_flags(),
             counters: [q.get_counter(0), q.get_counter(1), q.get_counter(2)],
+            npc_ls_from: q.get_npc_ls_from(),
+            npc_ls_msg_step: q.get_npc_ls_msg_step(),
         })
         .collect();
     snapshot.completed_quests = c.quest_journal.iter_completed().collect();

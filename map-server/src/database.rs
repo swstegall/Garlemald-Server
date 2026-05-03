@@ -1984,7 +1984,8 @@ impl Database {
             .conn
             .call_db(move |c| {
                 let mut stmt = c.prepare(
-                    r"SELECT slot, questId, sequence, flags, counter1, counter2, counter3
+                    r"SELECT slot, questId, sequence, flags, counter1, counter2, counter3,
+                              npc_ls_from, npc_ls_msg_step
                       FROM characters_quest_scenario WHERE characterId = :cid",
                 )?;
                 let rows: Vec<QuestScenarioEntry> = stmt
@@ -1997,6 +1998,8 @@ impl Database {
                             counter1: r.get::<_, u16>(4).unwrap_or_default(),
                             counter2: r.get::<_, u16>(5).unwrap_or_default(),
                             counter3: r.get::<_, u16>(6).unwrap_or_default(),
+                            npc_ls_from: r.get::<_, u32>(7).unwrap_or_default(),
+                            npc_ls_msg_step: r.get::<_, u8>(8).unwrap_or_default(),
                         })
                     })?
                     .collect::<rusqlite::Result<_>>()?;
@@ -2264,6 +2267,14 @@ impl Database {
 
     /// Persist one slot of `characters_quest_scenario` under the
     /// post-redesign layout (`sequence` + `flags` + three 16-bit counters).
+    /// The migration-050 NpcLs scratchpad columns
+    /// (`npc_ls_from` / `npc_ls_msg_step`) are NOT touched — the ON
+    /// CONFLICT branch leaves them at whatever value `save_quest_npc_ls`
+    /// previously wrote, and INSERTs fall through to the schema's
+    /// `DEFAULT 0`. This keeps the 8 existing call sites caller-shape
+    /// stable + isolates the NpcLs persistence to a focused
+    /// per-mutation path.
+    #[allow(clippy::too_many_arguments)]
     pub async fn save_quest(
         &self,
         chara_id: u32,
@@ -2300,6 +2311,38 @@ impl Database {
                         ":c1": counter1,
                         ":c2": counter2,
                         ":c3": counter3,
+                    },
+                )?;
+                Ok(())
+            })
+            .await?;
+        Ok(())
+    }
+
+    /// Update only the NpcLs scratchpad columns for an existing
+    /// `characters_quest_scenario` row. Called from
+    /// `LuaCommand::QuestSetNpcLsFrom` / `IncrementNpcLsMsgStep` /
+    /// `ClearNpcLs` apply paths. Silently no-ops if the row doesn't
+    /// exist (UPDATE matches 0 rows) — caller is expected to have
+    /// added the quest via `save_quest` first.
+    pub async fn save_quest_npc_ls(
+        &self,
+        chara_id: u32,
+        slot: i32,
+        npc_ls_from: u32,
+        npc_ls_msg_step: u8,
+    ) -> Result<()> {
+        self.conn
+            .call_db(move |c| {
+                c.execute(
+                    r"UPDATE characters_quest_scenario
+                      SET npc_ls_from = :nlsf, npc_ls_msg_step = :nlss
+                      WHERE characterId = :cid AND slot = :slot",
+                    named_params! {
+                        ":cid": chara_id,
+                        ":slot": slot,
+                        ":nlsf": npc_ls_from,
+                        ":nlss": npc_ls_msg_step,
                     },
                 )?;
                 Ok(())

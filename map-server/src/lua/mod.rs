@@ -1029,6 +1029,8 @@ mod tests {
                 sequence: 0,
                 flags: 0,
                 counters: [0; 3],
+                npc_ls_from: 0,
+                npc_ls_msg_step: 0,
             }],
             ..Default::default()
         }
@@ -1042,6 +1044,8 @@ mod tests {
             sequence: 0,
             flags: 0,
             counters: [0; 3],
+            npc_ls_from: 0,
+            npc_ls_msg_step: 0,
             queue,
         }
     }

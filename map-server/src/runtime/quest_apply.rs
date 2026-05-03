@@ -2355,6 +2355,8 @@ pub async fn apply_quest_on_notice(
                     sequence: q.get_sequence(),
                     flags: q.get_flags(),
                     counters: [q.get_counter(0), q.get_counter(1), q.get_counter(2)],
+                    npc_ls_from: q.get_npc_ls_from(),
+                    npc_ls_msg_step: q.get_npc_ls_msg_step(),
                 })
                 .collect(),
             completed_quests: c.quest_journal.iter_completed().collect(),
@@ -2368,6 +2370,8 @@ pub async fn apply_quest_on_notice(
             sequence: q.get_sequence(),
             flags: q.get_flags(),
             counters: [q.get_counter(0), q.get_counter(1), q.get_counter(2)],
+                    npc_ls_from: q.get_npc_ls_from(),
+                    npc_ls_msg_step: q.get_npc_ls_msg_step(),
             queue: crate::lua::command::CommandQueue::new(),
         };
         (snap, quest_handle)
@@ -2900,6 +2904,8 @@ async fn fire_quest_npc_hook_via_command(
                     sequence: q.get_sequence(),
                     flags: q.get_flags(),
                     counters: [q.get_counter(0), q.get_counter(1), q.get_counter(2)],
+                    npc_ls_from: q.get_npc_ls_from(),
+                    npc_ls_msg_step: q.get_npc_ls_msg_step(),
                 })
                 .collect(),
             completed_quests: c.quest_journal.iter_completed().collect(),
@@ -2913,6 +2919,8 @@ async fn fire_quest_npc_hook_via_command(
             sequence: q.get_sequence(),
             flags: q.get_flags(),
             counters: [q.get_counter(0), q.get_counter(1), q.get_counter(2)],
+                    npc_ls_from: q.get_npc_ls_from(),
+                    npc_ls_msg_step: q.get_npc_ls_msg_step(),
             queue: crate::lua::command::CommandQueue::new(),
         };
         (snap, qh)
@@ -3098,6 +3106,8 @@ pub async fn fire_quest_on_talk_via_command(
                     sequence: q.get_sequence(),
                     flags: q.get_flags(),
                     counters: [q.get_counter(0), q.get_counter(1), q.get_counter(2)],
+                    npc_ls_from: q.get_npc_ls_from(),
+                    npc_ls_msg_step: q.get_npc_ls_msg_step(),
                 })
                 .collect(),
             completed_quests: c.quest_journal.iter_completed().collect(),
@@ -3111,6 +3121,8 @@ pub async fn fire_quest_on_talk_via_command(
             sequence: q.get_sequence(),
             flags: q.get_flags(),
             counters: [q.get_counter(0), q.get_counter(1), q.get_counter(2)],
+                    npc_ls_from: q.get_npc_ls_from(),
+                    npc_ls_msg_step: q.get_npc_ls_msg_step(),
             queue: crate::lua::command::CommandQueue::new(),
         };
         (snap, qh)
@@ -3269,6 +3281,8 @@ async fn fire_quest_hook(
                     sequence: q.get_sequence(),
                     flags: q.get_flags(),
                     counters: [q.get_counter(0), q.get_counter(1), q.get_counter(2)],
+                    npc_ls_from: q.get_npc_ls_from(),
+                    npc_ls_msg_step: q.get_npc_ls_msg_step(),
                 })
                 .collect(),
             completed_quests: c.quest_journal.iter_completed().collect(),
@@ -3282,9 +3296,11 @@ async fn fire_quest_hook(
                     q.get_sequence(),
                     q.get_flags(),
                     [q.get_counter(0), q.get_counter(1), q.get_counter(2)],
+                    q.get_npc_ls_from(),
+                    q.get_npc_ls_msg_step(),
                 )
             })
-            .unwrap_or((0, 0, [0; 3]));
+            .unwrap_or((0, 0, [0; 3], 0, 0));
         let handle = crate::lua::LuaQuestHandle {
             player_id: snap.actor_id,
             quest_id,
@@ -3292,6 +3308,8 @@ async fn fire_quest_hook(
             sequence: quest.0,
             flags: quest.1,
             counters: quest.2,
+            npc_ls_from: quest.3,
+            npc_ls_msg_step: quest.4,
             queue: crate::lua::command::CommandQueue::new(),
         };
         (snap, handle)

@@ -94,6 +94,8 @@ pub async fn fire_on_kill_bnpc(
                     sequence: q.get_sequence(),
                     flags: q.get_flags(),
                     counters: [q.get_counter(0), q.get_counter(1), q.get_counter(2)],
+                    npc_ls_from: q.get_npc_ls_from(),
+                    npc_ls_msg_step: q.get_npc_ls_msg_step(),
                 })
                 .collect(),
             completed_quests: c.quest_journal.iter_completed().collect(),
@@ -129,12 +131,12 @@ pub async fn fire_on_kill_bnpc(
         }
 
         // Rebuild the per-quest handle against a fresh snapshot slice.
-        let (sequence, flags, counters) = snapshot
+        let (sequence, flags, counters, npc_ls_from, npc_ls_msg_step) = snapshot
             .active_quest_states
             .iter()
             .find(|s| s.quest_id == quest_id)
-            .map(|s| (s.sequence, s.flags, s.counters))
-            .unwrap_or((0, 0, [0; 3]));
+            .map(|s| (s.sequence, s.flags, s.counters, s.npc_ls_from, s.npc_ls_msg_step))
+            .unwrap_or((0, 0, [0; 3], 0, 0));
         let handle = crate::lua::LuaQuestHandle {
             player_id: snapshot.actor_id,
             quest_id,
@@ -142,6 +144,8 @@ pub async fn fire_on_kill_bnpc(
             sequence,
             flags,
             counters,
+            npc_ls_from,
+            npc_ls_msg_step,
             queue: CommandQueue::new(),
         };
 

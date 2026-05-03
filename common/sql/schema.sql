@@ -183,14 +183,18 @@ CREATE TABLE IF NOT EXISTS characters_quest_guildleve_regional (
 -- `currentPhase` → `sequence`, `questFlags` → `flags`, plus three 16-bit
 -- counters driven by `QuestData::{Inc,Dec,Set}Counter`.
 CREATE TABLE IF NOT EXISTS characters_quest_scenario (
-    characterId INTEGER NOT NULL,
-    slot        INTEGER NOT NULL,
-    questId     INTEGER NOT NULL,
-    sequence    INTEGER NOT NULL DEFAULT 0,
-    flags       INTEGER NOT NULL DEFAULT 0,
-    counter1    INTEGER NOT NULL DEFAULT 0,
-    counter2    INTEGER NOT NULL DEFAULT 0,
-    counter3    INTEGER NOT NULL DEFAULT 0,
+    characterId     INTEGER NOT NULL,
+    slot            INTEGER NOT NULL,
+    questId         INTEGER NOT NULL,
+    sequence        INTEGER NOT NULL DEFAULT 0,
+    flags           INTEGER NOT NULL DEFAULT 0,
+    counter1        INTEGER NOT NULL DEFAULT 0,
+    counter2        INTEGER NOT NULL DEFAULT 0,
+    counter3        INTEGER NOT NULL DEFAULT 0,
+    -- C# `QuestData` per-quest NpcLs scratchpad — see migration
+    -- `050_characters_quest_scenario_npc_ls.sql` for the rationale.
+    npc_ls_from     INTEGER NOT NULL DEFAULT 0,
+    npc_ls_msg_step INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (characterId, slot)
 );
 

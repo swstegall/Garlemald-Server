@@ -396,6 +396,8 @@ async fn dispatch_npc_event_started(
                     sequence: q.get_sequence(),
                     flags: q.get_flags(),
                     counters: [q.get_counter(0), q.get_counter(1), q.get_counter(2)],
+                    npc_ls_from: q.get_npc_ls_from(),
+                    npc_ls_msg_step: q.get_npc_ls_msg_step(),
                 })
                 .collect(),
             completed_quests: c.quest_journal.iter_completed().collect(),
@@ -673,6 +675,8 @@ async fn dispatch_director_event_started(
                     sequence: q.get_sequence(),
                     flags: q.get_flags(),
                     counters: [q.get_counter(0), q.get_counter(1), q.get_counter(2)],
+                    npc_ls_from: q.get_npc_ls_from(),
+                    npc_ls_msg_step: q.get_npc_ls_msg_step(),
                 })
                 .collect(),
             completed_quests: c.quest_journal.iter_completed().collect(),

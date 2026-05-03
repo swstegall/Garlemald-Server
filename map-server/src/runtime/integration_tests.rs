@@ -1766,6 +1766,8 @@ async fn ported_man0l0_onstart_emits_start_sequence_zero() {
             sequence: 0,
             flags: 0,
             counters: [0; 3],
+            npc_ls_from: 0,
+            npc_ls_msg_step: 0,
         }],
         ..Default::default()
     };
@@ -1776,6 +1778,8 @@ async fn ported_man0l0_onstart_emits_start_sequence_zero() {
         sequence: 0,
         flags: 0,
         counters: [0; 3],
+        npc_ls_from: 0,
+        npc_ls_msg_step: 0,
         queue: CommandQueue::new(),
     };
     let result = engine.call_quest_hook(
