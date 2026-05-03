@@ -2255,6 +2255,80 @@ impl PacketProcessor {
             .send_zone_in_bundle(&self.registry, session_id, spawn_type as u16)
             .await;
 
+        // 5. B7 of the SEQ_005 unblock plan — fire the content
+        //    script's `onZoneIn(player, contentArea, isLogin)`
+        //    hook, mirroring C# `WorldManager.DoZoneChangeContent`'s
+        //    final line:
+        //      LuaEngine.GetInstance().CallLuaFunction(
+        //          player, contentArea, "onZoneIn", true);
+        //    (Map Server/WorldManager.cs:1010). Some content
+        //    scripts register cutscene triggers / spawns in
+        //    `onZoneIn` rather than `onCreate`; without this call
+        //    those triggers never fire. We read the active content
+        //    script captured on the session by Phase A's
+        //    `apply_create_content_area` to know which script to
+        //    target.
+        let active = self
+            .world
+            .session(session_id)
+            .await
+            .and_then(|s| s.active_content_script);
+        if let (Some(active), Some(lua)) = (active, self.lua.as_ref()) {
+            let script_path = lua.resolver().content(&active.content_script);
+            if script_path.exists() {
+                let snapshot = {
+                    let c = handle.character.read().await;
+                    build_player_snapshot_from_character(&c)
+                };
+                let placeholder_queue = crate::lua::command::CommandQueue::new();
+                let content_area = crate::lua::userdata::LuaContentArea {
+                    parent_zone_id: active.parent_zone_id,
+                    area_name: active.area_name.clone(),
+                    area_class_path: active.area_class_path.clone(),
+                    director_name: active.director_name.clone(),
+                    director_actor_id: active.director_actor_id,
+                    queue: placeholder_queue.clone(),
+                };
+                let director = crate::lua::userdata::LuaDirectorHandle {
+                    name: active.director_name.clone(),
+                    actor_id: active.director_actor_id,
+                    class_path: format!("/Director/{}", active.director_name),
+                    queue: placeholder_queue,
+                };
+                let lua_clone = lua.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    lua_clone.call_content_hook(
+                        &script_path,
+                        "onZoneIn",
+                        snapshot,
+                        content_area,
+                        director,
+                    )
+                })
+                .await;
+                if let Ok(partial) = result {
+                    if let Some(e) = partial.error {
+                        tracing::debug!(
+                            player = player_id,
+                            content_script = %active.content_script,
+                            error = %e,
+                            "onZoneIn errored (likely missing binding — Phase B7 expected)",
+                        );
+                    }
+                    if !partial.commands.is_empty() {
+                        crate::runtime::quest_apply::apply_runtime_lua_commands(
+                            partial.commands,
+                            &self.registry,
+                            &self.db,
+                            &self.world,
+                            self.lua.as_ref(),
+                        )
+                        .await;
+                    }
+                }
+            }
+        }
+
         tracing::info!(
             player = player_id,
             parent_zone = parent_zone_id,
@@ -2262,7 +2336,7 @@ impl PacketProcessor {
             x,
             y,
             z,
-            "DoZoneChangeContent applied (Phase 1 — same-zone warp + zone-in replay)",
+            "DoZoneChangeContent applied (B7: warp + zone-in replay + onZoneIn fired)",
         );
     }
 

@@ -1396,6 +1396,50 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// B7: `call_content_hook(.., "onZoneIn", ..)` runs a script's
+    /// `onZoneIn(player, contentArea, director)` hook and drains
+    /// commands. Mirrors the
+    /// `apply_do_zone_change_content` post-warp callback.
+    #[test]
+    fn call_content_hook_runs_onzonein_and_drains_commands() {
+        let root = tmpdir();
+        std::fs::create_dir_all(root.join("content")).unwrap();
+        std::fs::write(
+            root.join("content/SimpleContent30010.lua"),
+            r#"
+            function onZoneIn(player, contentArea, director)
+                -- Just exercise that the hook ran by mutating the
+                -- player's position; the SetPos command in the
+                -- drain proves it.
+                player.positionX = 1000.0
+                return true
+            end
+            "#,
+        )
+        .unwrap();
+        let engine = LuaEngine::new(&root);
+        let script_path = root.join("content/SimpleContent30010.lua");
+        let dummy_queue = CommandQueue::new();
+        let result = engine.call_content_hook(
+            &script_path,
+            "onZoneIn",
+            sample_snapshot(),
+            sample_content_area(dummy_queue.clone()),
+            sample_director(dummy_queue),
+        );
+        assert!(result.error.is_none(), "onZoneIn errored: {:?}", result.error);
+        let saw_setpos = result
+            .commands
+            .iter()
+            .any(|c| matches!(c, LuaCommand::SetPos { .. }));
+        assert!(
+            saw_setpos,
+            "expected SetPos from onZoneIn body; got {:?}",
+            result.commands
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn call_content_hook_missing_oncreate_is_quiet() {
         let root = tmpdir();
