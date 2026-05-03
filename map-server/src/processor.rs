@@ -36,12 +36,14 @@ use crate::lua::LuaEngine;
 use crate::packets::opcodes::{
     OP_HANDSHAKE_RESPONSE, OP_PONG, OP_PONG_RESPONSE, OP_RX_ACHIEVEMENT_PROGRESS,
     OP_RX_BLACKLIST_ADD, OP_RX_BLACKLIST_REMOVE, OP_RX_BLACKLIST_REQUEST, OP_RX_CHAT_MESSAGE,
-    OP_RX_END_RECRUITING, OP_RX_EVENT_START, OP_RX_EVENT_UPDATE, OP_RX_FAQ_BODY_REQUEST,
-    OP_RX_FAQ_LIST_REQUEST, OP_RX_FRIEND_STATUS, OP_RX_FRIENDLIST_ADD, OP_RX_FRIENDLIST_REMOVE,
-    OP_RX_FRIENDLIST_REQUEST, OP_RX_GM_TICKET_BODY, OP_RX_GM_TICKET_END, OP_RX_GM_TICKET_SEND,
-    OP_RX_GM_TICKET_STATE, OP_RX_ITEM_PACKAGE_REQUEST, OP_RX_LANGUAGE_CODE,
-    OP_RX_RECRUITER_STATE, OP_RX_RECRUITING_DETAILS, OP_RX_START_RECRUITING,
-    OP_RX_SUPPORT_ISSUE_REQUEST, OP_RX_UPDATE_PLAYER_POSITION, OP_SESSION_BEGIN, OP_SESSION_END,
+    OP_RX_DATA_REQUEST, OP_RX_END_RECRUITING, OP_RX_EVENT_START, OP_RX_EVENT_UPDATE,
+    OP_RX_FAQ_BODY_REQUEST, OP_RX_FAQ_LIST_REQUEST, OP_RX_FRIEND_STATUS, OP_RX_FRIENDLIST_ADD,
+    OP_RX_FRIENDLIST_REMOVE, OP_RX_FRIENDLIST_REQUEST, OP_RX_GM_TICKET_BODY, OP_RX_GM_TICKET_END,
+    OP_RX_GM_TICKET_SEND, OP_RX_GM_TICKET_STATE, OP_RX_GROUP_CREATED,
+    OP_RX_ITEM_PACKAGE_REQUEST, OP_RX_LANGUAGE_CODE, OP_RX_LOCK_TARGET, OP_RX_RECRUITER_STATE,
+    OP_RX_RECRUITING_DETAILS, OP_RX_SET_TARGET, OP_RX_START_RECRUITING,
+    OP_RX_SUPPORT_ISSUE_REQUEST, OP_RX_UPDATE_PLAYER_POSITION, OP_RX_ZONE_IN_COMPLETE,
+    OP_SESSION_BEGIN, OP_SESSION_END,
 };
 use crate::packets::receive::{
     AchievementProgressRequestPacket, AddRemoveSocialPacket, ChatMessagePacket, EventStartPacket,
@@ -55,6 +57,15 @@ use crate::social::{
     support,
 };
 use crate::world_manager::WorldManager;
+
+/// Read a null-terminated ASCII string out of a fixed-size byte slice.
+/// Used by the retail-IN dispatch arms (`OP_RX_DATA_REQUEST`,
+/// `OP_RX_GROUP_CREATED`) to surface the property-path / event-name
+/// strings the 1.x client embeds in those packets.
+fn extract_null_terminated_ascii(bytes: &[u8]) -> String {
+    let end = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
+    String::from_utf8_lossy(&bytes[..end]).into_owned()
+}
 
 pub struct PacketProcessor {
     pub db: Arc<Database>,
@@ -3813,6 +3824,108 @@ impl PacketProcessor {
             OP_RX_ITEM_PACKAGE_REQUEST => {
                 self.handle_item_package_request(source, &sub.data).await?
             }
+            // Retail-IN opcodes that the 1.x client emits regularly but
+            // that garlemald previously dropped via the catch-all `_`
+            // arm. Promoted to explicit log-and-drop here so they
+            // surface in tracing instead of being invisible. Counts
+            // are from the 56-capture retail audit
+            // (`captures/retail_pcap_gap_analysis.md`).
+            OP_RX_ZONE_IN_COMPLETE => {
+                // 24 events/session. Wiki: "Unknown 0x007"; semantics
+                // per Meteor: client signals it's safe to receive
+                // world-spawn packets after zone-in init. Today
+                // garlemald uses `OP_RX_LANGUAGE_CODE` (0x0006) as
+                // the deferred trigger, but 0x0007 is its successor —
+                // promotion to explicit dispatch here keeps the
+                // existing language-code path authoritative while
+                // surfacing 0x0007 events for future feature work
+                // (e.g. retail uses this as the "DoZoneIn complete"
+                // signal alongside or instead of 0x0006).
+                tracing::debug!(
+                    source = source,
+                    "RX 0x0007 zone-in-complete signal (no-op pending dedicated handler)",
+                );
+            }
+            OP_RX_LOCK_TARGET => {
+                // 66 events/session. Wiki: "Target Locked". Client
+                // sends this when the player target-locks an actor
+                // (Tab-Tab in 1.x). Garlemald's targeting today is
+                // partially server-side fictional; this explicit
+                // dispatch makes the client-side intent visible.
+                let target_id = if sub.data.len() >= 4 {
+                    u32::from_le_bytes(sub.data[..4].try_into().unwrap())
+                } else {
+                    0
+                };
+                tracing::debug!(
+                    source = source,
+                    target = format!("0x{:08X}", target_id),
+                    "RX 0x00CC target-locked",
+                );
+            }
+            OP_RX_SET_TARGET => {
+                // 118 events/session — most-frequent IN gap. Wiki:
+                // "Target Selected". Client sends this on
+                // soft-target / hover-select. Project Meteor parses
+                // it via `SetTargetPacket` and uses
+                // `attackTarget != 0xE0000000` to drive auto-attack
+                // engage state (`PacketProcessor.cs:175`).
+                let attack_target = if sub.data.len() >= 4 {
+                    u32::from_le_bytes(sub.data[..4].try_into().unwrap())
+                } else {
+                    0
+                };
+                tracing::debug!(
+                    source = source,
+                    attack_target = format!("0x{:08X}", attack_target),
+                    "RX 0x00CD target-selected",
+                );
+            }
+            OP_RX_DATA_REQUEST => {
+                // 44 events/session. Same opcode as outbound
+                // KickEvent — direction disambiguates. Client asks
+                // for a GAM-property refresh by path; payload at
+                // body[0..4] is u32 target_actor_id, body[4..24] is
+                // a null-padded ASCII property path
+                // (e.g. "charaWork/exp"), body[24..32] is variable
+                // trailing data.
+                let prop_path = if sub.data.len() >= 24 {
+                    extract_null_terminated_ascii(&sub.data[4..24])
+                } else {
+                    String::new()
+                };
+                tracing::debug!(
+                    source = source,
+                    property = %prop_path,
+                    "RX 0x012F data-request (no-op pending property-refresh handler)",
+                );
+            }
+            OP_RX_GROUP_CREATED => {
+                // 270 events/session — highest-volume IN gap. Same
+                // opcode as outbound GenericData. Client signals it
+                // has spawned a new monster group / actor and wants
+                // the server to register `/_init` event handlers.
+                // Payload at body[0..8] is u64 actor or
+                // monster-group id (synthetic 0x2680… prefix for
+                // mob groups), body[8..24] is the event-name string
+                // padded to 16 bytes (captures all show "/_init").
+                let event_name = if sub.data.len() >= 24 {
+                    extract_null_terminated_ascii(&sub.data[8..24])
+                } else {
+                    String::new()
+                };
+                let group_id = if sub.data.len() >= 8 {
+                    u64::from_le_bytes(sub.data[..8].try_into().unwrap())
+                } else {
+                    0
+                };
+                tracing::debug!(
+                    source = source,
+                    group_id = format!("0x{:016X}", group_id),
+                    event = %event_name,
+                    "RX 0x0133 group-created (no-op pending event-init handler)",
+                );
+            }
             _ => {
                 tracing::debug!(
                     opcode = format!("0x{:X}", opcode),
@@ -3823,6 +3936,8 @@ impl PacketProcessor {
         }
         Ok(())
     }
+
+    // (helper used by the retail-IN arms above; trims at the first NUL.)
 
     /// Pmeteor's `RequestQuestJournalCommand` static-actor id —
     /// `0xA0F00000 | 0x5E93`. The 1.x client sends `EventStart` against
@@ -4701,4 +4816,41 @@ fn build_player_snapshot_from_character(c: &Character) -> crate::lua::userdata::
         .collect();
     snapshot.completed_quests = c.quest_journal.iter_completed().collect();
     snapshot
+}
+
+#[cfg(test)]
+mod retail_in_dispatch_tests {
+    use super::*;
+
+    /// Property-path extraction matches what the 0x012F handler logs
+    /// (captured `action_and_traits.pcapng` 0x012F record #1 carries
+    /// "charaWork/exp" at body offset 4..24, null-padded).
+    #[test]
+    fn extract_null_terminated_handles_short_string() {
+        let mut bytes = [0u8; 20];
+        bytes[..13].copy_from_slice(b"charaWork/exp");
+        assert_eq!(extract_null_terminated_ascii(&bytes), "charaWork/exp");
+    }
+
+    /// The 0x0133 captured "/_init" string lives at body[8..24]
+    /// (16 bytes), with the rest null-padded.
+    #[test]
+    fn extract_null_terminated_handles_init_string() {
+        let mut bytes = [0u8; 16];
+        bytes[..6].copy_from_slice(b"/_init");
+        assert_eq!(extract_null_terminated_ascii(&bytes), "/_init");
+    }
+
+    /// No null terminator → string spans the entire slice.
+    #[test]
+    fn extract_null_terminated_no_terminator() {
+        let bytes = [b'A'; 8];
+        assert_eq!(extract_null_terminated_ascii(&bytes), "AAAAAAAA");
+    }
+
+    /// Empty input.
+    #[test]
+    fn extract_null_terminated_empty() {
+        assert_eq!(extract_null_terminated_ascii(&[]), "");
+    }
 }

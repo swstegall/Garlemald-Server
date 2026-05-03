@@ -96,6 +96,32 @@ pub const OP_RX_ZONE_IN_COMPLETE: u16 = 0x0007;
 pub const OP_RX_LANGUAGE_CODE: u16 = 0x0006;
 pub const OP_RX_EVENT_START: u16 = 0x012D;
 pub const OP_RX_EVENT_UPDATE: u16 = 0x012E;
+/// Wiki: "Data Request" (client→server). Same opcode as outbound
+/// `OP_KICK_EVENT`; collision distinguished by direction. The client
+/// sends one of these to request a GAM-property refresh by path
+/// (captured payload format: u32 target_actor_id + ASCII property
+/// path null-padded to 20 bytes + 8 bytes of variable trailing data).
+/// Retail emits 44 of these per session — ignored by the dispatcher
+/// before this audit.
+pub const OP_RX_DATA_REQUEST: u16 = 0x012F;
+/// Wiki: "Group Created" (client→server). Same opcode as outbound
+/// `OP_GENERIC_DATA`. Client sends one when it first observes a
+/// monster group / actor and wants the server to register that
+/// actor's event handlers — captured payload is u64 actor/group id
+/// (synthetic 0x2680… prefix for monster groups) + ASCII event
+/// name (`/_init`) padded to 16 bytes + 16 bytes reserved. Retail
+/// fires 270 of these per session; dropped before this audit.
+pub const OP_RX_GROUP_CREATED: u16 = 0x0133;
+/// Wiki: "Target Locked" (client→server). The 1.x client sends this
+/// when the player presses target-lock on an actor. Const already
+/// defined (`OP_RX_LOCK_TARGET = 0x00CC` below) but **not** in
+/// `handle_game_message`'s dispatch table. Retail: 66 events.
+/// Wiki: "Target Selected" (client→server). Sent when the player
+/// soft-targets an actor. Const `OP_RX_SET_TARGET = 0x00CD` exists
+/// but isn't dispatched. Retail: 118 events.
+/// Wiki: "Unknown 0x007" — RX_ZONE_IN_COMPLETE per garlemald's
+/// existing const. Already defined as `OP_RX_ZONE_IN_COMPLETE` but
+/// not in dispatch. Retail: 24 events.
 
 /// Chat. Client sends at opcode 0x0003 (collision with send's
 /// `OP_SEND_MESSAGE_PUBLIC` — distinguished by direction).
