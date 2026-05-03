@@ -48,7 +48,5 @@ function main(thisDirector)
 	
 end
 
-function attentionMessage(player, textId, ...)
-	player:SendGameMessage(GetWorldMaster(), textId, 0x20, ...);
-	player:SendDataPacket("attention", GetWorldMaster(), "", textId, ...);
-end
+-- (attentionMessage is now defined globally in scripts/lua/global.lua;
+-- the previous local def here was identical to the global wrapper.)

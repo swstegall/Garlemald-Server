@@ -153,6 +153,40 @@ function kickEventContinue(player, actor, trigger, ...)
 	return coroutine.yield("_WAIT_EVENT", player);
 end
 
+-- attentionMessage(player, textId, ...) — central definition for the
+-- 90+ call sites across the quest tree (man0l1.lua, etc.). Pure Lua
+-- wrapper, NOT a new engine-style binding.
+--
+-- Per meteor-decomp's authoritative engine-binding inventory
+-- (`build/wire/cpp_bindings.md`), neither `SendGameMessage` nor
+-- `SendDataPacket` nor `GetWorldMaster` are part of the real 1.x
+-- engine's Lua API surface — `playerbaseclass` (94 methods) /
+-- `worldmaster` (23 methods) / `global` (15 methods) all lack them.
+-- They're server-side conveniences project-meteor invented and that
+-- garlemald inherited from the project-meteor port. This wrapper
+-- consolidates the convention into one shared definition so the
+-- script tree's `attentionMessage(...)` calls don't `attempt to call
+-- a nil value` per-quest.
+--
+-- Two underlying dispatches mirror project-meteor's `global.lua`:
+--   1. SendGameMessage — fires the chat-log line (textId + LuaParams),
+--      auto-tier-routed through the 0x0166-0x016A text-sheet builder.
+--   2. SendDataPacket("attention", ...) — separate "attention banner"
+--      overlay (the big floaty text in the middle of the screen).
+--
+-- Many of these call sites are also covered by the SERVER-side
+-- auto-fires landed earlier today (e8ae570 / f6044f7 / b105c5b) for
+-- canonical quest accept / complete / abandon / equip / unequip /
+-- NpcLs first-add text-ids. Those auto-fires don't need scripts to
+-- call attentionMessage; the wrapper here covers the long tail of
+-- script-driven toasts (objective progress 51063, item-obtained
+-- 25083 / 25226, etc.) that the server can't synthesize without
+-- per-quest objective context.
+function attentionMessage(player, textId, ...)
+	player:SendGameMessage(GetWorldMaster(), textId, 0x20, ...);
+	player:SendDataPacket("attention", GetWorldMaster(), "", textId, ...);
+end
+
 function callClientFunction(player, functionName, ...)
 	player:RunEventFunction(functionName, ...);	
 	return coroutine.yield("_WAIT_EVENT", player);	
