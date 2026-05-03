@@ -1779,6 +1779,38 @@ impl WorldManager {
             );
             sub.set_target_id(session_id);
             client.send_bytes(sub.to_bytes()).await;
+
+            // 0x018B SetGroupLayoutID — the row-level companion to the
+            // 0x018D map-marker overlay (same playerGroupID space).
+            // Tells the client what name + layout-id to draw in the
+            // party-list row for this actor, even when the actor isn't
+            // in render range. Retail emits one of these per party
+            // member (we have one — the player themselves — for solo).
+            //
+            // `layout_id = 0` is the safe default for a player not
+            // bound to a specific map object; retail captures show
+            // this field can be nonzero (combat_skills.pcapng had
+            // 0x131) but the exact derivation from zone state is
+            // unclear and 0 is what Meteor's `mapObjLayoutId` defaults
+            // to for un-bound actors.
+            //
+            // `unknown1 = 1` because the player is online (wiki
+            // suggests 0/1 maps to offline/online — confirmed by
+            // captures where the same player flips from 0 → 1 when
+            // rolling between captures, but solo-self captures
+            // observed value 0 too; pick 1 here since we know the
+            // player is logged in).
+            let mut sub = tx::groups::build_set_group_layout_id(
+                actor_id,
+                tx::groups::PARTY_MAP_MARKER_SOLO_GROUP_ID,
+                actor_id,
+                tx::groups::SET_GROUP_LAYOUT_ID_PLAYER_DISPLAY_NAME,
+                0,
+                1,
+                &actor_name,
+            );
+            sub.set_target_id(session_id);
+            client.send_bytes(sub.to_bytes()).await;
         }
         tracing::info!(
             session = session_id,

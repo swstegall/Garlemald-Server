@@ -512,6 +512,74 @@ pub fn build_party_map_marker_update(
     SubPacket::new(OP_PARTY_MAP_MARKER_UPDATE, actor_id, data)
 }
 
+// ---------------------------------------------------------------------------
+// 0x018B SetGroupLayoutID — per-member party-list row update.
+//
+// Wire format (per wiki + retail bytes from
+// `ffxiv_traces/combat_skills.pcapng` record #1 of opcode 0x018B):
+//
+//   body size = 0x38 (56 bytes) — fixed
+//   0x00  u64 group_id              — same playerGroupID space as 0x018D;
+//                                     captured as 0x80000000_0077E9AC
+//                                     for the solo player
+//   0x08  u32 actor_id              — actor being updated
+//   0x0C  u32 display_name_id       — 0xFFFFFFFF for player characters
+//                                     (and presumably custom names);
+//                                     real id for game-data NPCs
+//   0x10  u32 layout_id             — wiki: "Map layout the actorID is in"
+//                                     (mapobj layoutId space, per Meteor's
+//                                     `SpawnLocation.mapObjLayoutId`).
+//                                     Retail captured value: 0x131 (305)
+//                                     for the solo player; default 0 is
+//                                     safe for a player not bound to a
+//                                     mapobj.
+//   0x14  u8  unknown1              — wiki: "Sometimes 0, sometimes 1.
+//                                     Online state? Verify". Retail
+//                                     captured 0; pass 1 for an online
+//                                     party member.
+//   0x15  u8  unknown2              — wiki: "Always 1?". Retail confirms 1.
+//   0x16  string actor_name (34 B)  — null-padded ASCII; client uses this
+//                                     for the party-list row when the
+//                                     actor isn't in render range
+//
+// Wiki note: "Has something to do with keeping party members updated when
+// they're not in range of the player. Possibly related to map markers?" —
+// confirmed by the captured groupID matching 0x018D's solo group id, so
+// 0x018B is the row-level companion to 0x018D's whole-party overlay.
+
+/// 0x018B SetGroupLayoutID — emit one packet per party member.
+pub fn build_set_group_layout_id(
+    actor_id: u32,
+    group_id: u64,
+    member_actor_id: u32,
+    display_name_id: u32,
+    layout_id: u32,
+    unknown1: u8,
+    actor_name: &str,
+) -> SubPacket {
+    let mut data = body(0x58);
+    {
+        let mut c = Cursor::new(&mut data[..]);
+        c.write_u64::<LittleEndian>(group_id).unwrap();
+        c.write_u32::<LittleEndian>(member_actor_id).unwrap();
+        c.write_u32::<LittleEndian>(display_name_id).unwrap();
+        c.write_u32::<LittleEndian>(layout_id).unwrap();
+        c.write_u8(unknown1).unwrap();
+        c.write_u8(1).unwrap(); // unknown2 — wiki says always 1, captured retail confirms
+    }
+    // Name string lives at body offset 0x16; null-padded to 34 bytes
+    // (the rest of the body).
+    {
+        let mut c = Cursor::new(&mut data[0x16..0x38]);
+        write_padded_ascii(&mut c, actor_name, 34);
+    }
+    SubPacket::new(OP_SET_GROUP_LAYOUT_ID, actor_id, data)
+}
+
+/// `displayNameID` retail uses for player characters / custom-named
+/// actors. Real (game-data) NPCs use their populace name id instead.
+pub const SET_GROUP_LAYOUT_ID_PLAYER_DISPLAY_NAME: u32 = 0xFFFF_FFFF;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -586,5 +654,57 @@ mod tests {
         assert_eq!(n, 0);
         // Marker block stays all zero.
         assert!(pkt.data[0x10..0x290].iter().all(|b| *b == 0));
+    }
+
+    /// Reproduce the body bytes captured from
+    /// `ffxiv_traces/combat_skills.pcapng` record #1 of opcode 0x018B —
+    /// solo player "Wrenix Wrong" at actor id 0x029B2941 with layoutID
+    /// 0x131 and the same solo group id used by 0x018D.
+    #[test]
+    fn set_group_layout_id_matches_retail_capture() {
+        let pkt = build_set_group_layout_id(
+            0x029B_2941,
+            PARTY_MAP_MARKER_SOLO_GROUP_ID,
+            0x029B_2941,
+            SET_GROUP_LAYOUT_ID_PLAYER_DISPLAY_NAME,
+            0x0131,
+            0,
+            "Wrenix Wrong",
+        );
+        let body = &pkt.data;
+        assert_eq!(body.len(), 0x38);
+        #[rustfmt::skip]
+        let expected: [u8; 0x38] = [
+            0xAC, 0xE9, 0x77, 0x00, 0x00, 0x00, 0x00, 0x80, // groupID
+            0x41, 0x29, 0x9B, 0x02,                         // actorID
+            0xFF, 0xFF, 0xFF, 0xFF,                         // displayNameID
+            0x31, 0x01, 0x00, 0x00,                         // layoutID = 0x131
+            0x00, 0x01,                                     // unknown1, unknown2
+            // actorName "Wrenix Wrong" (12 bytes) + 22 bytes of zero pad
+            b'W', b'r', b'e', b'n', b'i', b'x', b' ',
+            b'W', b'r', b'o', b'n', b'g',
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        assert_eq!(body, &expected[..]);
+    }
+
+    #[test]
+    fn set_group_layout_id_truncates_long_names() {
+        // 40-char name; the 34-byte slot truncates to the first 34
+        // characters and drops the trailing "BBBBBB".
+        let long = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABBBBBB";
+        let pkt = build_set_group_layout_id(
+            0x029B_2941,
+            0,
+            0x029B_2941,
+            SET_GROUP_LAYOUT_ID_PLAYER_DISPLAY_NAME,
+            0,
+            1,
+            long,
+        );
+        let name_bytes = &pkt.data[0x16..0x38];
+        assert_eq!(name_bytes.len(), 34);
+        assert!(name_bytes.iter().all(|b| *b == b'A'));
     }
 }
