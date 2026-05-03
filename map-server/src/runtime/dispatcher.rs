@@ -168,10 +168,37 @@ pub async fn dispatch_battle_event(
     match event {
         BattleEvent::Engage {
             owner_actor_id,
-            target_actor_id: _,
+            target_actor_id,
+        } => {
+            tracing::debug!(owner = owner_actor_id, kind = ?event_tag(event), "battle event");
+            // 0x0195 SetEnmityIndicator — paint the mob's hate gem red
+            // and lock it onto the player who pulled aggro. Decoded
+            // from `ffxiv_traces/combat_skills.pcapng`; see
+            // `captures/retail_pcap_gap_analysis.md`. Project Meteor
+            // never emits this opcode so combat-side targeting in the
+            // C# fork comes through entirely via 0x00DB SetActorTarget
+            // (which drives only the in-world reticle, not the hate
+            // gem on the nameplate).
+            let sub = tx::actor_battle::build_set_enmity_indicator(
+                *owner_actor_id,
+                *target_actor_id,
+                100,
+            );
+            broadcast_around_actor(world, registry, zone, *owner_actor_id, sub.to_bytes())
+                .await;
         }
-        | BattleEvent::Disengage { owner_actor_id }
-        | BattleEvent::Spawn { owner_actor_id }
+        BattleEvent::Disengage { owner_actor_id } => {
+            tracing::debug!(owner = owner_actor_id, kind = ?event_tag(event), "battle event");
+            // Clear the hate gem — (no target, hate=0).
+            let sub = tx::actor_battle::build_set_enmity_indicator(
+                *owner_actor_id,
+                tx::actor_battle::NO_ENMITY_TARGET,
+                0,
+            );
+            broadcast_around_actor(world, registry, zone, *owner_actor_id, sub.to_bytes())
+                .await;
+        }
+        BattleEvent::Spawn { owner_actor_id }
         | BattleEvent::Despawn { owner_actor_id }
         | BattleEvent::RecalcStats { owner_actor_id } => {
             tracing::debug!(owner = owner_actor_id, kind = ?event_tag(event), "battle event");
@@ -188,9 +215,19 @@ pub async fn dispatch_battle_event(
         }
         BattleEvent::TargetChange {
             owner_actor_id,
-            new_target_actor_id: _,
+            new_target_actor_id,
         } => {
             tracing::debug!(owner = owner_actor_id, "battle: target change");
+            // Re-lock the hate gem onto the new target.
+            let target = new_target_actor_id.unwrap_or(tx::actor_battle::NO_ENMITY_TARGET);
+            let hate = if new_target_actor_id.is_some() { 100 } else { 0 };
+            let sub = tx::actor_battle::build_set_enmity_indicator(
+                *owner_actor_id,
+                target,
+                hate,
+            );
+            broadcast_around_actor(world, registry, zone, *owner_actor_id, sub.to_bytes())
+                .await;
         }
         BattleEvent::DoBattleAction {
             owner_actor_id,
