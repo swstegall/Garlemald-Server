@@ -3486,18 +3486,24 @@ impl UserData for LuaDirectorHandle {
         // coroutine in the shared scheduler; the ticker's per-tick
         // `engine.tick()` call resumes them.
         methods.add_method("StartDirector", |_, this, spawn_immediate: Option<bool>| {
-            let class_name = this
-                .class_path
-                .rsplit('/')
-                .next()
-                .unwrap_or(&this.class_path)
-                .to_string();
+            // Use `this.name` (the full relative-to-`directors/` path
+            // including subdirectory) NOT `class_path.rsplit('/').next()`
+            // — many quest directors live under `Quest/<Name>` (e.g.
+            // `Quest/QuestDirectorMan0g001`) but their class_path is
+            // just `/Director/<Name>` without the subdirectory hint.
+            // Smoke test 2026-05-03 surfaced this: man0g0.lua's
+            // doContentArea hung at "Now Loading" because the resolver
+            // looked for `directors/QuestDirectorMan0g001.lua` instead
+            // of `directors/Quest/QuestDirectorMan0g001.lua` — the
+            // `noticeEvent` cinematic never ran because the script
+            // wasn't loaded, so the post-warp event chain never
+            // produced its EndEvent.
             push(
                 &this.queue,
                 LuaCommand::StartDirectorMain {
                     director_actor_id: this.actor_id,
                     class_path: this.class_path.clone(),
-                    director_name: class_name,
+                    director_name: this.name.clone(),
                     spawn_immediate: spawn_immediate.unwrap_or(true),
                 },
             );
