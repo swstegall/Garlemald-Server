@@ -1877,9 +1877,9 @@ impl Database {
                                 characteristics: r.get::<_, u8>(9).unwrap_or_default(),
                                 characteristics_color: r.get::<_, u8>(10).unwrap_or_default(),
                                 face_type: r.get::<_, u8>(11).unwrap_or_default(),
-                                face_jaw: r.get::<_, u8>(12).unwrap_or_default(),       // SQL col `ears`
+                                ears: r.get::<_, u8>(12).unwrap_or_default(),           // SQL col `ears`
                                 face_mouth: r.get::<_, u8>(13).unwrap_or_default(),
-                                face_cheek: r.get::<_, u8>(14).unwrap_or_default(),     // SQL col `faceFeatures`
+                                face_features: r.get::<_, u8>(14).unwrap_or_default(),  // SQL col `faceFeatures`
                                 face_nose: r.get::<_, u8>(15).unwrap_or_default(),
                                 face_eye_shape: r.get::<_, u8>(16).unwrap_or_default(),
                                 face_iris_size: r.get::<_, u8>(17).unwrap_or_default(),

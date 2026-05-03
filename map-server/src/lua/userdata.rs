@@ -141,6 +141,19 @@ impl UserData for LuaActor {
             Ok(())
         });
 
+        // B6: combat-tutorial onUpdate bindings. Best-effort stubs
+        // so the ally-engagement loop in `SimpleContent30010.lua`
+        // runs without aborting on a nil method lookup. Real
+        // semantics land alongside Phase B6.5+ as combat AI plumbs
+        // through.
+        //
+        // `actor:IsEngaged()` — true iff the actor is in active
+        // combat. Default false (nobody's engaged in the snapshot
+        // we hand the script).
+        methods.add_method("IsEngaged", |_, _this, _: ()| Ok(false));
+        // `actor:GetSpeed()` — current move speed. Default 0.
+        methods.add_method("GetSpeed", |_, _this, _: ()| Ok(0i64));
+
         // Field-style accessors (scripts do `actor.positionX = ...` too).
         methods.add_meta_method(mlua::MetaMethod::Index, |_, this, key: String| {
             let out: Value = match key.as_str() {
@@ -150,10 +163,26 @@ impl UserData for LuaActor {
                 "rotation" => Value::Number(this.rotation as f64),
                 "actorId" => Value::Integer(this.actor_id as i64),
                 "zoneId" => Value::Integer(this.zone_id as i64),
+                // B6: combat-tutorial onUpdate field reads — the
+                // engagement loop touches `actor.target` to forward
+                // it to `allyGlobal.EngageTarget`. Default nil; a
+                // future combat-AI phase plumbs the real target.
+                "target" => Value::Nil,
+                "neutral" => Value::Boolean(false),
+                "isAutoAttackEnabled" => Value::Boolean(false),
                 _ => Value::Nil,
             };
             Ok(out)
         });
+
+        // B6: NewIndex for `actor.neutral = false` /
+        // `actor.isAutoAttackEnabled = true` — best-effort no-op so
+        // the script's ally-engagement assignments don't abort.
+        // Real wire-up to AI state lands in Phase B6.5+.
+        methods.add_meta_method_mut(
+            mlua::MetaMethod::NewIndex,
+            |_, _this, (_key, _value): (String, mlua::Value)| Ok(()),
+        );
     }
 }
 
@@ -1634,6 +1663,13 @@ impl UserData for LuaPlayer {
             Ok(())
         });
 
+        // B6: combat-tutorial onUpdate bindings on LuaPlayer
+        // (matches `LuaActor`'s set above). The engagement loop in
+        // `SimpleContent30010.lua` calls `player:IsEngaged()` to
+        // gate ally engagement.
+        methods.add_method("IsEngaged", |_, _this, _: ()| Ok(false));
+        methods.add_method("GetSpeed", |_, _this, _: ()| Ok(0i64));
+
         // --- Lua-side table field access (player.positionX etc.) ------------
         methods.add_meta_method(mlua::MetaMethod::Index, |lua, this, key: String| {
             // `player.currentParty` returns a stub `LuaParty` userdata
@@ -1655,6 +1691,11 @@ impl UserData for LuaPlayer {
                 "actorId" => Value::Integer(this.snapshot.actor_id as i64),
                 "actorName" => Value::Nil, // deliberately unchangeable
                 "isGM" => Value::Boolean(this.snapshot.is_gm),
+                // B6: `player.target` for the combat-tutorial
+                // engagement loop. Default nil; future combat-AI
+                // phase plumbs the real target from
+                // `chara.current_target`.
+                "target" => Value::Nil,
                 _ => Value::Nil,
             };
             Ok(out)
@@ -1986,6 +2027,34 @@ impl UserData for LuaContentArea {
                 Ok(())
             },
         );
+
+        // B6: combat-tutorial onUpdate iterators. The script uses:
+        //   for player in players do ... end       (stateful iter)
+        //   for i = 0, #allies - 1 do ... end       (length-indexed)
+        //   for i = 0, #mobs - 1 do ... end         (same)
+        //
+        // Phase B6 ships best-effort empty implementations so the
+        // script's loops execute zero iterations cleanly. A future
+        // phase will plumb the real player/mob/ally rosters in
+        // (per-content-area actor lists are Phase B5).
+        //
+        // `area:GetPlayers()` returns a Lua iterator function (the
+        // `for ... in ... do` form expects a function that returns
+        // `nil` when exhausted). Returning a stateless function
+        // that always returns nil terminates the loop on first
+        // iteration.
+        methods.add_method("GetPlayers", |lua, _this, _: ()| {
+            lua.create_function(|_lua, _: ()| Ok(mlua::Value::Nil))
+        });
+        // `area:GetMonsters()` and `area:GetAllies()` return arrays
+        // the script length-indexes via `#allies`. Empty Lua tables
+        // satisfy that convention.
+        methods.add_method("GetMonsters", |lua, _this, _: ()| {
+            lua.create_table()
+        });
+        methods.add_method("GetAllies", |lua, _this, _: ()| {
+            lua.create_table()
+        });
 
         // `contentArea:ContentFinished()` — flag the area for cleanup
         // once the last player leaves. Mirrors

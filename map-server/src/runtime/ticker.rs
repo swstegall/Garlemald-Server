@@ -202,6 +202,67 @@ impl GameTicker {
                 .await;
             }
         }
+
+        // B6 of the SEQ_005 unblock plan: per-active-content-area
+        // `onUpdate(tick, area)` driver. The combat tutorial's
+        // `SimpleContent30010.lua::onUpdate` polls for engagement
+        // state every tick and engages allies when it detects the
+        // player in combat. We fire it every CONTENT_UPDATE_PERIOD_MS
+        // milliseconds (~500ms by default) — the C# `Director`
+        // tick interval. Sessions without an active content script
+        // are skipped.
+        const CONTENT_UPDATE_PERIOD_MS: u64 = 500;
+        if now_ms.is_multiple_of(CONTENT_UPDATE_PERIOD_MS)
+            && let Some(lua) = self.lua.as_ref()
+        {
+            let sessions = self.world.all_sessions().await;
+            for session in sessions {
+                let Some(active) = session.active_content_script.clone() else {
+                    continue;
+                };
+                let script_path = lua.resolver().content(&active.content_script);
+                if !script_path.exists() {
+                    continue;
+                }
+                let placeholder_queue = crate::lua::command::CommandQueue::new();
+                let area = crate::lua::userdata::LuaContentArea {
+                    parent_zone_id: active.parent_zone_id,
+                    area_name: active.area_name.clone(),
+                    area_class_path: active.area_class_path.clone(),
+                    director_name: active.director_name.clone(),
+                    director_actor_id: active.director_actor_id,
+                    queue: placeholder_queue,
+                };
+                let lua_clone = lua.clone();
+                let tick = now_ms / CONTENT_UPDATE_PERIOD_MS;
+                let result = tokio::task::spawn_blocking(move || {
+                    lua_clone.call_content_on_update(&script_path, tick, area)
+                })
+                .await;
+                let partial = match result {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                };
+                if let Some(e) = partial.error {
+                    tracing::debug!(
+                        session = session.id,
+                        content_script = %active.content_script,
+                        error = %e,
+                        "content onUpdate errored (likely missing binding — Phase B6 expected)",
+                    );
+                }
+                if !partial.commands.is_empty() {
+                    crate::runtime::quest_apply::apply_runtime_lua_commands(
+                        partial.commands,
+                        &self.registry,
+                        &self.db,
+                        &self.world,
+                        self.lua.as_ref(),
+                    )
+                    .await;
+                }
+            }
+        }
     }
 
     async fn tick_zone(&self, now_ms: u64, zone_id: u32, zone: &Arc<RwLock<Zone>>) {

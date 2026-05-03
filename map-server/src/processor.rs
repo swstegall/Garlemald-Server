@@ -1571,6 +1571,22 @@ impl PacketProcessor {
             build_player_snapshot_from_character(&c)
         };
 
+        // B6: capture the active content script on the leader's
+        // session so the ticker can fire `onUpdate(tick, area)`
+        // periodically. Cleared on logout / `ContentFinished`.
+        if let Some(mut snap) = self.world.session(handle.session_id).await {
+            snap.active_content_script =
+                Some(crate::data::ActiveContentScript {
+                    parent_zone_id,
+                    area_name: area_name.clone(),
+                    area_class_path: area_class_path.clone(),
+                    director_name: director_name.clone(),
+                    director_actor_id,
+                    content_script: content_script.clone(),
+                });
+            self.world.upsert_session(snap).await;
+        }
+
         // Build the LuaContentArea + LuaDirectorHandle handles. The
         // engine re-points their queues to the freshly-installed
         // script queue inside `call_content_hook`, so the placeholder

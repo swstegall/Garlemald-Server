@@ -795,6 +795,67 @@ impl LuaEngine {
         PartialLuaCallResult { commands, error }
     }
 
+    /// B6 of the SEQ_005 unblock plan — fire a content script's
+    /// `onUpdate(tick, area)` hook. Sibling to
+    /// [`call_content_hook`] that takes the simpler 2-arg shape
+    /// `SimpleContent30010.lua::onUpdate` expects.
+    ///
+    /// Phase B6 simplification: drains commands the hook emits but
+    /// doesn't park yields (onUpdate isn't expected to yield —
+    /// it's a per-tick poll, not a multi-frame coroutine). If
+    /// scripts grow long-running update logic later, the parking
+    /// machinery from `call_content_hook` can drop in.
+    pub fn call_content_on_update(
+        &self,
+        script_path: &Path,
+        tick: u64,
+        content_area: userdata::LuaContentArea,
+    ) -> PartialLuaCallResult {
+        let (lua, queue) = match self.load_script(script_path) {
+            Ok(pair) => pair,
+            Err(e) => {
+                return PartialLuaCallResult {
+                    commands: Vec::new(),
+                    error: Some(e),
+                };
+            }
+        };
+        let content_area = userdata::LuaContentArea {
+            queue: queue.clone(),
+            ..content_area
+        };
+
+        let globals = lua.globals();
+        let f: Function = match globals.get("onUpdate") {
+            Ok(f) => f,
+            Err(_) => {
+                // No onUpdate — quiet no-op. Some content scripts
+                // only define onCreate.
+                return PartialLuaCallResult {
+                    commands: CommandQueue::drain(&queue),
+                    error: None,
+                };
+            }
+        };
+
+        let area_ud = match lua.create_userdata(content_area) {
+            Ok(ud) => ud,
+            Err(e) => {
+                return PartialLuaCallResult {
+                    commands: CommandQueue::drain(&queue),
+                    error: Some(anyhow::anyhow!("create_userdata(LuaContentArea): {e}")),
+                };
+            }
+        };
+
+        // Direct call (no coroutine). onUpdate is a per-tick poll
+        // and shouldn't yield.
+        let result: mlua::Result<Value> = f.call((tick, mlua::Value::UserData(area_ud)));
+        let commands = CommandQueue::drain(&queue);
+        let error = result.err().map(|e| anyhow::anyhow!("onUpdate: {e}"));
+        PartialLuaCallResult { commands, error }
+    }
+
     /// Drive the scheduler forward: resume any parked coroutine whose time
     /// has come. Callers invoke this once per game tick.
     ///
@@ -1263,6 +1324,75 @@ mod tests {
             "expected DirectorAddMember from director:AddMember(player); got {:?}",
             result.commands
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// B6: `call_content_on_update` runs the script's `onUpdate(tick,
+    /// area)` body and drains any commands it emits. Uses a
+    /// synthetic content script that calls `area:GetPlayers()` /
+    /// `:GetMonsters()` / `:GetAllies()` — exercises the empty-
+    /// iterator stubs added in this phase.
+    #[test]
+    fn call_content_on_update_runs_and_drains_commands() {
+        let root = tmpdir();
+        std::fs::create_dir_all(root.join("content")).unwrap();
+        std::fs::write(
+            root.join("content/SimpleContent30010.lua"),
+            r#"
+            function onUpdate(tick, area)
+                -- Exercise the B6 binding stubs. Empty iterators /
+                -- empty tables — the loops just terminate without
+                -- aborting. The test verifies the body completes.
+                local players = area:GetPlayers()
+                local mobs = area:GetMonsters()
+                local allies = area:GetAllies()
+                for _ in players do
+                    -- never reached
+                end
+                if mobs and #mobs > 0 then
+                    -- never reached
+                end
+                if allies and #allies > 0 then
+                    -- never reached
+                end
+                return tick
+            end
+            "#,
+        )
+        .unwrap();
+
+        let engine = LuaEngine::new(&root);
+        let script_path = root.join("content/SimpleContent30010.lua");
+        let dummy_queue = CommandQueue::new();
+        let result =
+            engine.call_content_on_update(&script_path, 7, sample_content_area(dummy_queue));
+        assert!(
+            result.error.is_none(),
+            "onUpdate errored: {:?}",
+            result.error
+        );
+        // No commands emitted by the empty-iterator path — the test
+        // success criterion is "didn't abort".
+        assert!(result.commands.is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn call_content_on_update_missing_hook_is_quiet() {
+        let root = tmpdir();
+        std::fs::create_dir_all(root.join("content")).unwrap();
+        std::fs::write(
+            root.join("content/SimpleContent30010.lua"),
+            "function onCreate() end\n",
+        )
+        .unwrap();
+        let engine = LuaEngine::new(&root);
+        let script_path = root.join("content/SimpleContent30010.lua");
+        let dummy_queue = CommandQueue::new();
+        let result =
+            engine.call_content_on_update(&script_path, 0, sample_content_area(dummy_queue));
+        assert!(result.error.is_none());
+        assert!(result.commands.is_empty());
         let _ = std::fs::remove_dir_all(root);
     }
 

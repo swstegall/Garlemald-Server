@@ -833,6 +833,14 @@ impl WorldManager {
         self.clients.read().await.values().cloned().collect()
     }
 
+    /// Snapshot every active session. Used by tickers that need to
+    /// walk per-player state once a frame (e.g. firing
+    /// `onUpdate(tick, area)` on each player's active content
+    /// script — B6 of the SEQ_005 unblock plan).
+    pub async fn all_sessions(&self) -> Vec<Session> {
+        self.sessions.read().await.values().cloned().collect()
+    }
+
     // -----------------------------------------------------------------
     // Zone-change orchestration — port of WorldManager.DoZoneChange /
     // DoSeamlessZoneChange / MergeZones / SeamlessCheck.

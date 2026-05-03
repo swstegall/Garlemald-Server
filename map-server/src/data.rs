@@ -107,6 +107,30 @@ pub struct Session {
     /// director's group id every time the roster changes. B4 of the
     /// SEQ_005 unblock plan.
     pub transient_director_members: std::collections::HashMap<u32, Vec<u32>>,
+    /// Active content-script for the player's current scripted
+    /// instance (`SimpleContent30010`, etc.). Set by
+    /// `apply_create_content_area` when the player enters a content
+    /// area; cleared on logout / `ContentFinished`. The ticker
+    /// reads this to fire the script's `onUpdate(tick, area)` hook
+    /// periodically — that's what drives ally engagement AI in the
+    /// combat tutorial. B6 of the SEQ_005 unblock plan.
+    pub active_content_script: Option<ActiveContentScript>,
+}
+
+/// Snapshot of a player's currently-active scripted content area.
+/// Carries enough state for the ticker to rebuild the
+/// `LuaContentArea` userdata + invoke `onUpdate(tick, area)` without
+/// needing to look anything else up.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActiveContentScript {
+    pub parent_zone_id: u32,
+    pub area_name: String,
+    pub area_class_path: String,
+    pub director_name: String,
+    pub director_actor_id: u32,
+    /// Script name (e.g. `"SimpleContent30010"`); resolves to
+    /// `scripts/lua/content/<name>.lua`.
+    pub content_script: String,
 }
 
 /// Runtime-only snapshot of an in-world retainer. Holds the minimal
