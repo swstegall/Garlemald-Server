@@ -3907,10 +3907,14 @@ impl PacketProcessor {
                 // the server to register `/_init` event handlers.
                 // Payload at body[0..8] is u64 actor or
                 // monster-group id (synthetic 0x2680… prefix for
-                // mob groups), body[8..24] is the event-name string
-                // padded to 16 bytes (captures all show "/_init").
-                let event_name = if sub.data.len() >= 24 {
-                    extract_null_terminated_ascii(&sub.data[8..24])
+                // mob groups), body[8..40] is a 32-byte
+                // null-padded ASCII work-string (captures all show
+                // "/_init"; field sized per
+                // Kodama/core/src/ipc/zone/mod.rs::GroupCreated.work_string).
+                let event_name = if sub.data.len() >= 40 {
+                    extract_null_terminated_ascii(&sub.data[8..40])
+                } else if sub.data.len() >= 8 {
+                    extract_null_terminated_ascii(&sub.data[8..])
                 } else {
                     String::new()
                 };
