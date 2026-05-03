@@ -925,13 +925,39 @@ impl PacketProcessor {
             LC::SetLoginDirector {
                 player_id,
                 director_actor_id,
+                class_path,
+                class_name,
             } => {
-                let mut c = handle.character.write().await;
-                c.chara.login_director_actor_id = director_actor_id;
+                {
+                    let mut c = handle.character.write().await;
+                    c.chara.login_director_actor_id = director_actor_id;
+                }
+                // Also rebuild session.login_director with the NEW
+                // director's spec so the next zone-in bundle's
+                // director-spawn packets reference this director (not
+                // the stale OpeningDirector spec captured at
+                // onBeginLogin). Smoke-revealed bug fixed in commit
+                // (this) — previously the bundle would emit packets
+                // for the OpeningDirector at every warp regardless
+                // of mid-session SetLoginDirector calls.
+                if !class_path.is_empty() && director_actor_id != 0 {
+                    if let Some(mut snap) = self.world.session(handle.session_id).await {
+                        let zone_actor_id = snap.current_zone_id;
+                        snap.login_director = Some(crate::data::LoginDirectorSpec {
+                            actor_id: director_actor_id,
+                            zone_actor_id,
+                            class_path: class_path.clone(),
+                            class_name: class_name.clone(),
+                        });
+                        self.world.upsert_session(snap).await;
+                    }
+                }
                 tracing::info!(
                     player = player_id,
                     director = director_actor_id,
-                    "SetLoginDirector applied (ScriptBind LuaParams will reference director actor)"
+                    %class_path,
+                    %class_name,
+                    "SetLoginDirector applied (chara.login_director_actor_id + session.login_director both refreshed)"
                 );
             }
             // `player.lua:onBeginLogin` for tutorial zones sets the

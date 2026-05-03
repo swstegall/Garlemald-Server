@@ -2342,23 +2342,35 @@ impl UserData for LuaPlayer {
         });
         methods.add_method("GetGuildleveDirector", |_, _this, _: ()| Ok(Value::Nil));
         methods.add_method("SetLoginDirector", |_, this, director: Value| {
-            // Extract the director's actor_id from the userdata so we can
-            // reference the spawned actor in the player's ScriptBind
-            // LuaParams. If the script somehow passes a non-director
-            // value, fall back to 0 (client will see a null actor ref).
-            let director_actor_id = match &director {
+            // Extract director identity from the userdata. Beyond the
+            // actor_id (used for ScriptBind LuaParams), we ALSO pull
+            // class_path + name so the apply path can build a fresh
+            // `LoginDirectorSpec` and update session.login_director —
+            // necessary for mid-session SetLoginDirector calls (e.g.
+            // doContentArea after a content-area warp) where the
+            // stale-from-onBeginLogin spec would otherwise leak into
+            // the next zone-in bundle. Smoke-revealed bug fixed in
+            // commit (this); the prior 3 director-related fixes
+            // (3ed504d, b71acef, d9242d9) got the player to the
+            // warp + the director-main coroutine running, but the
+            // director SPAWN packets in the bundle still pointed at
+            // the OpeningDirector. Fall back to (0, "", "") if the
+            // script somehow passes a non-director.
+            let (director_actor_id, class_path, class_name) = match &director {
                 Value::UserData(ud) => ud
                     .borrow::<LuaDirectorHandle>()
                     .ok()
-                    .map(|h| h.actor_id)
-                    .unwrap_or(0),
-                _ => 0,
+                    .map(|h| (h.actor_id, h.class_path.clone(), h.name.clone()))
+                    .unwrap_or((0, String::new(), String::new())),
+                _ => (0, String::new(), String::new()),
             };
             push(
                 &this.queue,
                 LuaCommand::SetLoginDirector {
                     player_id: this.snapshot.actor_id,
                     director_actor_id,
+                    class_path,
+                    class_name,
                 },
             );
             Ok(())

@@ -577,9 +577,19 @@ pub enum LuaCommand {
     /// branches on `loginInitDirector != null`). Without this command
     /// being fired on tutorial-zone login the 1.23b client stays at Now
     /// Loading because it never sees the "init director attached" variant.
+    /// `class_path` + `class_name` carry through so apply_set_login_director
+    /// can build a fresh `LoginDirectorSpec` and set `session.login_director`
+    /// — without that, mid-session SetLoginDirector calls (e.g. from
+    /// man0g0.lua's doContentArea after a content-area warp) leave the
+    /// stale-from-onBeginLogin spec in place and the next zone-in bundle
+    /// spawns the WRONG director, leaving the client unable to resolve
+    /// the new director's KickEvent target → permanent "Now Loading"
+    /// hang. See commit (this) for the smoke-revealed manifestation.
     SetLoginDirector {
         player_id: u32,
         director_actor_id: u32,
+        class_path: String,
+        class_name: String,
     },
     /// `zone:CreateDirector(path, hasContentGroup)` in Lua. The C# version
     /// creates a `Director` actor with `actor_id = (6 << 28) | (zone_actor_id
