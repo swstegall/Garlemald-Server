@@ -2510,19 +2510,31 @@ impl PacketProcessor {
         }
 
         // 1. Migrate the actor between zones (no-op if zone_id is the
-        //    same as the current zone). `do_zone_change` also updates
-        //    the session's destination + zone fields.
+        //    same as the current zone). `do_zone_change_with_private_area`
+        //    also updates the session's destination + zone +
+        //    private-area fields. `private_area = Some` routes the
+        //    actor into that PrivateArea instance's core pool;
+        //    `None` (or unknown name) goes to the parent zone's core.
         let spawn = common::Vector3::new(x, y, z);
         if let Err(e) = self
             .world
-            .do_zone_change(actor_id, session_id, zone_id, spawn, rotation)
+            .do_zone_change_with_private_area(
+                actor_id,
+                session_id,
+                zone_id,
+                private_area.clone(),
+                private_area_type,
+                spawn,
+                rotation,
+            )
             .await
         {
             tracing::error!(
                 error = %e,
                 player = player_id,
                 zone = zone_id,
-                "DoZoneChange: world.do_zone_change failed"
+                ?private_area,
+                "DoZoneChange: world.do_zone_change_with_private_area failed"
             );
             return;
         }

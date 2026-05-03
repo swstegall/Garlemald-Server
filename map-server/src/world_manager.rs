@@ -859,6 +859,47 @@ impl WorldManager {
         spawn: Vector3,
         rotation: f32,
     ) -> Result<()> {
+        // Public-area path — convenience wrapper for callers that
+        // don't deal with private-area routing.
+        self.do_zone_change_with_private_area(
+            actor_id,
+            session_id,
+            destination_zone_id,
+            None,
+            0,
+            spawn,
+            rotation,
+        )
+        .await
+    }
+
+    /// Cross-zone migration with optional private-area routing — port
+    /// of C# `WorldManager.DoZoneChange(player, destZoneId,
+    /// destinationPrivateArea, destinationPrivateAreaType, ...)`
+    /// (Map Server/WorldManager.cs:855). When `private_area_name`
+    /// is `Some`, route the actor into the matching `PrivateArea`
+    /// sub-instance's `core` pool instead of the parent zone's
+    /// `core`. The client never sees a dedicated "private area
+    /// switch" packet — the SetMap (region + zone_id) is the same
+    /// regardless; the differentiation is purely server-side actor
+    /// visibility (the player's spawn-broadcast pool now contains
+    /// only NPCs / other players in the same private-area instance).
+    ///
+    /// Falls back to the parent zone if the named private area
+    /// doesn't exist on this server (logs at warn — quest sites
+    /// reference replicas like `PrivateAreaMasterPast` which may
+    /// not be installed for every zone).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn do_zone_change_with_private_area(
+        &self,
+        actor_id: u32,
+        session_id: u32,
+        destination_zone_id: u32,
+        private_area_name: Option<String>,
+        private_area_level: u32,
+        spawn: Vector3,
+        rotation: f32,
+    ) -> Result<()> {
         // 1. Look up the destination zone.
         let Some(dest_zone) = self.zone(destination_zone_id).await else {
             tracing::warn!(
@@ -876,6 +917,8 @@ impl WorldManager {
                 .or_insert_with(|| Session::new(session_id));
             session.is_updates_locked = true;
             let old_zone_id = session.current_zone_id;
+            let old_private_area_name = session.current_private_area_name.clone();
+            let old_private_area_level = session.current_private_area_level;
             session.current_zone_id = destination_zone_id;
             session.destination_zone_id = destination_zone_id;
             session.destination_x = spawn.x;
@@ -883,29 +926,103 @@ impl WorldManager {
             session.destination_z = spawn.z;
             session.destination_rot = rotation;
 
-            // 3. Detach from old zone's spatial grid if different.
-            if old_zone_id != 0
-                && old_zone_id != destination_zone_id
+            // 3. Detach from old area (parent zone OR old private
+            //    area) if it changed. Mirrors C#'s
+            //    `oldArea.RemoveActorFromZone(player)` where
+            //    `oldArea` is whichever Area the player was in.
+            let zone_changed = old_zone_id != 0 && old_zone_id != destination_zone_id;
+            let private_area_changed = old_private_area_name != private_area_name
+                || old_private_area_level != private_area_level;
+            if zone_changed
                 && let Some(old_zone) = self.zones.read().await.get(&old_zone_id).cloned()
             {
                 let mut old = old_zone.write().await;
                 let mut ob = crate::zone::outbox::AreaOutbox::new();
-                old.core.remove_actor(actor_id, &mut ob);
+                if let Some(pa_name) = &old_private_area_name {
+                    if let Some(pa) = old
+                        .private_areas
+                        .get_mut(pa_name)
+                        .and_then(|m| m.get_mut(&old_private_area_level))
+                    {
+                        pa.core.remove_actor(actor_id, &mut ob);
+                    }
+                } else {
+                    old.core.remove_actor(actor_id, &mut ob);
+                }
+            } else if !zone_changed && private_area_changed {
+                // Same zone, different private-area routing — drop
+                // from the old area within the same zone.
+                let mut dest = dest_zone.write().await;
+                let mut ob = crate::zone::outbox::AreaOutbox::new();
+                if let Some(pa_name) = &old_private_area_name {
+                    if let Some(pa) = dest
+                        .private_areas
+                        .get_mut(pa_name)
+                        .and_then(|m| m.get_mut(&old_private_area_level))
+                    {
+                        pa.core.remove_actor(actor_id, &mut ob);
+                    }
+                } else {
+                    dest.core.remove_actor(actor_id, &mut ob);
+                }
             }
 
-            // 4. Attach to new zone.
+            // 4. Attach to new area — either parent `core` or the
+            //    matching private area.
             let mut dest = dest_zone.write().await;
             let mut ob = crate::zone::outbox::AreaOutbox::new();
-            dest.core.add_actor(
-                crate::zone::area::StoredActor {
-                    actor_id,
-                    kind: crate::zone::area::ActorKind::Player,
-                    position: spawn,
-                    grid: (0, 0),
-                    is_alive: true,
-                },
-                &mut ob,
-            );
+            let attached_to_private = if let Some(pa_name) = &private_area_name {
+                if let Some(pa) = dest
+                    .private_areas
+                    .get_mut(pa_name)
+                    .and_then(|m| m.get_mut(&private_area_level))
+                {
+                    pa.core.add_actor(
+                        crate::zone::area::StoredActor {
+                            actor_id,
+                            kind: crate::zone::area::ActorKind::Player,
+                            position: spawn,
+                            grid: (0, 0),
+                            is_alive: true,
+                        },
+                        &mut ob,
+                    );
+                    true
+                } else {
+                    tracing::warn!(
+                        zone = destination_zone_id,
+                        private_area = %pa_name,
+                        level = private_area_level,
+                        "do_zone_change: named private area not found, falling back to parent zone"
+                    );
+                    false
+                }
+            } else {
+                false
+            };
+            if !attached_to_private {
+                dest.core.add_actor(
+                    crate::zone::area::StoredActor {
+                        actor_id,
+                        kind: crate::zone::area::ActorKind::Player,
+                        position: spawn,
+                        grid: (0, 0),
+                        is_alive: true,
+                    },
+                    &mut ob,
+                );
+            }
+
+            // 5. Update session's private-area routing. `Some` only
+            //    if we actually attached to a private area (so the
+            //    fallback case clears it).
+            if attached_to_private {
+                session.current_private_area_name = private_area_name;
+                session.current_private_area_level = private_area_level;
+            } else {
+                session.current_private_area_name = None;
+                session.current_private_area_level = 0;
+            }
 
             // Unlock updates.
             session.is_updates_locked = false;

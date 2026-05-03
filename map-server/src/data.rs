@@ -51,6 +51,20 @@ pub struct Session {
     pub is_updates_locked: bool,
     pub error_message: String,
     pub current_zone_id: u32,
+    /// Active private-area routing within `current_zone_id`. C# Meteor's
+    /// `WorldManager::GetArea(zoneId, privateAreaName, privateAreaType)`
+    /// returns the parent `Zone` when `privateAreaName == ""` else the
+    /// matching `PrivateArea` sub-instance. Garlemald mirrors that
+    /// behavior at zone-change time: when `current_private_area_name`
+    /// is `Some`, the player is in the corresponding `PrivateArea.core`
+    /// actor pool (filtered visibility — they see only NPCs in that
+    /// instance); `None` puts them in the parent zone's `core` pool.
+    /// No dedicated wire packet — the differentiation is purely
+    /// server-side actor-list bookkeeping; the client receives the
+    /// same SetMap (region + zone_id) regardless. Set by
+    /// `WorldManager::do_zone_change`'s extended path.
+    pub current_private_area_name: Option<String>,
+    pub current_private_area_level: u32,
     pub destination_zone_id: u32,
     pub destination_spawn_type: u8,
     pub destination_x: f32,
