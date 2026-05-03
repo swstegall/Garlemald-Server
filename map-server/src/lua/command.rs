@@ -257,6 +257,19 @@ pub enum LuaCommand {
         player_id: u32,
         quest_id: u32,
     },
+    /// `player:DoEmote(targetActorId, emoteId, messageId)` — actor
+    /// performs an emote animation pointed at `targetActorId` with
+    /// `messageId` driving the chat-log line. Wire format is the
+    /// `0x00E1 ActorDoEmotePacket` (`build_actor_do_emote`); 13 call
+    /// sites use the canonical name + 2 use the lowercase `doEmote`
+    /// alias. Used heavily by the man0l1.lua starter quest where the
+    /// player nods/bows at NPCs as part of the dialogue.
+    DoEmote {
+        actor_id: u32,
+        target_actor_id: u32,
+        emote_id: u32,
+        message_id: u32,
+    },
     /// `quest:ClearQuestData()` / `data:ClearData()` — reset every flag +
     /// counter on the live quest.
     QuestClearData {
@@ -348,6 +361,15 @@ pub enum LuaCommand {
     SetHomePoint {
         player_id: u32,
         homepoint: u32,
+    },
+    /// `player:SetHomePointInn(innId)` — sets the inn-room id the
+    /// player respawns into when the home-point teleport drops them
+    /// into an inn rather than a city homepoint. Persists alongside
+    /// the existing `homepoint` field via `save_player_home_points`.
+    /// 6 call sites in dft + populace inn-keeper scripts.
+    SetHomePointInn {
+        player_id: u32,
+        inn_id: u8,
     },
     /// `WorldManager:WarpToPosition(player, x, y, z, rot)` and
     /// `:DoPlayerMoveInZone(player, x, y, z, rot, spawn_type)` — both

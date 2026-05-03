@@ -1038,6 +1038,15 @@ impl PacketProcessor {
             } => {
                 self.apply_abandon_quest(player_id, quest_id).await;
             }
+            LC::DoEmote {
+                actor_id,
+                target_actor_id,
+                emote_id,
+                message_id,
+            } => {
+                self.apply_do_emote(actor_id, target_actor_id, emote_id, message_id)
+                    .await;
+            }
             LC::QuestClearData {
                 player_id,
                 quest_id,
@@ -1332,6 +1341,9 @@ impl PacketProcessor {
                 homepoint,
             } => {
                 self.apply_set_home_point(player_id, homepoint).await;
+            }
+            LC::SetHomePointInn { player_id, inn_id } => {
+                self.apply_set_home_point_inn(player_id, inn_id).await;
             }
             LC::SetPool {
                 actor_id,
@@ -3642,6 +3654,56 @@ impl PacketProcessor {
         tracing::info!(player = player_id, homepoint, "SetHomePoint applied");
     }
 
+    /// `player:SetHomePointInn(innId)` — companion to `SetHomePoint`
+    /// that mutates only the inn-room id. Reads the current homepoint
+    /// from the live Character, writes the inn id, then persists both
+    /// (the DB API is one-shot for both fields). 6 call sites in
+    /// dft + populace inn-keeper scripts.
+    async fn apply_set_home_point_inn(&self, player_id: u32, inn_id: u8) {
+        if let Some(handle) = self.registry.get(player_id).await {
+            let homepoint = {
+                let mut c = handle.character.write().await;
+                c.chara.homepoint_inn = inn_id;
+                c.chara.homepoint
+            };
+            if let Err(e) = self
+                .db
+                .save_player_home_points(player_id, homepoint, inn_id)
+                .await
+            {
+                tracing::warn!(
+                    player = player_id,
+                    inn_id,
+                    err = %e,
+                    "SetHomePointInn: DB persist failed",
+                );
+                return;
+            }
+        } else {
+            // Offline-fallback safety net — Lua callers can't realistically
+            // hit this, but keep the persist path consistent with
+            // `apply_set_home_point`'s offline branch.
+            let homepoint = match self.db.load_player_character(player_id).await {
+                Ok(Some(p)) => p.homepoint,
+                _ => 0,
+            };
+            if let Err(e) = self
+                .db
+                .save_player_home_points(player_id, homepoint, inn_id)
+                .await
+            {
+                tracing::warn!(
+                    player = player_id,
+                    inn_id,
+                    err = %e,
+                    "SetHomePointInn (offline): DB persist failed",
+                );
+                return;
+            }
+        }
+        tracing::info!(player = player_id, inn_id, "SetHomePointInn applied");
+    }
+
     /// `player:SetHP/SetMaxHP/SetMP/SetMaxMP/SetTP(value)` — direct
     /// pool setter used by GM `setmaxhp` / `setmaxmp` commands and
     /// by quest scripts that need to override player pools without
@@ -3827,6 +3889,52 @@ impl PacketProcessor {
                 "WarpToPosition: no client handle (offline) — pose updated but no packet sent"
             );
         }
+    }
+
+    /// `player:DoEmote(targetActorId, emoteId, messageId)` —
+    /// fans out the canonical 0x00E1 ActorDoEmotePacket. Sent to
+    /// the actor themself (so they see their own animation) and
+    /// broadcast to in-zone neighbours (so witnesses see it). Same
+    /// fan-out shape as SetPool / SetActorPosition.
+    async fn apply_do_emote(
+        &self,
+        actor_id: u32,
+        target_actor_id: u32,
+        emote_id: u32,
+        message_id: u32,
+    ) {
+        if self.registry.get(actor_id).await.is_none() {
+            tracing::debug!(actor = actor_id, "DoEmote: actor not in registry");
+            return;
+        }
+        let bytes = crate::packets::send::actor::build_actor_do_emote(
+            actor_id,
+            emote_id,
+            target_actor_id,
+            message_id,
+        )
+        .to_bytes();
+        crate::runtime::dispatcher::send_to_self_if_player(
+            &self.registry,
+            &self.world,
+            actor_id,
+            bytes.clone(),
+        )
+        .await;
+        crate::runtime::dispatcher::broadcast_to_neighbours(
+            &self.world,
+            &self.registry,
+            actor_id,
+            bytes,
+        )
+        .await;
+        tracing::info!(
+            actor = actor_id,
+            target = target_actor_id,
+            emote_id,
+            message_id,
+            "DoEmote applied + broadcast",
+        );
     }
 
     async fn apply_add_seals(&self, player_id: u32, gc: u8, amount: i32) {

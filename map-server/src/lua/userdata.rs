@@ -708,6 +708,37 @@ impl UserData for LuaPlayer {
             );
             Ok(())
         });
+        // `player:SetHomePointInn(innId)` — set the inn-room id the
+        // player respawns into when the home-point teleport drops them
+        // into an inn instead of a city homepoint. Used by the
+        // dft/Dft{Sea,Fst,Wil}.lua intro quests after the player
+        // chooses their starting inn (6 call sites).
+        methods.add_method("SetHomePointInn", |_, this, inn_id: u8| {
+            push(
+                &this.queue,
+                LuaCommand::SetHomePointInn {
+                    player_id: this.snapshot.actor_id,
+                    inn_id,
+                },
+            );
+            Ok(())
+        });
+
+        // --- "Standard NPC" (fellow companion) read-only stubs -------
+        // The SNpc subsystem (the cinematic-time fellow NPC chosen
+        // during char-make) isn't wired yet — there are no
+        // `snpc_skin`/`snpc_nickname`/etc. fields on PlayerState or
+        // CharaState in garlemald, and no `server_player_snpc` table
+        // to read from. The 24 call sites all live inside cinematic
+        // `delegateEvent` calls (man206.lua processes the player's
+        // intro flashback) — returning zeros lets the script flow
+        // continue; the cutscene just renders the player without a
+        // fellow NPC. Real implementation requires porting the
+        // PlayerSNpc table + char-make capture path.
+        methods.add_method("GetSNpcSkin", |_, _this, _: ()| Ok(0u32));
+        methods.add_method("GetSNpcNickname", |_, _this, _: ()| Ok(0u32));
+        methods.add_method("GetSNpcPersonality", |_, _this, _: ()| Ok(0u32));
+        methods.add_method("GetSNpcCoordinate", |_, _this, _: ()| Ok(0u32));
         methods.add_method("GetMountState", |_, this, _: ()| {
             Ok(this.snapshot.mount_state)
         });
@@ -1132,6 +1163,30 @@ impl UserData for LuaPlayer {
             );
             Ok(())
         });
+        // `player:AcceptQuest(quest, [withDialog])` — quest scripts use
+        // this from inside `processEvent###` flows after the player has
+        // confirmed in-dialogue. `quest` is a LuaQuestHandle userdata
+        // (the same one delivered to onTalk); we extract its quest_id
+        // and dispatch the same `AddQuest` command. The optional bool
+        // flag in C# triggers the "quest accepted" ding/banner — we
+        // accept it for signature compat but the AddQuest path already
+        // emits the journal-add packet which carries the banner, so no
+        // separate handling is needed yet. 58 call sites across the
+        // quest tree.
+        methods.add_method(
+            "AcceptQuest",
+            |_, this, (quest, _with_dialog): (mlua::AnyUserData, Option<bool>)| {
+                let q = quest.borrow::<LuaQuestHandle>()?;
+                push(
+                    &this.queue,
+                    LuaCommand::AddQuest {
+                        player_id: this.snapshot.actor_id,
+                        quest_id: q.quest_id,
+                    },
+                );
+                Ok(())
+            },
+        );
         methods.add_method("CompleteQuest", |_, this, id: u32| {
             push(
                 &this.queue,
@@ -1152,6 +1207,28 @@ impl UserData for LuaPlayer {
             );
             Ok(())
         });
+        // `player:DoEmote(targetActorId, emoteId, messageId)` — actor
+        // performs an emote pointed at `targetActorId`. Fans out the
+        // 0x00E1 ActorDoEmotePacket. Lowercase alias `doEmote` exists
+        // for legacy script callsites that predate the C# UpperCamel
+        // sweep.
+        let do_emote_handler = |_: &mlua::Lua,
+                                this: &LuaPlayer,
+                                (target_actor_id, emote_id, message_id): (u32, u32, u32)|
+         -> mlua::Result<()> {
+            push(
+                &this.queue,
+                LuaCommand::DoEmote {
+                    actor_id: this.snapshot.actor_id,
+                    target_actor_id,
+                    emote_id,
+                    message_id,
+                },
+            );
+            Ok(())
+        };
+        methods.add_method("DoEmote", do_emote_handler);
+        methods.add_method("doEmote", do_emote_handler);
 
         // --- Event control --------------------------------------------------
         methods.add_method("EndEvent", |_, this, _: ()| {
@@ -1391,7 +1468,15 @@ impl UserData for LuaPlayer {
             };
             lua.create_userdata(zone)
         });
-        methods.add_method("GetItemPackage", |lua, this, pkg_code: u16| {
+        // `player:GetItemPackage(pkgCode)` — returns a LuaItemPackage
+        // bound to the player's inventory bucket. `getItemPackage`
+        // (lowercase) is the legacy alias used by the etc/etc5*
+        // quests; both share the same handler. 7 lowercase + many
+        // UpperCamel call sites.
+        let get_item_package_handler = |lua: &mlua::Lua,
+                                        this: &LuaPlayer,
+                                        pkg_code: u16|
+         -> mlua::Result<mlua::AnyUserData> {
             // Returning nil here made `onLogin`'s `initClassItems` /
             // `initRaceItems` path immediately abort on the first
             // `GetItemPackage(0):AddItems(...)` call (nil is not
@@ -1413,7 +1498,9 @@ impl UserData for LuaPlayer {
                 is_retainer: false,
             };
             lua.create_userdata(pkg)
-        });
+        };
+        methods.add_method("GetItemPackage", get_item_package_handler);
+        methods.add_method("getItemPackage", get_item_package_handler);
         methods.add_method("GetQuest", |lua, this, id: u32| {
             // Scripts chain `GetQuest(id):SetQuestFlag(...)` /
             // `:GetData():IncCounter(...)` etc. If the player doesn't have
@@ -2962,39 +3049,47 @@ pub struct LuaItemPackage {
 
 impl UserData for LuaItemPackage {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("AddItem", |_, this, args: mlua::MultiValue| {
-            // `AddItem(catalogId)` or `AddItem(catalogId, qty)`.
-            let mut iter = args.into_iter();
-            let Some(Value::Integer(catalog)) = iter.next() else {
-                return Ok(());
+        // `pkg:AddItem(catalogId[, qty[, quality]])`. The optional
+        // third arg (quality) is accepted for signature compat but
+        // ignored — we don't model HQ on the wire yet. Lowercase
+        // alias `addItem` exists for the etc/etc5* quest scripts
+        // that predate the C# UpperCamel sweep (7 call sites).
+        let add_item_handler =
+            |_: &mlua::Lua, this: &LuaItemPackage, args: mlua::MultiValue| -> mlua::Result<()> {
+                // `AddItem(catalogId)` or `AddItem(catalogId, qty)`.
+                let mut iter = args.into_iter();
+                let Some(Value::Integer(catalog)) = iter.next() else {
+                    return Ok(());
+                };
+                let qty = match iter.next() {
+                    Some(Value::Integer(q)) => q as i32,
+                    _ => 1,
+                };
+                // Retainer-owned packages emit the dedicated retainer
+                // variant so the DB write lands in
+                // `characters_retainer_inventory` keyed by
+                // `(retainerId, serverItemId)`, not conflated into the
+                // player-scoped `characters_inventory` table.
+                let cmd = if this.is_retainer {
+                    LuaCommand::AddItemToRetainer {
+                        retainer_id: this.owner_actor_id,
+                        item_package: this.package_code,
+                        item_id: catalog as u32,
+                        quantity: qty,
+                    }
+                } else {
+                    LuaCommand::AddItem {
+                        actor_id: this.owner_actor_id,
+                        item_package: this.package_code,
+                        item_id: catalog as u32,
+                        quantity: qty,
+                    }
+                };
+                push(&this.queue, cmd);
+                Ok(())
             };
-            let qty = match iter.next() {
-                Some(Value::Integer(q)) => q as i32,
-                _ => 1,
-            };
-            // Retainer-owned packages emit the dedicated retainer
-            // variant so the DB write lands in
-            // `characters_retainer_inventory` keyed by
-            // `(retainerId, serverItemId)`, not conflated into the
-            // player-scoped `characters_inventory` table.
-            let cmd = if this.is_retainer {
-                LuaCommand::AddItemToRetainer {
-                    retainer_id: this.owner_actor_id,
-                    item_package: this.package_code,
-                    item_id: catalog as u32,
-                    quantity: qty,
-                }
-            } else {
-                LuaCommand::AddItem {
-                    actor_id: this.owner_actor_id,
-                    item_package: this.package_code,
-                    item_id: catalog as u32,
-                    quantity: qty,
-                }
-            };
-            push(&this.queue, cmd);
-            Ok(())
-        });
+        methods.add_method("AddItem", add_item_handler);
+        methods.add_method("addItem", add_item_handler);
         methods.add_method("AddItems", |_, this, items: mlua::Table| {
             // `AddItems({id1, id2, …})`. C# auto-infers qty=1 for each
             // catalog id; we follow suit. Tables with explicit {id, qty}
