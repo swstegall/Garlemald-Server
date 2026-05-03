@@ -32,17 +32,43 @@ pub const OP_SEND_MESSAGE_PUBLIC: u16 = 0x0003;
 pub const OP_SET_MAP: u16 = 0x0005;
 pub const OP_DELETE_ALL_ACTORS: u16 = 0x0007;
 pub const OP_PONG: u16 = 0x0008;
-/// Wiki: "Mass Delete Actor Body (x10)" — chunked-actor-delete body
-/// frame, 10 actor ids per packet. Retail uses it during big zone
-/// transitions (`teleport_to_camp_tranquil`, `moving_around_gridania`).
-/// Garlemald currently uses the x1 path only and has no x10 builder.
-pub const OP_MASS_DELETE_ACTOR_X10: u16 = 0x0009;
-/// Wiki: "Mass Delete Actor Body (x20)" — same but 20 ids/packet.
-/// Seen 2× in retail captures (`move_out_of_room`, `moving_around_gridania`).
-pub const OP_MASS_DELETE_ACTOR_X20: u16 = 0x000A;
-/// Wiki: "Mass Delete Actor Body (x40)" — same but 40 ids/packet.
-/// Not observed in the 56-capture survey, but defined for completeness.
-pub const OP_MASS_DELETE_ACTOR_X40: u16 = 0x000B;
+
+// Mass Delete Actor "(xN)" family. The wiki's `(xN)` labels are
+// HEX (x10 = 16, x20 = 32, x40 = 64), confirmed by the captured
+// retail bytes:
+//   • 0x0009 OUT body is 80 bytes = 16×u32 actor + 16-byte pad
+//   • 0x000A OUT body is 160 bytes = 32×u32 actor + 32-byte pad
+// Garlemald's existing inventory `_X08/_X16/_X32/_X64` constants
+// use decimal counts; the names below follow the same convention,
+// but each entry calls out the wiki's hex label so cross-reference
+// stays clean.
+//
+// Sequence semantics (per wiki + captures): 0x0006 Start opens the
+// frame, 0x0008/0x0009/0x000A/0x000B body packets list actors to
+// EXEMPT from a world wipe, 0x0007 End fires the actual delete
+// against everyone NOT in the exempt list. Sending 0x0007 alone
+// (which `build_delete_all_actors` does today) wipes everything.
+
+/// Wiki: "Mass Delete Actor Start" (server→client). 8-byte zero
+/// body. Opens a Mass Delete Actor sequence — body packets list
+/// actors to exempt; the Mass Delete Actor End packet (0x0007)
+/// commits the delete. Same opcode value as `OP_RX_LANGUAGE_CODE`
+/// (0x0006) — direction disambiguates.
+pub const OP_MASS_DELETE_ACTOR_START: u16 = 0x0006;
+/// Wiki: "Mass Delete Actor Body (x10)" — `x10` is HEX (16 actor
+/// ids per packet). Body = 80 bytes (16×u32 actor + 16 pad).
+/// Retail uses it during big zone transitions
+/// (`teleport_to_camp_tranquil`, `moving_around_gridania`).
+pub const OP_MASS_DELETE_ACTOR_X16: u16 = 0x0009;
+/// Wiki: "Mass Delete Actor Body (x20)" — `x20` is HEX (32 actor
+/// ids per packet). Body = 160 bytes (32×u32 actor + 32 pad).
+/// Seen 2× in the survey (`move_out_of_room`,
+/// `moving_around_gridania`).
+pub const OP_MASS_DELETE_ACTOR_X32: u16 = 0x000A;
+/// Wiki: "Mass Delete Actor Body (x40)" — `x40` is HEX (64 actor
+/// ids per packet). Body = 320 bytes (64×u32 actor + 64 pad).
+/// Not observed in the 56-capture survey, but defined for symmetry.
+pub const OP_MASS_DELETE_ACTOR_X64: u16 = 0x000B;
 pub const OP_SET_MUSIC: u16 = 0x000C;
 pub const OP_SET_WEATHER: u16 = 0x000D;
 pub const OP_LOGOUT: u16 = 0x000E;

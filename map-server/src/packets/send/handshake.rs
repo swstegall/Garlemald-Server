@@ -96,8 +96,82 @@ pub fn build_0xe2(actor_id: u32, val: i32) -> SubPacket {
 }
 
 /// OP_DELETE_ALL_ACTORS (0x0007) — server-initiated world wipe.
+///
+/// The wiki names this "Mass Delete Actor End": when sent ALONE it
+/// wipes everything, but it can also close a Mass-Delete sequence
+/// opened by `build_mass_delete_actor_start` with intervening Body
+/// packets that exempt specific actors.
 pub fn build_delete_all_actors(actor_id: u32) -> SubPacket {
     SubPacket::new_with_flag(false, OP_DELETE_ALL_ACTORS, actor_id, vec![0u8; 8])
+}
+
+/// OP_MASS_DELETE_ACTOR_START (0x0006) — opens a Mass Delete Actor
+/// sequence. Body is 8 bytes of zero. Followed by zero or more Body
+/// packets (0x0008/0x0009/0x000A/0x000B — the actors listed there
+/// are *exempted* from the impending wipe), then closed by
+/// `build_delete_all_actors` (0x0007 = "End").
+///
+/// Captured retail bytes (`ffxiv_traces/from_gridania_to_blackshroud.pcapng`
+/// + `gridania_to_coerthas.pcapng`): SubPacket size 0x28, body 8
+/// zero bytes. Same opcode as `OP_RX_LANGUAGE_CODE` — direction
+/// disambiguates.
+pub fn build_mass_delete_actor_start(actor_id: u32) -> SubPacket {
+    SubPacket::new(OP_MASS_DELETE_ACTOR_START, actor_id, body(0x28))
+}
+
+/// OP_MASS_DELETE_ACTOR_X16 (0x0009) — Mass Delete Actor Body
+/// holding up to 16 actor ids to exempt from the impending wipe
+/// (wiki labels this "(x10)"; the `x10` is HEX). Body = 80 bytes
+/// (16×u32 actor + 16-byte zero pad). Empty slots stay zero.
+pub fn build_mass_delete_actor_x16(actor_id: u32, exempt_actors: &[u32]) -> SubPacket {
+    build_mass_delete_actor_body(
+        actor_id,
+        exempt_actors,
+        16,
+        OP_MASS_DELETE_ACTOR_X16,
+        0x70,
+    )
+}
+
+/// OP_MASS_DELETE_ACTOR_X32 (0x000A) — same shape, 32 actor slots.
+/// Body = 160 bytes (32×u32 actor + 32-byte pad).
+pub fn build_mass_delete_actor_x32(actor_id: u32, exempt_actors: &[u32]) -> SubPacket {
+    build_mass_delete_actor_body(
+        actor_id,
+        exempt_actors,
+        32,
+        OP_MASS_DELETE_ACTOR_X32,
+        0xC0,
+    )
+}
+
+/// OP_MASS_DELETE_ACTOR_X64 (0x000B) — same shape, 64 actor slots.
+/// Body = 320 bytes (64×u32 actor + 64-byte pad). Not observed in
+/// the 56-capture survey, but defined for symmetry.
+pub fn build_mass_delete_actor_x64(actor_id: u32, exempt_actors: &[u32]) -> SubPacket {
+    build_mass_delete_actor_body(
+        actor_id,
+        exempt_actors,
+        64,
+        OP_MASS_DELETE_ACTOR_X64,
+        0x160,
+    )
+}
+
+fn build_mass_delete_actor_body(
+    actor_id: u32,
+    exempt_actors: &[u32],
+    cap: usize,
+    opcode: u16,
+    packet_size: usize,
+) -> SubPacket {
+    let mut data = body(packet_size);
+    let n = exempt_actors.len().min(cap);
+    for (i, exempt) in exempt_actors.iter().take(n).enumerate() {
+        let off = i * 4;
+        data[off..off + 4].copy_from_slice(&exempt.to_le_bytes());
+    }
+    SubPacket::new(opcode, actor_id, data)
 }
 
 /// OP_0XF_PACKET (0x000F) — terminator/init marker in the login sequence.
@@ -138,4 +212,85 @@ pub fn build_session_end(session_id: u32, error_code: u16, destination_zone: u32
     let mut sub = SubPacket::new_with_flag(false, OP_SESSION_END, session_id, data);
     sub.set_target_id(session_id);
     sub
+}
+
+#[cfg(test)]
+mod mass_delete_actor_tests {
+    use super::*;
+
+    /// 0x0006 Mass Delete Actor Start. Body must be 8 zero bytes —
+    /// matches `from_gridania_to_blackshroud.pcapng` 0x0006 record #1.
+    #[test]
+    fn mass_delete_actor_start_matches_retail_capture() {
+        let pkt = build_mass_delete_actor_start(0x029B_2941);
+        assert_eq!(pkt.data.len(), 8);
+        assert!(pkt.data.iter().all(|b| *b == 0));
+        assert_eq!(pkt.game_message.opcode, OP_MASS_DELETE_ACTOR_START);
+    }
+
+    /// 0x0009 Mass Delete Actor Body x16 — capacity decoded from
+    /// `moving_around_gridania.pcapng` 0x0009 record #1 (16 actor IDs
+    /// in 80-byte body, no trailing pad). Wiki labels this "(x10)"
+    /// where `x10` is HEX (= 16).
+    #[test]
+    fn mass_delete_actor_x16_writes_actors_in_order() {
+        let actors = vec![
+            0x029B_2941,
+            0x4670_0002,
+            0x5FF8_0002,
+            0x5FF8_0001,
+            0x4670_00C2,
+            0x4670_0001,
+            0x4670_0004,
+            0x4670_004B,
+            0x4670_008F,
+            0x4670_0090,
+            0x4670_0091,
+            0x4670_0092,
+            0x4670_0093,
+            0x4670_0015,
+            0x4670_0097,
+            0x4670_0026,
+        ];
+        let pkt = build_mass_delete_actor_x16(0x029B_2941, &actors);
+        assert_eq!(pkt.data.len(), 80);
+        // First 16 u32 slots populated; trailing 16 bytes zero.
+        for (i, expected) in actors.iter().enumerate() {
+            let actual = u32::from_le_bytes(pkt.data[i * 4..i * 4 + 4].try_into().unwrap());
+            assert_eq!(actual, *expected, "slot {i}");
+        }
+        assert!(pkt.data[64..80].iter().all(|b| *b == 0));
+    }
+
+    /// Truncates extra actors above the per-tier cap.
+    #[test]
+    fn mass_delete_actor_x16_truncates_overflow() {
+        let actors: Vec<u32> = (0..32).map(|i| 0x4670_0000 | i).collect();
+        let pkt = build_mass_delete_actor_x16(1, &actors);
+        // First 16 fit; the rest are dropped on the wire.
+        assert_eq!(
+            u32::from_le_bytes(pkt.data[60..64].try_into().unwrap()),
+            0x4670_000F
+        );
+        // Trailing pad is zero (slot 16 onwards is unused → padding).
+        assert!(pkt.data[64..80].iter().all(|b| *b == 0));
+    }
+
+    #[test]
+    fn mass_delete_actor_x32_size_and_first_slot() {
+        let pkt = build_mass_delete_actor_x32(1, &[0xDEAD_BEEF]);
+        assert_eq!(pkt.data.len(), 160);
+        assert_eq!(
+            u32::from_le_bytes(pkt.data[0..4].try_into().unwrap()),
+            0xDEAD_BEEF
+        );
+        assert_eq!(pkt.game_message.opcode, OP_MASS_DELETE_ACTOR_X32);
+    }
+
+    #[test]
+    fn mass_delete_actor_x64_size() {
+        let pkt = build_mass_delete_actor_x64(1, &[]);
+        assert_eq!(pkt.data.len(), 320);
+        assert!(pkt.data.iter().all(|b| *b == 0));
+    }
 }

@@ -361,6 +361,176 @@ pub const MESSAGE_TYPE_LS: u8 = 0x05;
 pub const MESSAGE_TYPE_YELL: u8 = 0x1D;
 pub const MESSAGE_TYPE_SYSTEM: u8 = 0x20;
 pub const MESSAGE_TYPE_SYSTEM_ERROR: u8 = 0x21;
+/// Captured `log_flag` value on 0x0161 records in
+/// `ffxiv_traces/accept_leve.pcapng` — `0x23`. Different from
+/// `MESSAGE_TYPE_SYSTEM` (0x20); appears to be the "leve / quest"
+/// log channel in 1.x.
+pub const MESSAGE_TYPE_LEVE: u8 = 0x23;
+
+// ---------------------------------------------------------------------------
+// 0x0161-0x0165 "Text Sheet Message (DispId Sender)" family — system
+// messages where the sender is identified by a display id (e.g. a leve
+// content card's catalog id) rather than a runtime actor. Surveyed
+// retail emissions are concentrated in `accept_leve.pcapng` (4× at
+// 0x0161 30b tier); the larger 0x0162-0x0165 tiers had no emissions
+// in the corpus but the family is here for symmetry.
+//
+// Wire format (decoded from `accept_leve.pcapng` 0x0161 records):
+//
+//   u32 disp_id          — display-id of the sender (catalog/leve id)
+//   u32 actor_id         — contextualizing actor (varies; in the
+//                           captures it's a 0x44D80000-prefix
+//                           "leve content" actor)
+//   u16 text_id          — text-sheet index
+//   u8  log_flag         — captured 0x23 = MESSAGE_TYPE_LEVE
+//   u8  pad
+//   LuaParams            — variable, capacity per tier
+//
+// Tier table (size figures = SubPacket total):
+//   0x0161 (30b) — body 16, params capacity  4  — header + 1 param
+//   0x0162 (38b) — body 24, params capacity 12  — ~2 params
+//   0x0163 (40b) — body 32, params capacity 20  — ~3 params
+//   0x0164 (50b) — body 48, params capacity 36  — ~5 params
+//   0x0165 (60b) — body 64, params capacity 52  — ~7 params
+
+fn write_text_sheet_dispid_header(
+    out: &mut Vec<u8>,
+    disp_id: u32,
+    actor_id: u32,
+    text_id: u16,
+    log_flag: u8,
+) {
+    out.write_u32::<LittleEndian>(disp_id).unwrap();
+    out.write_u32::<LittleEndian>(actor_id).unwrap();
+    out.write_u16::<LittleEndian>(text_id).unwrap();
+    out.write_u8(log_flag).unwrap();
+    out.write_u8(0).unwrap();
+}
+
+/// 0x0161 Text Sheet Message (DispId Sender) (30b). Body = 16 bytes
+/// (12-byte header + 4 bytes for ~1 small LuaParam).
+pub fn build_text_sheet_dispid_x30(
+    receiver_actor_id: u32,
+    disp_id: u32,
+    sender_actor_id: u32,
+    text_id: u16,
+    log_flag: u8,
+    lua_params: &[LuaParam],
+) -> SubPacket {
+    build_text_sheet_dispid_n(
+        receiver_actor_id,
+        disp_id,
+        sender_actor_id,
+        text_id,
+        log_flag,
+        lua_params,
+        OP_TEXT_SHEET_DISPID_SENDER_X30,
+        0x30,
+    )
+}
+
+/// 0x0162 Text Sheet Message (DispId Sender) (38b). Body = 24 bytes.
+pub fn build_text_sheet_dispid_x38(
+    receiver_actor_id: u32,
+    disp_id: u32,
+    sender_actor_id: u32,
+    text_id: u16,
+    log_flag: u8,
+    lua_params: &[LuaParam],
+) -> SubPacket {
+    build_text_sheet_dispid_n(
+        receiver_actor_id,
+        disp_id,
+        sender_actor_id,
+        text_id,
+        log_flag,
+        lua_params,
+        OP_TEXT_SHEET_DISPID_SENDER_X38,
+        0x38,
+    )
+}
+
+/// 0x0163 Text Sheet Message (DispId Sender) (40b). Body = 32 bytes.
+pub fn build_text_sheet_dispid_x40(
+    receiver_actor_id: u32,
+    disp_id: u32,
+    sender_actor_id: u32,
+    text_id: u16,
+    log_flag: u8,
+    lua_params: &[LuaParam],
+) -> SubPacket {
+    build_text_sheet_dispid_n(
+        receiver_actor_id,
+        disp_id,
+        sender_actor_id,
+        text_id,
+        log_flag,
+        lua_params,
+        OP_TEXT_SHEET_DISPID_SENDER_X40,
+        0x40,
+    )
+}
+
+/// 0x0164 Text Sheet Message (DispId Sender) (50b). Body = 48 bytes.
+pub fn build_text_sheet_dispid_x50(
+    receiver_actor_id: u32,
+    disp_id: u32,
+    sender_actor_id: u32,
+    text_id: u16,
+    log_flag: u8,
+    lua_params: &[LuaParam],
+) -> SubPacket {
+    build_text_sheet_dispid_n(
+        receiver_actor_id,
+        disp_id,
+        sender_actor_id,
+        text_id,
+        log_flag,
+        lua_params,
+        OP_TEXT_SHEET_DISPID_SENDER_X50,
+        0x50,
+    )
+}
+
+/// 0x0165 Text Sheet Message (DispId Sender) (60b). Body = 64 bytes.
+pub fn build_text_sheet_dispid_x60(
+    receiver_actor_id: u32,
+    disp_id: u32,
+    sender_actor_id: u32,
+    text_id: u16,
+    log_flag: u8,
+    lua_params: &[LuaParam],
+) -> SubPacket {
+    build_text_sheet_dispid_n(
+        receiver_actor_id,
+        disp_id,
+        sender_actor_id,
+        text_id,
+        log_flag,
+        lua_params,
+        OP_TEXT_SHEET_DISPID_SENDER_X60,
+        0x60,
+    )
+}
+
+fn build_text_sheet_dispid_n(
+    receiver_actor_id: u32,
+    disp_id: u32,
+    sender_actor_id: u32,
+    text_id: u16,
+    log_flag: u8,
+    lua_params: &[LuaParam],
+    opcode: u16,
+    packet_size: usize,
+) -> SubPacket {
+    let mut body_buf = Vec::<u8>::with_capacity(packet_size.saturating_sub(0x20));
+    write_text_sheet_dispid_header(&mut body_buf, disp_id, sender_actor_id, text_id, log_flag);
+    luaparam::write_lua_params(&mut body_buf, lua_params).unwrap();
+    let mut data = body(packet_size);
+    let n = body_buf.len().min(data.len());
+    data[..n].copy_from_slice(&body_buf[..n]);
+    SubPacket::new(opcode, receiver_actor_id, data)
+}
 
 /// 0x00CA SendMessagePacket — the general chat relay.
 pub fn build_send_message(
@@ -450,6 +620,61 @@ mod tests {
         let pkt = build_text_sheet_no_source_x68(0x029B_2941, 0x5FF8_0001, 1, 0x20, &[]);
         assert_eq!(pkt.data.len(), 72);
         assert_eq!(pkt.game_message.opcode, OP_TEXT_SHEET_NO_ACTOR_X68);
+    }
+
+    /// Reproduce the captured 0x0161 record from
+    /// `accept_leve.pcapng` #1 — `disp_id = 0x00124FFB`,
+    /// `actor_id = 0x44D8000A`, `text_id = 0x000D`,
+    /// `log_flag = 0x23` (MESSAGE_TYPE_LEVE), 4 bytes trailing zero
+    /// because no LuaParams are passed.
+    #[test]
+    fn text_sheet_dispid_x30_matches_retail_capture() {
+        let pkt = build_text_sheet_dispid_x30(
+            0x029B_2941,
+            0x0012_4FFB,
+            0x44D8_000A,
+            0x000D,
+            MESSAGE_TYPE_LEVE,
+            &[],
+        );
+        assert_eq!(pkt.data.len(), 16);
+        assert_eq!(pkt.game_message.opcode, OP_TEXT_SHEET_DISPID_SENDER_X30);
+        // First 12 bytes are the header (verified byte-for-byte
+        // against capture); last 4 bytes contain the LUA_END marker
+        // (0x0F) followed by zero pad — but we don't assert exact
+        // tail bytes since LuaParam encoding is the source of the
+        // mismatch noted in the No-Source family caveats.
+        assert_eq!(
+            &pkt.data[..12],
+            &[
+                0xFB, 0x4F, 0x12, 0x00, // disp_id LE
+                0x0A, 0x00, 0xD8, 0x44, // actor_id LE
+                0x0D, 0x00,             // text_id LE
+                0x23, 0x00,             // log_flag + pad
+            ],
+        );
+    }
+
+    #[test]
+    fn text_sheet_dispid_tier_sizes() {
+        let cases: &[(u16, usize)] = &[
+            (OP_TEXT_SHEET_DISPID_SENDER_X30, 16),
+            (OP_TEXT_SHEET_DISPID_SENDER_X38, 24),
+            (OP_TEXT_SHEET_DISPID_SENDER_X40, 32),
+            (OP_TEXT_SHEET_DISPID_SENDER_X50, 48),
+            (OP_TEXT_SHEET_DISPID_SENDER_X60, 64),
+        ];
+        let pkts = [
+            build_text_sheet_dispid_x30(1, 2, 3, 4, 0, &[]),
+            build_text_sheet_dispid_x38(1, 2, 3, 4, 0, &[]),
+            build_text_sheet_dispid_x40(1, 2, 3, 4, 0, &[]),
+            build_text_sheet_dispid_x50(1, 2, 3, 4, 0, &[]),
+            build_text_sheet_dispid_x60(1, 2, 3, 4, 0, &[]),
+        ];
+        for (pkt, (opcode, body_size)) in pkts.iter().zip(cases.iter()) {
+            assert_eq!(pkt.game_message.opcode, *opcode);
+            assert_eq!(pkt.data.len(), *body_size);
+        }
     }
 
     #[test]
