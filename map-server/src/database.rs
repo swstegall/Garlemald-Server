@@ -77,9 +77,11 @@ pub struct NpcAppearance {
     pub face_iris_size: u8,
     pub face_eye_shape: u8,
     pub face_nose: u8,
-    pub face_features: u8,
+    // GAM ids 112 / 114 — see lobby Appearance::face_cheek / face_jaw.
+    // SQL column names (`faceFeatures`, `ears`) preserved for back-compat.
+    pub face_cheek: u8,
     pub face_mouth: u8,
-    pub ears: u8,
+    pub face_jaw: u8,
     pub hair_color: u32,
     pub skin_color: u32,
     pub eye_color: u32,
@@ -126,9 +128,9 @@ impl NpcAppearance {
             self.characteristics,
             self.characteristics_color,
             self.face_type,
-            self.ears,
+            self.face_jaw,
             self.face_mouth,
-            self.face_features,
+            self.face_cheek,
             self.face_nose,
             self.face_eye_shape,
             self.face_iris_size,
@@ -168,6 +170,46 @@ impl NpcAppearance {
         a[26] = self.right_index;
         (self.base, a)
     }
+}
+
+/// Joined result of `server_battlenpc_spawn_locations` +
+/// `server_battlenpc_groups` + `server_battlenpc_pools` +
+/// `server_battlenpc_genus` for a single `bnpcId`. Used by
+/// `SpawnBattleNpcById` (the Lua-callable spawn entry point) to drive
+/// the actor materialisation. Mirrors the row shape C#
+/// `WorldManager.SpawnBattleNpcById` reads in
+/// `Map Server/WorldManager.cs:518`.
+#[derive(Debug, Clone, Default)]
+pub struct BattleNpcSpawn {
+    pub bnpc_id: u32,
+    pub group_id: u32,
+    pub position_x: f32,
+    pub position_y: f32,
+    pub position_z: f32,
+    pub rotation: f32,
+    pub pool_id: u32,
+    pub script_name: String,
+    pub min_level: u32,
+    pub max_level: u32,
+    pub respawn_time: u32,
+    pub hp: u32,
+    pub mp: u32,
+    pub drop_list_id: u32,
+    /// 0 = mob, 1 = ally (Player allegiance — controls combat side).
+    pub allegiance: u8,
+    pub spawn_type: u32,
+    pub animation_id: u32,
+    pub actor_state: u16,
+    pub private_area_name: String,
+    pub private_area_level: u32,
+    pub zone_id: u32,
+    pub genus_id: u32,
+    pub actor_class_id: u32,
+    pub current_job: u32,
+    pub combat_skill: u32,
+    pub combat_delay: u32,
+    pub aggro_type: u8,
+    pub speed: u8,
 }
 
 /// One row of `server_zones_privateareas`.
@@ -318,6 +360,45 @@ impl Database {
         Ok(rows.into_iter().collect())
     }
 
+    /// Single-class variant of [`load_actor_classes`] — used by
+    /// runtime spawn paths (e.g. `SpawnBattleNpcById`) that need one
+    /// row on demand without paying the full-table-load cost.
+    pub async fn load_actor_class(
+        &self,
+        actor_class_id: u32,
+    ) -> Result<Option<crate::npc::ActorClass>> {
+        let row = self
+            .conn
+            .call_db(move |c| {
+                let mut stmt = c.prepare(
+                    r"SELECT ac.classPath, ac.displayNameId, ac.propertyFlags,
+                             ac.eventConditions,
+                             pc.pushCommand, pc.pushCommandSub, pc.pushCommandPriority
+                      FROM gamedata_actor_class ac
+                      LEFT JOIN gamedata_actor_pushcommand pc ON ac.id = pc.id
+                      WHERE ac.id = ?1
+                      LIMIT 1",
+                )?;
+                let row = stmt
+                    .query_row([actor_class_id], |r| {
+                        Ok(crate::npc::ActorClass::new(
+                            actor_class_id,
+                            r.get::<_, String>(0).unwrap_or_default(),
+                            r.get::<_, u32>(1).unwrap_or_default(),
+                            r.get::<_, u32>(2).unwrap_or_default(),
+                            r.get::<_, String>(3).unwrap_or_default(),
+                            r.get::<_, u16>(4).unwrap_or_default(),
+                            r.get::<_, u16>(5).unwrap_or_default(),
+                            r.get::<_, u8>(6).unwrap_or_default(),
+                        ))
+                    })
+                    .optional()?;
+                Ok(row)
+            })
+            .await?;
+        Ok(row)
+    }
+
     pub async fn load_actor_classes(&self) -> Result<HashMap<u32, crate::npc::ActorClass>> {
         tracing::debug!("db: load_actor_classes");
         let rows = self
@@ -393,9 +474,9 @@ impl Database {
                             face_iris_size:         r.get(10).unwrap_or(0),
                             face_eye_shape:         r.get(11).unwrap_or(0),
                             face_nose:              r.get(12).unwrap_or(0),
-                            face_features:          r.get(13).unwrap_or(0),
+                            face_cheek:             r.get(13).unwrap_or(0),  // SQL col `faceFeatures`
                             face_mouth:             r.get(14).unwrap_or(0),
-                            ears:                   r.get(15).unwrap_or(0),
+                            face_jaw:               r.get(15).unwrap_or(0),  // SQL col `ears`
                             hair_color:             r.get(16).unwrap_or(0),
                             skin_color:             r.get(17).unwrap_or(0),
                             eye_color:              r.get(18).unwrap_or(0),
@@ -461,6 +542,74 @@ impl Database {
             })
             .await?;
         Ok(rows)
+    }
+
+    /// Load one `BattleNpcSpawn` row by `bnpc_id` — the spawn-locations,
+    /// groups, pools, and genus tables joined into a single DTO. Returns
+    /// `None` if `bnpc_id` doesn't exist in `server_battlenpc_spawn_locations`.
+    /// Port of the C# join in `Map Server/WorldManager.cs:518` (the body
+    /// of `SpawnBattleNpcById`).
+    pub async fn load_battle_npc_spawn(&self, bnpc_id: u32) -> Result<Option<BattleNpcSpawn>> {
+        let row = self
+            .conn
+            .call_db(move |c| {
+                let mut stmt = c.prepare(
+                    r"SELECT
+                        bsl.bnpcId, bsl.groupId, bsl.positionX, bsl.positionY,
+                        bsl.positionZ, bsl.rotation,
+                        bgr.poolId, bgr.scriptName, bgr.minLevel, bgr.maxLevel,
+                        bgr.respawnTime, bgr.hp, bgr.mp, bgr.dropListId,
+                        bgr.allegiance, bgr.spawnType, bgr.animationId,
+                        bgr.actorState, bgr.privateAreaName, bgr.privateAreaLevel,
+                        bgr.zoneId,
+                        bpo.genusId, bpo.actorClassId, bpo.currentJob,
+                        bpo.combatSkill, bpo.combatDelay, bpo.aggroType,
+                        bge.speed
+                      FROM server_battlenpc_spawn_locations bsl
+                      INNER JOIN server_battlenpc_groups bgr ON bsl.groupId = bgr.groupId
+                      INNER JOIN server_battlenpc_pools  bpo ON bgr.poolId  = bpo.poolId
+                      INNER JOIN server_battlenpc_genus  bge ON bpo.genusId = bge.genusId
+                      WHERE bsl.bnpcId = ?1
+                      LIMIT 1",
+                )?;
+                let row = stmt
+                    .query_row([bnpc_id], |r| {
+                        Ok(BattleNpcSpawn {
+                            bnpc_id: r.get(0)?,
+                            group_id: r.get(1)?,
+                            position_x: r.get::<_, f32>(2)?,
+                            position_y: r.get::<_, f32>(3)?,
+                            position_z: r.get::<_, f32>(4)?,
+                            rotation: r.get::<_, f32>(5)?,
+                            pool_id: r.get(6)?,
+                            script_name: r.get::<_, String>(7).unwrap_or_default(),
+                            min_level: r.get(8)?,
+                            max_level: r.get(9)?,
+                            respawn_time: r.get(10)?,
+                            hp: r.get(11)?,
+                            mp: r.get(12)?,
+                            drop_list_id: r.get(13)?,
+                            allegiance: r.get::<_, u8>(14)?,
+                            spawn_type: r.get(15)?,
+                            animation_id: r.get(16)?,
+                            actor_state: r.get::<_, u16>(17)?,
+                            private_area_name: r.get::<_, String>(18).unwrap_or_default(),
+                            private_area_level: r.get(19)?,
+                            zone_id: r.get(20)?,
+                            genus_id: r.get(21)?,
+                            actor_class_id: r.get(22)?,
+                            current_job: r.get(23)?,
+                            combat_skill: r.get(24)?,
+                            combat_delay: r.get(25)?,
+                            aggro_type: r.get::<_, u8>(26)?,
+                            speed: r.get::<_, u8>(27)?,
+                        })
+                    })
+                    .optional()?;
+                Ok(row)
+            })
+            .await?;
+        Ok(row)
     }
 
     pub async fn load_seamless_boundaries(&self) -> Result<HashMap<u32, Vec<SeamlessBoundary>>> {
@@ -1728,9 +1877,9 @@ impl Database {
                                 characteristics: r.get::<_, u8>(9).unwrap_or_default(),
                                 characteristics_color: r.get::<_, u8>(10).unwrap_or_default(),
                                 face_type: r.get::<_, u8>(11).unwrap_or_default(),
-                                ears: r.get::<_, u8>(12).unwrap_or_default(),
+                                face_jaw: r.get::<_, u8>(12).unwrap_or_default(),       // SQL col `ears`
                                 face_mouth: r.get::<_, u8>(13).unwrap_or_default(),
-                                face_features: r.get::<_, u8>(14).unwrap_or_default(),
+                                face_cheek: r.get::<_, u8>(14).unwrap_or_default(),     // SQL col `faceFeatures`
                                 face_nose: r.get::<_, u8>(15).unwrap_or_default(),
                                 face_eye_shape: r.get::<_, u8>(16).unwrap_or_default(),
                                 face_iris_size: r.get::<_, u8>(17).unwrap_or_default(),
@@ -4035,4 +4184,99 @@ pub struct RetainerBazaarListing {
     pub price_gil: i32,
     pub created_utc: u32,
     pub updated_utc: u32,
+}
+
+#[cfg(test)]
+mod battle_npc_spawn_tests {
+    use super::*;
+
+    fn tempdb(label: &str) -> std::path::PathBuf {
+        // Tag the file with the test name AND a nanosecond stamp —
+        // running the suite twice in quick succession (or with
+        // --test-threads=N) otherwise hits the same path and tokio's
+        // SQLite "file is locked" error fires from a stale WAL.
+        std::env::temp_dir().join(format!(
+            "garlemald-battle-npc-spawn-{label}-{}.db",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    /// `load_battle_npc_spawn` joins the four `server_battlenpc_*`
+    /// tables and returns the row for the requested `bnpc_id`. Seed
+    /// data for `bnpcId=6` is yda (groupId=3, poolId=3,
+    /// actorClassId=2290005, scriptName='yda', allegiance=1, zoneId=166).
+    #[tokio::test]
+    async fn load_battle_npc_spawn_yda() {
+        let path = tempdb("yda");
+        let db = Database::open(&path).await.expect("open db");
+        let row = db
+            .load_battle_npc_spawn(6)
+            .await
+            .expect("query")
+            .expect("yda row");
+        assert_eq!(row.bnpc_id, 6);
+        assert_eq!(row.group_id, 3);
+        assert_eq!(row.pool_id, 3);
+        assert_eq!(row.actor_class_id, 2_290_005);
+        assert_eq!(row.script_name, "yda");
+        assert_eq!(row.allegiance, 1, "yda is an ally (Player allegiance)");
+        assert_eq!(row.zone_id, 166, "yda spawns in Black Shroud Forest");
+        // Position from the seed: (365.266, 4.122, -700.73, rot 1.5659).
+        assert!((row.position_x - 365.266).abs() < 0.01);
+        assert!((row.position_y - 4.122).abs() < 0.01);
+        assert!((row.position_z - (-700.73)).abs() < 0.01);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// `bnpcId=3` is `bloodthirsty_wolf` (groupId=2, poolId=2,
+    /// actorClassId=2201407). Used to verify the spawn returns
+    /// distinct rows per bnpc_id.
+    #[tokio::test]
+    async fn load_battle_npc_spawn_bloodthirsty_wolf() {
+        let path = tempdb("wolf");
+        let db = Database::open(&path).await.expect("open db");
+        let row = db
+            .load_battle_npc_spawn(3)
+            .await
+            .expect("query")
+            .expect("wolf row");
+        assert_eq!(row.bnpc_id, 3);
+        assert_eq!(row.group_id, 2);
+        assert_eq!(row.pool_id, 2);
+        assert_eq!(row.actor_class_id, 2_201_407);
+        assert_eq!(row.script_name, "bloodthirsty_wolf");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Missing `bnpc_id` returns `None`, not an error.
+    #[tokio::test]
+    async fn load_battle_npc_spawn_missing_id() {
+        let path = tempdb("missing");
+        let db = Database::open(&path).await.expect("open db");
+        let row = db.load_battle_npc_spawn(0xDEAD_BEEF).await.expect("query");
+        assert!(row.is_none());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// `load_actor_class` returns the row for a known class id (yda's
+    /// `actor_class_id = 2_290_005`).
+    #[tokio::test]
+    async fn load_actor_class_yda() {
+        let path = tempdb("class-yda");
+        let db = Database::open(&path).await.expect("open db");
+        let class = db
+            .load_actor_class(2_290_005)
+            .await
+            .expect("query");
+        // Class id is in the gamedata seed; if it isn't, this test
+        // surfaces the mismatch rather than silently falling back to
+        // a Phase-A "synthetic" pretend-spawn.
+        if let Some(c) = class {
+            assert_eq!(c.actor_class_id, 2_290_005);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
 }

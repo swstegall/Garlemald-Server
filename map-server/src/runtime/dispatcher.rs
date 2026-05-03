@@ -1133,7 +1133,7 @@ pub async fn dispatch_area_event(
 /// (0x00CC ActorInstantiate) is still deferred — it needs the full
 /// LuaParam bind list and is a follow-up once Lua wire-up for
 /// broadcast spawns lands.
-async fn spawn_bundle_fanout(
+pub(crate) async fn spawn_bundle_fanout(
     world: &WorldManager,
     registry: &ActorRegistry,
     zone: &Arc<RwLock<Zone>>,

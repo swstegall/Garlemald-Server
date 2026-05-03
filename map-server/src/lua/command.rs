@@ -75,6 +75,24 @@ pub enum LuaCommand {
         z: f32,
         rotation: f32,
     },
+    /// `GetWorldManager().SpawnBattleNpcById(id, contentArea)` — port of
+    /// C# `WorldManager.SpawnBattleNpcById` (Map Server/WorldManager.cs:514).
+    /// Spawns a BattleNpc by joining the four `server_battlenpc_*` seed
+    /// tables (spawn_locations + groups + pools + genus) and materialising
+    /// the actor under the parent zone's actor list. The expected
+    /// `actor_id` is computed deterministically by the Lua binding so the
+    /// caller can chain `actor.actorId` immediately; the apply path uses
+    /// the same formula.
+    SpawnBattleNpcById {
+        bnpc_id: u32,
+        parent_zone_id: u32,
+        /// Pre-computed actor id the Lua binding handed back to the
+        /// caller. Apply path materialises the actor at exactly this
+        /// id so any subsequent `director:AddMember(actor)` /
+        /// `currentParty:AddMember(actor.actorId)` calls during the
+        /// same `onCreate` drain resolve correctly.
+        expected_actor_id: u32,
+    },
     DespawnActor {
         zone_id: u32,
         actor_id: u32,

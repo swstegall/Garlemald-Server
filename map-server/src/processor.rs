@@ -1629,15 +1629,212 @@ impl PacketProcessor {
             );
         }
         if !partial.commands.is_empty() {
-            crate::runtime::quest_apply::apply_runtime_lua_commands(
-                partial.commands,
-                &self.registry,
-                &self.db,
-                &self.world,
-                Some(lua),
-            )
-            .await;
+            // Partition out SpawnBattleNpcById commands — those need
+            // db lookups + actor materialisation that the runtime
+            // applier doesn't have plumbing for. Hand them to a
+            // local helper; everything else flows through the
+            // standard runtime drain.
+            let mut runtime_cmds = Vec::with_capacity(partial.commands.len());
+            for cmd in partial.commands {
+                if let crate::lua::command::LuaCommand::SpawnBattleNpcById {
+                    bnpc_id,
+                    parent_zone_id: pz,
+                    expected_actor_id,
+                } = cmd
+                {
+                    self.apply_spawn_battle_npc_by_id(bnpc_id, pz, expected_actor_id)
+                        .await;
+                } else {
+                    runtime_cmds.push(cmd);
+                }
+            }
+            if !runtime_cmds.is_empty() {
+                crate::runtime::quest_apply::apply_runtime_lua_commands(
+                    runtime_cmds,
+                    &self.registry,
+                    &self.db,
+                    &self.world,
+                    Some(lua),
+                )
+                .await;
+            }
         }
+    }
+
+    /// B1 of the SEQ_005 unblock plan — port of the C# in
+    /// `Map Server/WorldManager.cs:514 SpawnBattleNpcById`. Joins the
+    /// four `server_battlenpc_*` seed tables on `bnpc_id`, materialises
+    /// a `BattleNpc` actor under the parent zone's actor list at the
+    /// caller-pre-computed actor id, and broadcasts the spawn-bundle
+    /// trio to nearby players via
+    /// `runtime::dispatcher::spawn_bundle_fanout`.
+    ///
+    /// Phase B1 simplifications:
+    ///   * No private-area instance isolation — the actor lands in the
+    ///     parent zone's actor list. (Phase B5 wires in `PrivateAreaContent`.)
+    ///   * No detection / aggro-type / kindred / mob-mod / drop-list
+    ///     application — those land in subsequent passes once the
+    ///     respective subsystems plumb through.
+    ///   * No respawn timer — the actor sticks until explicit despawn.
+    ///   * No `script_name`-driven Lua-side combat AI — the controller
+    ///     stays default.
+    async fn apply_spawn_battle_npc_by_id(
+        &self,
+        bnpc_id: u32,
+        parent_zone_id: u32,
+        expected_actor_id: u32,
+    ) {
+        // 1. Load the joined spawn DTO from the database.
+        let spawn = match self.db.load_battle_npc_spawn(bnpc_id).await {
+            Ok(Some(row)) => row,
+            Ok(None) => {
+                tracing::warn!(
+                    bnpc_id,
+                    parent_zone = parent_zone_id,
+                    "SpawnBattleNpcById: bnpc_id not in server_battlenpc_spawn_locations",
+                );
+                return;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    bnpc_id,
+                    error = %e,
+                    "SpawnBattleNpcById: db query failed",
+                );
+                return;
+            }
+        };
+
+        // 2. Resolve the ActorClass row keyed by spawn.actor_class_id.
+        //    The class carries class_path / display_name_id / event
+        //    conditions — required for AddActor + ActorInstantiate.
+        let actor_class = match self.db.load_actor_class(spawn.actor_class_id).await {
+            Ok(Some(c)) => c,
+            Ok(None) => {
+                tracing::warn!(
+                    bnpc_id,
+                    actor_class_id = spawn.actor_class_id,
+                    "SpawnBattleNpcById: actor_class not in gamedata_actor_class",
+                );
+                return;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    bnpc_id,
+                    error = %e,
+                    "SpawnBattleNpcById: actor_class load failed",
+                );
+                return;
+            }
+        };
+
+        // 3. Compute actor_number from expected_actor_id (must round-trip
+        //    through the same `(4 << 28) | (zone << 19) | actor_number`
+        //    formula the Lua binding used).
+        let actor_number = expected_actor_id & 0x7FFFF;
+
+        // 4. Build the BattleNpc. Pre-fill HP from the group row so the
+        //    `0x0134 SetActorState` packet has the right value (combat
+        //    AI math is a follow-up pass).
+        let mut bnpc = crate::npc::battle_npc::BattleNpc::new(
+            actor_number,
+            &actor_class,
+            spawn.script_name.clone(),
+            parent_zone_id,
+            spawn.position_x,
+            spawn.position_y,
+            spawn.position_z,
+            spawn.rotation,
+            spawn.actor_state,
+            spawn.animation_id,
+            None,
+        );
+        if spawn.hp > 0 {
+            bnpc.npc.character.chara.hp = spawn.hp.min(i16::MAX as u32) as i16;
+            bnpc.npc.character.chara.max_hp = spawn.hp.min(i16::MAX as u32) as i16;
+        }
+        if spawn.mp > 0 {
+            bnpc.npc.character.chara.mp = spawn.mp.min(i16::MAX as u32) as i16;
+            bnpc.npc.character.chara.max_mp = spawn.mp.min(i16::MAX as u32) as i16;
+        }
+        bnpc.npc.character.chara.level = spawn.min_level.clamp(1, i16::MAX as u32) as i16;
+
+        let actor_id = bnpc.actor_id();
+        if actor_id != expected_actor_id {
+            tracing::warn!(
+                bnpc_id,
+                expected = format!("0x{:08X}", expected_actor_id),
+                actual = format!("0x{:08X}", actor_id),
+                "SpawnBattleNpcById: actor_id mismatch — Lua side computed differently",
+            );
+            // Bail rather than spawn at the wrong id; the script's
+            // subsequent calls would target a phantom actor.
+            return;
+        }
+
+        // 5. Insert the spatial projection into the parent zone's grid.
+        let Some(zone_arc) = self.world.zone(parent_zone_id).await else {
+            tracing::warn!(
+                bnpc_id,
+                parent_zone = parent_zone_id,
+                "SpawnBattleNpcById: parent zone not loaded",
+            );
+            return;
+        };
+        {
+            let mut zone = zone_arc.write().await;
+            let mut ob = crate::zone::outbox::AreaOutbox::new();
+            zone.core.add_actor(
+                crate::zone::area::StoredActor {
+                    actor_id,
+                    kind: crate::zone::area::ActorKind::BattleNpc,
+                    position: common::Vector3::new(
+                        spawn.position_x,
+                        spawn.position_y,
+                        spawn.position_z,
+                    ),
+                    grid: (0, 0),
+                    is_alive: true,
+                },
+                &mut ob,
+            );
+        }
+
+        // 6. Register the live Character in the ActorRegistry.
+        let character = bnpc.npc.character.clone();
+        self.registry
+            .insert(crate::runtime::actor_registry::ActorHandle::new(
+                actor_id,
+                crate::runtime::actor_registry::ActorKindTag::BattleNpc,
+                parent_zone_id,
+                /* session */ 0,
+                character,
+            ))
+            .await;
+
+        // 7. Fan the spawn bundle (AddActor + position + appearance +
+        //    name + state + sub_state + status_all + icon + is_zoning)
+        //    to every player within broadcast radius. Uses the same
+        //    helper the runtime dispatcher uses for normal mob spawns.
+        crate::runtime::dispatcher::spawn_bundle_fanout(
+            &self.world,
+            &self.registry,
+            &zone_arc,
+            parent_zone_id,
+            actor_id,
+        )
+        .await;
+
+        tracing::info!(
+            bnpc_id,
+            parent_zone = parent_zone_id,
+            actor_id = format!("0x{:08X}", actor_id),
+            actor_class_id = spawn.actor_class_id,
+            script = %spawn.script_name,
+            allegiance = spawn.allegiance,
+            pos = ?(spawn.position_x, spawn.position_y, spawn.position_z),
+            "SpawnBattleNpcById applied (B1: actor materialised + spawn bundle fanned out)",
+        );
     }
 
     /// Combat-tutorial / instance entry — port of C#

@@ -2069,13 +2069,22 @@ impl UserData for LuaWorldManager {
         // calling chain can read `.actorId` to feed party-add /
         // director-add side-effects.
         //
-        // Phase-A stub: synthesises a deterministic actor id from
-        // the content-area's director_actor_id + the npc id (so
-        // multiple calls with different ids return distinguishable
-        // userdata) and logs the request. The real implementation
-        // looks up the BattleNpc gamedata row by `id`, materialises
-        // the actor inside the content area's actor list, and
-        // broadcasts the spawn packet trio. Phase B+ work.
+        // B1 wire-up:
+        //   * Pre-computes the actor id deterministically from the
+        //     parent zone + a high-band actor_number (`0x40000 | id`)
+        //     using the same formula as `Npc::new`:
+        //     `(4 << 28) | (zone << 19) | (actor_number & 0x7FFFF)`.
+        //     This puts the spawned BattleNpc in the standard
+        //     `0x4xxx_xxxx` range distinct from sequential
+        //     allocations (which start at 1).
+        //   * Pushes `LuaCommand::SpawnBattleNpcById { bnpc_id,
+        //     parent_zone_id, expected_actor_id }`. The runtime
+        //     applier reads the `server_battlenpc_*` join, builds
+        //     the ActorClass-keyed BattleNpc with the same id, and
+        //     broadcasts the spawn packet trio. Subsequent
+        //     `director:AddMember(actor)` /
+        //     `currentParty:AddMember(actor.actorId)` calls during
+        //     the same `onCreate` drain resolve to the same id.
         //
         // Note: registered as `add_function` (no implicit `self`)
         // because the script uses `.` access:
@@ -2083,30 +2092,40 @@ impl UserData for LuaWorldManager {
         methods.add_function(
             "SpawnBattleNpcById",
             |lua, (id, content_area): (u32, mlua::AnyUserData)| {
-                let (parent_zone_id, area_name, director_actor_id, queue) = {
+                let (parent_zone_id, area_name, queue) = {
                     let area = content_area.borrow::<LuaContentArea>()?;
                     (
                         area.parent_zone_id,
                         area.area_name.clone(),
-                        area.director_actor_id,
                         area.queue.clone(),
                     )
                 };
-                // Synthetic actor id: high 12 bits from the content-area's
-                // director encoding, low 20 bits = the requested id. Stable
-                // per (content-area, id) pair.
-                let synthetic_actor_id =
-                    (director_actor_id & 0xFFF0_0000) | (id & 0x000F_FFFF);
+                // Standard NPC actor-id formula. Using `0x40000 | id`
+                // for actor_number puts these into the high half of
+                // the per-zone actor-number space (sequential
+                // allocations start at 1) — collision-free for any
+                // realistic zone.
+                let actor_number = 0x40000u32 | (id & 0x3FFFF);
+                let expected_actor_id =
+                    (4u32 << 28) | (parent_zone_id << 19) | (actor_number & 0x7FFFF);
+                push(
+                    &queue,
+                    LuaCommand::SpawnBattleNpcById {
+                        bnpc_id: id,
+                        parent_zone_id,
+                        expected_actor_id,
+                    },
+                );
                 tracing::debug!(
-                    npc_id = id,
+                    bnpc_id = id,
                     parent_zone = parent_zone_id,
                     area = %area_name,
-                    synthetic_actor_id = format!("0x{:08X}", synthetic_actor_id),
-                    "WorldManager.SpawnBattleNpcById (Phase-A stub: returns synthetic LuaActor; real spawn deferred)",
+                    actor_id = format!("0x{:08X}", expected_actor_id),
+                    "WorldManager.SpawnBattleNpcById queued",
                 );
                 let actor = LuaActor {
-                    actor_id: synthetic_actor_id,
-                    name: format!("battlenpc_{id}"),
+                    actor_id: expected_actor_id,
+                    name: format!("bnpc_{id}"),
                     class_name: String::new(),
                     class_path: String::new(),
                     unique_id: format!("bnpc_{id}"),
