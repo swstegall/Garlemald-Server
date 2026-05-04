@@ -6234,11 +6234,28 @@ impl PacketProcessor {
                 // `group_id=0x0000000065300003` which IS the
                 // QuestDirectorMan0g001 actor id).
                 //
-                // Only respond when event_name == "/_init" — other 0x0133
-                // variants (mob-group inits with synthetic 0x2680… ids)
-                // need different reply shapes, deferred until those flows
-                // are exercised.
-                if event_name == "/_init" {
+                // Only respond for CONTENT-DIRECTOR group inits, NOT
+                // for player-work / mob-group / social-group inits.
+                //
+                // Discriminator: the high u32 of group_id distinguishes
+                // group classes:
+                //   - 0x00000000__XXXXXXXX → content director (low u32 IS the
+                //                            director actor id; e.g. man0g0
+                //                            QuestDirectorMan0g001 = 0x65300003)
+                //   - 0x80000000__XXXXXXXX → player-work group (low u32 is the
+                //                            player actor id, high bit flags
+                //                            it as a player-side group)
+                //   - 0x2680XXXX__XXXXXXXX → mob/monster group (synthetic
+                //                            id with 0x2680 prefix per the
+                //                            captured-bytes comment above)
+                //
+                // Earlier iteration responded to ALL 0x0133 with event="/_init"
+                // and crashed Wine when the OpeningDirector path's player-work
+                // group sent group_id=0x8000000000000001 (player actor id 1
+                // misinterpreted as a director). Now restricted to content-
+                // director inits only.
+                let high = (group_id >> 32) as u32;
+                if event_name == "/_init" && high == 0 {
                     let director_actor_id = (group_id & 0xFFFF_FFFF) as u32;
                     let mut sub = crate::packets::send::groups
                         ::build_synch_group_work_values_content_init(
