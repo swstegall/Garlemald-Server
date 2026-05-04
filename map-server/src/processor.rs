@@ -6215,8 +6215,46 @@ impl PacketProcessor {
                     source = source,
                     group_id = format!("0x{:016X}", group_id),
                     event = %event_name,
-                    "RX 0x0133 group-created (no-op pending event-init handler)",
+                    "RX 0x0133 group-created",
                 );
+                // Reply with the content-group `/_init` SynchGroupWorkValues
+                // packet. Mirrors pmeteor's `WorldManager.SendGroupInit` →
+                // `ContentGroup.SendInitWorkValues` (Map Server/
+                // WorldManager.cs:1640-1654 + Group/ContentGroup.cs:105).
+                //
+                // Without this reply, the client's content-group state
+                // machine sits forever waiting for the director property,
+                // so the cinematic body (RunEventFunction sequence) never
+                // fires and "Now Loading" never clears post-warp.
+                //
+                // The director_actor_id is the lower 32 bits of group_id —
+                // the client encodes the director as a u64 group key
+                // matching the director's actor id (verified from the
+                // captured man0g0 SEQ_005 hang: client sent
+                // `group_id=0x0000000065300003` which IS the
+                // QuestDirectorMan0g001 actor id).
+                //
+                // Only respond when event_name == "/_init" — other 0x0133
+                // variants (mob-group inits with synthetic 0x2680… ids)
+                // need different reply shapes, deferred until those flows
+                // are exercised.
+                if event_name == "/_init" {
+                    let director_actor_id = (group_id & 0xFFFF_FFFF) as u32;
+                    let mut sub = crate::packets::send::groups
+                        ::build_synch_group_work_values_content_init(
+                            source,
+                            group_id,
+                            director_actor_id,
+                        );
+                    sub.set_target_id(source);
+                    client.send_bytes(sub.to_bytes()).await;
+                    tracing::info!(
+                        source = source,
+                        group_id = format!("0x{:016X}", group_id),
+                        director = format!("0x{:08X}", director_actor_id),
+                        "RX 0x0133 → emitted SynchGroupWorkValues /_init reply",
+                    );
+                }
             }
             _ => {
                 tracing::debug!(

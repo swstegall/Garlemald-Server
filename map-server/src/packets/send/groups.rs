@@ -20,7 +20,7 @@
 //! `GroupMembersBegin` → one or more `GroupMembers{X08,X16,X32,X64}` →
 //! `GroupMembersEnd`, plus the optional named/content/sync variants.
 
-use std::io::Cursor;
+use std::io::{Cursor, Write};
 
 use byteorder::{LittleEndian, WriteBytesExt};
 use common::subpacket::SubPacket;
@@ -407,6 +407,75 @@ pub fn build_synch_group_work_values(
     for &b in work_blob.iter().take(n) {
         c.write_u8(b).unwrap();
     }
+    SubPacket::new(OP_SYNCH_GROUP_WORK_VALUES, source_actor_id, data)
+}
+
+/// 0x017A SynchGroupWorkValuesPacket — content-group `/_init` reply.
+///
+/// Mirrors pmeteor `ContentGroup.SendInitWorkValues` (Map Server/Actors/
+/// Group/ContentGroup.cs:105):
+/// ```csharp
+/// SynchGroupWorkValuesPacket groupWork = new SynchGroupWorkValuesPacket(groupIndex);
+/// groupWork.addProperty(this, "contentGroupWork._globalTemp.director");
+/// groupWork.addByte(MurmurHash2("contentGroupWork.property[0]", 0), 1);
+/// groupWork.setTarget("/_init");
+/// ```
+///
+/// The 1.x client sends 0x0133 GroupCreated for the director's `/_init`
+/// after constructing the director-side group (in response to the
+/// director's own `/_init` SetActorProperty in the spawn bundle). Without
+/// this reply, the client's content-group state machine sits forever
+/// waiting for the director property, so the cinematic body
+/// (RunEventFunction sequence) never fires and "Now Loading" never
+/// clears.
+///
+/// Wire layout (per pmeteor's `SynchGroupWorkValuesPacket.cs`):
+///   body[0..8]   = group_id (u64)
+///   body[8]      = runningByteTotal (u8) — total bytes of property
+///                  entries + target, written last
+///   body[9..]    = property entries:
+///     - int property: byte(type=4) + u32(id) + u32(value)         → 9 bytes
+///     - byte property: byte(type=1) + u32(id) + byte(value)        → 6 bytes
+///   then target:
+///     - byte(0x82 + len) + ASCII bytes                             → 1 + len
+///   remainder: zero padding to 0x90 bytes total body
+pub fn build_synch_group_work_values_content_init(
+    source_actor_id: u32,
+    group_id: u64,
+    director_actor_id: u32,
+) -> SubPacket {
+    let mut data = body(0xB0);
+    let mut c = Cursor::new(&mut data[..]);
+    // Group id at offset 0..8.
+    c.write_u64::<LittleEndian>(group_id).unwrap();
+    // Reserve offset 8 for runningByteTotal (written at end).
+    let mut running: u8 = 0;
+    c.set_position(9);
+    // Property entry 1: int contentGroupWork._globalTemp.director
+    c.write_u8(4).unwrap(); // type=int
+    c.write_u32::<LittleEndian>(common::utils::murmur_hash2(
+        "contentGroupWork._globalTemp.director",
+        0,
+    ))
+    .unwrap();
+    c.write_u32::<LittleEndian>(director_actor_id).unwrap();
+    running += 9;
+    // Property entry 2: byte contentGroupWork.property[0] = 1
+    c.write_u8(1).unwrap(); // type=byte
+    c.write_u32::<LittleEndian>(common::utils::murmur_hash2(
+        "contentGroupWork.property[0]",
+        0,
+    ))
+    .unwrap();
+    c.write_u8(1).unwrap();
+    running += 6;
+    // Target marker: 0x82 + target.len(), then ASCII bytes.
+    let target = b"/_init";
+    c.write_u8(0x82u8 + target.len() as u8).unwrap();
+    c.write_all(target).unwrap();
+    running += 1 + target.len() as u8;
+    // Backfill runningByteTotal at offset 8.
+    data[8] = running;
     SubPacket::new(OP_SYNCH_GROUP_WORK_VALUES, source_actor_id, data)
 }
 
