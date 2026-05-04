@@ -115,8 +115,22 @@ pub fn build_director_spawn_subpackets(
     class_name: &str,
     zone_name: &str,
 ) -> Vec<common::subpacket::SubPacket> {
+    // Strip the path portion to the leaf class name. Mirror of pmeteor
+    // `Director.cs`:
+    //   className = classPath.Substring(classPath.LastIndexOf("/") + 1)
+    // Login directors normally have leaf-only names ("OpeningDirector"),
+    // but content directors created mid-session via Lua sometimes carry
+    // path-style names like "Quest/QuestDirectorMan0g001". Without
+    // stripping, the actor-name format below embeds a slash which
+    // breaks the 1.x client's actor-table lookup → ActorInstantiate
+    // fails to construct the Lua object → downstream code that writes
+    // `actor[+0x5c]` faults on NULL, crashing Wine with a page-fault
+    // at address 0x5D (= 0x5C + 1). Same leaf is also used as the
+    // ActorInstantiate `className` param (the full path stays in
+    // `director_bind_params[0]` for the client's class loader).
+    let class_leaf = class_name.rsplit('/').next().unwrap_or(class_name);
     let zone_short = shorten_zone_name(zone_name);
-    let mut class_lower = class_name.to_string();
+    let mut class_lower = class_leaf.to_string();
     if let Some(first) = class_lower.chars().next() {
         let mut lowered = first.to_lowercase().to_string();
         lowered.push_str(&class_lower[first.len_utf8()..]);
@@ -168,7 +182,7 @@ pub fn build_director_spawn_subpackets(
             0,
             0x3040,
             &director_actor_name,
-            class_name,
+            class_leaf,
             &director_bind_params,
         ),
         // C# `Director.GetInitPackets` emits a single empty
