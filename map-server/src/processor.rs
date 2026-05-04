@@ -1896,47 +1896,16 @@ impl PacketProcessor {
             }
         }
 
-        // Emit the content director's 11-packet spawn sequence to the
-        // calling player's session. Without this, the client never has
-        // an actor entry for the content director, so any KickEvent /
-        // RunEventFunction targeting it (e.g. the SEQ_005 cinematic)
-        // silently drops at the receiver's `+0x5c` gate (see
-        // meteor-decomp `event_kick_receiver_decomp.md`).
-        //
-        // The login director is spawned by `send_zone_in_bundle`'s
-        // prepended director-spawn block; content directors created
-        // mid-session via `apply_create_content_area` need their own
-        // emission path here. The matching post-warp respawn block
-        // lives in `send_zone_in_bundle` (reads from
-        // `session.active_content_script`).
-        let session_id = handle.session_id;
-        if let Some(client) = self.world.client(session_id).await {
-            let zone_name = if let Some(zone_arc) = self.world.zone(parent_zone_id).await {
-                let z = zone_arc.read().await;
-                z.core.zone_name.clone()
-            } else {
-                String::new()
-            };
-            let content_director_class_path =
-                format!("/Director/{director_name}");
-            let subpackets = crate::world_manager::build_director_spawn_subpackets(
-                director_actor_id,
-                parent_zone_id,
-                &content_director_class_path,
-                &director_name,
-                &zone_name,
-            );
-            for mut sub in subpackets {
-                sub.set_target_id(session_id);
-                client.send_bytes(sub.to_bytes()).await;
-            }
-            tracing::info!(
-                player = format!("0x{:08X}", player_id),
-                director = format!("0x{:08X}", director_actor_id),
-                director_name = %director_name,
-                "CreateContentArea: emitted content director spawn packets to client",
-            );
-        }
+        // NOTE: the content director's spawn-packet emission lives in
+        // `send_zone_in_bundle` (reads `session.active_content_script`),
+        // NOT here. Earlier iteration tried to emit them at content-area
+        // creation time but that fired BEFORE the warp completed and
+        // double-spawned for content scripts that also call
+        // `SetLoginDirector(director)` (e.g. man0g0's Quest director),
+        // crashing Wine. Deferring to `send_zone_in_bundle` lets the
+        // existing defensive guard (`if Some(active.director_actor_id)
+        // != login_director_spec.as_ref().map(|s| s.actor_id)`) skip
+        // the duplicate emission cleanly.
     }
 
     /// B1 of the SEQ_005 unblock plan — port of the C# in
