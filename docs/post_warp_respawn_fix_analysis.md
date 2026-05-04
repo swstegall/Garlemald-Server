@@ -1,16 +1,130 @@
-# Man0g0 SEQ_005 hang — corrected diagnosis + proposed fix
+# Man0g0 SEQ_005 hang — diagnosis, smoke-test journey, and remaining gap
 
 > Drafted 2026-05-04 from meteor-decomp's Phase 7 cinematic-receiver
-> findings. Pre-work for the man0g0 SimpleContent cinematic hang at
-> "Now Loading" after talking to Yda the second time.
+> findings. End-to-end pre-work + smoke-test debugging for the man0g0
+> SimpleContent cinematic hang at "Now Loading" after talking to Yda
+> the second time.
 >
-> **Two iterations.** The first analysis (preserved at the bottom
-> as historical context) hypothesized a missing post-warp NPC
-> respawn. Codebase audit on 2026-05-04 invalidated that hypothesis
-> — `send_zone_in_bundle` already iterates and respawns area NPCs
-> within 50 units via `push_npc_spawn`, which already emits the
-> full pmeteor-equivalent 3-group sequence. The actual bug is
-> different + smaller in scope.
+> **THREE iterations** of the analysis as smoke testing surfaced
+> deeper layers:
+>   1. First analysis (preserved at the bottom as historical
+>      context): hypothesized a missing post-warp NPC respawn.
+>   2. Second iteration: codebase audit invalidated #1 —
+>      `send_zone_in_bundle` already handles area NPCs. Bug is
+>      really in CONTENT DIRECTOR spawn (never emitted on client).
+>   3. Third iteration (THIS doc): smoke testing of the #2 fix
+>      surfaced 5 layers of bugs (all fixed) plus a deeper
+>      remaining gap — the director's main coroutine doesn't
+>      progress post-warp. See "Smoke-test journey" + "Remaining
+>      gap" sections below.
+
+## TL;DR for the next session
+
+The original "missing CONTENT DIRECTOR spawn" hypothesis was
+**partially right** — the spawn WAS missing, but fixing it
+unblocks only one of multiple layers. The remaining blocker is
+the director-coroutine driver not waking post-warp, which is the
+known SEQ_005 unblock-plan gap (memory entry
+`project_garlemald_man0g0_seq005_complete.md`).
+
+Today's session landed:
+- 5 layered bug fixes (all committed: see "Smoke-test journey")
+- Wire-level groundwork is now solid: client correctly receives
+  director spawn + SynchGroupWorkValues `/_init` reply
+- No more crashes; client cleanly hangs on Now Loading instead
+
+What's left:
+- Director main-coroutine driver needs to resume after warp
+  completion + drive its `delegateEvent` calls into wire packets
+  via the event-outbox dispatcher (not the login-scoped
+  dispatcher which silently drops them).
+
+## Smoke-test journey (chronological — 5 fixes today)
+
+Each fix exposed the next layer. Useful for the next person
+picking this up to know what's already settled vs what's left.
+
+| # | Symptom | Root cause | Fix | Commit |
+|---|---|---|---|---|
+| 1 | Wine crash on first cutscene | `apply_create_content_area` emitted director spawn BEFORE warp completed → double-spawn (since SetLoginDirector fires shortly after, routing same actor through the existing login-director path) | Reverted Step-A emission | `7cac01e` |
+| 2 | Wine NULL+0x5C page-fault crash post-warp | Director's `class_name` was path-style (`Quest/QuestDirectorMan0g001`) → embedded slash in actor-name format → client actor-table lookup failed → ActorInstantiate couldn't construct the Lua object → downstream code wrote to NULL+0x5C | Strip path to leaf in `build_director_spawn_subpackets`; mirror pmeteor `Director.cs` `className.Substring(LastIndexOf("/")+1)` | `863ce73` |
+| 3 | (Original gap) CONTENT director not spawned on client at all | `apply_create_content_area` only fired the script's `onCreate`; never emitted director spawn packets. `send_zone_in_bundle`'s respawn loop filters out non-Character actors (directors slip past). | Refactored director-spawn into reusable `build_director_spawn_subpackets` helper + added content-director block to `send_zone_in_bundle` reading from `session.active_content_script` | `eb7c573` |
+| 4 | Now Loading hang post-warp despite director construct succeeding | Client sent `0x0133 GroupCreated` for director's `/_init`, expecting `0x017A SynchGroupWorkValues` reply with the content-group's director property + property[0] byte. Garlemald's handler was a no-op. | Wired `build_synch_group_work_values_content_init` builder + handler that responds when `event_name == "/_init"` | `adc3244` |
+| 5 | Regression — game crashed before first cutscene at character creation | Previous fix's reply was too aggressive: OpeningDirector path also sends 0x0133 for player-work group (high bit set, `group_id=0x8000000000000001`). Treating its low-u32 as a director actor id sent malformed reply → Wine crash. | Filter the reply to high-u32 == 0 only (content director ids; player-work groups have high bit set, mob groups have `0x2680...` prefix) | `175f53d` |
+
+After all 5 fixes, the smoke-test state is:
+- ✓ Character creation cinematic plays (no crash)
+- ✓ Quest progression up to second-Yda talk works
+- ✓ Warp into man0g0 SEQ_005 area completes cleanly
+- ✓ Director spawn lands; `0x0133` reply emitted; client receives it
+- ✗ "Now Loading" persists — director's cinematic body never runs
+
+## Remaining gap (the deeper subsystem)
+
+After the SynchGroupWorkValues reply lands, the server-side log
+shows ONLY pings + the client doesn't send any further packets.
+Crucially, **no `RunEventFunction` commands fire on the server
+side after the warp** — meaning the director's main coroutine
+(spawned pre-warp via `StartDirectorMain`) isn't being driven
+forward to execute the cinematic body.
+
+Server-side timeline at the hang:
+
+```
+T+0  CreateContentArea + onCreate runs
+     → SpawnBattleNpcById x5 (Yda + Papalymo + 3 wolves)
+     → PartyAddMember + DirectorAddMember
+     → StartDirectorMain (director main coroutine spawned)
+     → KickEvent captured for after-warp emission
+T+0  SetLoginDirector + login director spawn packets prepended
+T+0  KickEventPacket appended
+T+0  zone-in bundle dispatched
+T+0  DoZoneChangeContent applied
+T+0  RX 0x0133 GroupCreated (event=/_init)
+T+0  → emitted SynchGroupWorkValues /_init reply
+T+1+ ONLY pong packets — director coroutine never resumes
+```
+
+The director's main coroutine needs to:
+1. Wake after warp completion (signal: zone-in done, or
+   client's `/_init` ack received)
+2. Pump its `coroutine.yield("_WAIT_EVENT", player)` returns
+3. Drive `delegateEvent` Lua calls into wire `RunEventFunction`
+   packets via the **event-outbox dispatcher**, not the
+   login-scoped dispatcher (which currently silently drops them
+   — see `apply_login_lua_command`'s "unhandled" branch logged
+   as `login lua cmd (unhandled) other=RunEventFunction { ... }`)
+
+There's a parallel, working path in
+`processor.rs::fire_quest_event_hook` that translates event-
+flavoured commands via `EventOutbox` → `dispatch_event_event`
+(comment at `processor.rs:5912-5934` explains the pattern).
+The director coroutine driver needs to use the same translation
+mechanism rather than going through `apply_login_lua_command`.
+
+This is **the same blocker** memory entry
+`project_garlemald_man0g0_seq005_complete.md` flagged: "only
+blocker is SEQ_005 combat tutorial behind DoZoneChangeContent
+stub." Today's work cleared the wire-level prerequisites
+(spawns, replies, no crashes); the remaining work is the
+coroutine-driver subsystem itself.
+
+## Recommended next-session approach
+
+1. **Investigate `StartDirectorMain` coroutine lifecycle.** Where
+   does the spawned coroutine sleep? What's supposed to wake it?
+2. **Trace the man0g0 SEQ_005 director script** — what Lua hooks
+   does the script body actually call? Are they `noticeEvent`
+   handlers that wait for the kick → `RunEventFunction` chain?
+3. **Wire the coroutine-resume path post-warp.** Likely need a
+   new ticker step or a hook in `apply_do_zone_change_content`'s
+   onZoneIn callback that resumes the director coroutine and
+   drives its commands through `EventOutbox` instead of the
+   login-scoped dispatcher.
+
+Estimated scope: multi-hour focused session. The
+`fire_quest_event_hook` pattern can be the model for the
+coroutine driver's command-dispatch translation.
 
 ## The real bug
 
