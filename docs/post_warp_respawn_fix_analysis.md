@@ -293,162 +293,124 @@ placeholder; this version uses the existing async
   separate per-session director registry, we need an
   additional re-spawn call for it.
 
-```rust
-// 4.5. Re-broadcast spawn packets for all area actors that the
-//      DeleteAllActors wipe in step 3 cleared from the client's
-//      actor list. The login director was already re-spawned by
-//      send_zone_in_bundle's prepended packets; the player's
-//      self-spawn is handled by the bundle's main payload. We
-//      need to re-emit the full spawn bundle for everything ELSE
-//      in the destination zone (BattleNpcs from content scripts'
-//      onCreate, MapObjs / NPCs / SNpcs from seed data) so the
-//      trailing KickEvent and any subsequent RunEventFunction
-//      packets can find their target actors with the +0x5c /
-//      +0x7d flags set on the client side.
-//
-//      Mirrors pmeteor `playerSession.UpdateInstance(aroundMe, true)`
-//      which iterates the area's actors and re-broadcasts spawn
-//      packets for each.
-{
-    let Some(dest_zone) = self.world.zone(parent_zone_id).await else {
-        tracing::warn!(
-            player = player_id,
-            parent_zone = parent_zone_id,
-            "DoZoneChangeContent: destination zone not loaded — skipping respawn",
-        );
-        return;
-    };
-    let actors_to_respawn: Vec<u32> = {
-        let z = dest_zone.read().await;
-        z.core
-            .iter()
-            .filter(|a| a.actor_id != actor_id)               // skip the warping player
-            // Director was handled by send_zone_in_bundle's prepended packets — skip
-            // it here too if its actor_id is on the session.
-            .filter(|a| {
-                let dir_id = self
-                    .world
-                    .session_blocking_dir(session_id)         // see note below
-                    .map(|s| s.login_director_actor_id);
-                Some(a.actor_id) != dir_id
-            })
-            .map(|a| a.actor_id)
-            .collect()
-    };
-    for npc_actor_id in actors_to_respawn {
-        crate::runtime::dispatcher::spawn_bundle_fanout(
-            &self.world,
-            &self.registry,
-            &dest_zone,
-            parent_zone_id,
-            npc_actor_id,
-        )
-        .await;
-    }
-    tracing::info!(
-        player = player_id,
-        parent_zone = parent_zone_id,
-        respawned_count = actors_to_respawn.len(),
-        "DoZoneChangeContent: re-broadcast spawn bundles for area actors after wipe",
-    );
-}
-```
+### Considerations + risks (revised for the 3-group helper)
 
-### Considerations + risks
+1. **The new `re_spawn_actor_for_session` helper sends to a
+   specific session, NOT spatially.** This is intentional — the
+   warping player is the only client whose actor list was just
+   wiped. Other players in the area (in non-instanced content)
+   already have the actors on their client; spatially broadcasting
+   would duplicate-send to them. Per-session targeting avoids that.
 
-1. **`spawn_bundle_fanout` broadcasts to area neighbours, not to
-   a specific session.** In an instanced content area where the
-   warping player is the ONLY player present, this is effectively
-   "send to the warping player" — which is what we want. In a
-   non-instanced content area with other players already present,
-   they'd receive duplicate spawn packets for actors they already
-   have on their client, which the client should idempotently
-   ignore (the spawn packets just re-set the same fields). Check
-   `broadcast_around_actor`'s exact filter logic to confirm
-   this is non-destructive for already-present neighbours.
+2. **Does the helper cover director actors?** Probably not, and
+   we shouldn't ask it to. Directors are tracked separately
+   (via `session.login_director` spec for login director, via
+   `session.active_content_script.director_actor_id` for content
+   directors). Both have their own spawn-packet sequences:
+   - Login director: emitted by `send_zone_in_bundle` (already
+     handled in step 4)
+   - Content director: needs verification — see open question
+     below
+   The helper should filter out actor_ids matching either
+   director.
 
-2. **Does `spawn_bundle_fanout` cover director actors too?** It
-   builds an actor-spawn bundle that's valid for any "live actor"
-   the registry can return a `Character` for. Directors aren't
-   `Character`-backed in garlemald (they're tracked via
-   `session.login_director` spec), so calling `spawn_bundle_fanout`
-   on a director's actor_id would either no-op (registry::get
-   returns None for directors) or produce wrong packets. We
-   filter directors out via the explicit `dir_id` check above.
+3. **CONTENT directors vs LOGIN directors.** Content directors
+   (the `OpeningDirector` / `man0g0` quest director) are spawned
+   by `apply_create_content_area` (Phase A of SEQ_005). After
+   the warp, the content director needs to be on the client
+   too — but `send_zone_in_bundle` only handles the LOGIN
+   director. Two options to investigate:
+   - If `dest_zone.core.iter()` includes the content director's
+     actor_id (because `apply_create_content_area` registered it
+     in the area), the helper might handle it — but only if the
+     registry returns a `Character` for it. Directors typically
+     are NOT `Character`-backed in garlemald.
+   - If neither path covers it, we need a director-specific
+     re-spawn path (mirroring `send_zone_in_bundle`'s login-
+     director handling but for the content director).
 
-3. **What about CONTENT directors (the `OpeningDirector` /
-   `man0g0` quest director) vs LOGIN directors?** Content
-   directors are spawned by `apply_create_content_area` (Phase A
-   of the SEQ_005 plan). Their re-spawn after warp needs to be
-   handled too. Two options:
-   - The content director isn't in the new zone yet — it's
-     attached to the OLD zone (parent of the content area).
-     `apply_do_zone_change_content` warps to the parent zone, so
-     the content director might already be there. Verify by
-     checking what `dest_zone` contains.
-   - If the content director is in the new zone but isn't a
-     `Character`, we need a director-specific re-spawn path
-     (mirroring what `send_zone_in_bundle` does for the login
-     director, but for the content director).
-
-4. **`session_blocking_dir` doesn't exist in WorldManager** — used
-   it in the sketch as a placeholder. Real implementation should
-   read the session via the existing `world.session(session_id)`
-   call (which is async). Need to either:
-   - Fetch the session BEFORE the actor list iteration and capture
-     `login_director_actor_id` into a local variable, then filter
-     by it (preferred — single async call)
-   - Or hold the session lock through the iteration
-
-5. **`active_content_script` already captured** — the existing step
-   5 already pulls the active content script's director_actor_id
-   via `s.active_content_script.director_actor_id`. We can reuse
-   that to filter content directors out of the respawn list too.
-
-6. **Should we also fire `onSpawn` per re-spawned actor?**
-   Pmeteor's `UpdateInstance(true)` doesn't — it's a wire-level
+4. **Don't re-fire `onSpawn` per re-spawned actor.** Pmeteor's
+   `UpdateInstance(true)` doesn't — it's a wire-level
    re-broadcast, not a logical re-spawn. The Lua `onSpawn` hooks
    already ran when the actors were FIRST spawned (via
-   `apply_create_content_area` for content actors, or via zone-load
-   for seed actors). Re-firing them on warp would double-fire
-   side effects. Don't re-fire onSpawn here.
+   `apply_create_content_area` for content actors, or via
+   zone-load for seed actors). Re-firing them on warp would
+   double-fire side effects.
 
-7. **Performance**: a content area might have ~5-30 actors. Each
-   `spawn_bundle_fanout` call emits 10 packets. So 50-300 packets
-   in a tight loop after the warp. Acceptable for a one-shot warp
-   event but worth measuring if lag becomes an issue. (Pmeteor
-   has the same overhead; it's not a regression.)
+5. **Performance.** A content area might have ~5-30 actors.
+   Each `re_spawn_actor_for_session` call emits ~10-15 packets
+   (1 AddActor + N event-condition packets + 6 spawn-helper
+   packets + 1 init packet + N event-status packets). So 50-450
+   packets in a tight loop after the warp. Acceptable for a
+   one-shot warp event but worth measuring if it causes
+   noticeable lag. (Pmeteor has the same overhead; it's not a
+   regression.)
+
+6. **Idempotence on the client side.** If the spawn packets land
+   for actors the client already knows about (e.g. from a prior
+   partial state), the client should idempotently re-set the
+   fields. Verify against pmeteor: their `UpdateInstance` skips
+   actors already in the session's `actorInstanceList`, so they
+   never double-spawn. We don't have an `actorInstanceList`-
+   equivalent; the `force=true` path in pmeteor sends to all
+   actors regardless. Likely safe but worth testing.
 
 ### Test plan
 
-1. **Smoke test (the original blocker):** Run `fresh-start-gridania.sh`,
-   progress through man0g0 to the second Yda conversation. The
-   "Now Loading" hang should clear and the cinematic should play.
+1. **Smoke test (the original blocker):** Run
+   `fresh-start-gridania.sh`, progress through man0g0 to the
+   second Yda conversation. The "Now Loading" hang should clear
+   and the SEQ_005 combat tutorial should begin.
 2. **Cross-zone warp regression:** Run any zone-change quest
    (e.g. Gridania → Black Shroud transition). Confirm normal
    warps still work and don't double-spawn the player.
 3. **Multi-player content area:** If garlemald supports multi-PC
    content areas (instances), confirm second player's view isn't
-   corrupted by the re-broadcasts (would require manually
-   spawning two test sessions in the same instanced area).
-4. **Packet capture diff:** Compare the packet log of the warp
-   sequence against pmeteor's `playerSession.UpdateInstance`
-   output to confirm the same wire-level shape.
+   corrupted by the re-broadcasts.
+4. **Packet capture diff:** Compare the post-fix garlemald
+   packet log against the pmeteor packet log for the same warp
+   to confirm the wire-level shapes match.
 
 ### Cross-references
 
-- Existing helper: `crate::runtime::dispatcher::spawn_bundle_fanout`
-  at `map-server/src/runtime/dispatcher.rs:1136` (10-packet
-  bundle per actor).
+- Existing per-actor spawn helper:
+  `crate::runtime::dispatcher::spawn_bundle_fanout` at
+  `map-server/src/runtime/dispatcher.rs:1136` — emits ONLY
+  group 1 (AddActor + position + appearance + state etc., no
+  ActorInstantiate, no init properties, no event status). The
+  proposed `re_spawn_actor_for_session` helper is a strict
+  superset adding groups 2 and 3.
 - Existing zone API: `Zone.core.iter()` returns
-  `Iterator<Item=&StoredActor>` at `map-server/src/zone/area.rs:457`.
+  `Iterator<Item=&StoredActor>` at
+  `map-server/src/zone/area.rs:457`.
 - Existing director-respawn: `send_zone_in_bundle` already
   prepends login director's spawn packets at
   `map-server/src/world_manager.rs:1231-1318`.
-- Pmeteor reference: `Map Server/WorldManager.cs ~line 880`
-  (`playerSession.UpdateInstance(aroundMe, true)` in
-  `DoZoneChangeContent`).
-- Memory: `reference_ffxiv_1x_actor_event_flags.md` — explains why
-  re-emitting AddActor alone wouldn't be enough; the FULL post-
-  AddActor sequence (which `spawn_bundle_fanout` already emits)
-  is what sets both `+0x5c` and `+0x7d` on the client side.
+- Existing director-init helper: `build_director_init_packet`
+  at `map-server/src/world_manager.rs:61` — model for the
+  general `build_actor_property_init` we may need to add.
+- Pmeteor reference: `Map Server/WorldManager.cs:1004-1006`
+  (`playerSession.ClearInstance()` + `player.SendInstanceUpdate(true)`
+  in `DoZoneChangeContent`); `Map Server/DataObjects/Session.cs:112-170`
+  (`UpdateInstance` body); `Map Server/Actors/Actor.cs:257-360`
+  (`GetSpawnPackets` / `GetInitPackets` / `GetSetEventStatusPackets`).
+- Meteor-decomp reference: `event_kick_receiver_decomp.md`
+  (`+0x5c` gate); `event_run_event_function_receiver_decomp.md`
+  (`+0x7d` gate); `reference_ffxiv_1x_actor_event_flags.md`
+  (memory entry summarizing both flags).
+
+### Failure-mode caveat
+
+The fix addresses two of three plausible hang causes:
+- **(A)** Cinematic-start KickEvent silently drops because target
+  director's `+0x5c` is unset → fix re-spawns directors with
+  full sequence → addressed
+- **(B)** Zone-in bundle itself is missing something that signals
+  load-complete to the client → **NOT addressed by this fix**
+- **(C)** Cinematic starts but RunEventFunction targeting a
+  BattleNpc silently drops → fix re-spawns BattleNpcs with
+  EventStatus packets → addressed
+
+If the hang persists after applying this fix, (B) is the
+remaining suspect — investigate by capturing the post-fix
+packet trace and diffing against pmeteor's same-scenario trace.
