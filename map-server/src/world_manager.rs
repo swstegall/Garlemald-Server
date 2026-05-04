@@ -93,6 +93,95 @@ fn shorten_zone_name(zone_name: &str) -> String {
         .replace("Office", "Ofc")
 }
 
+/// Build the canonical 11-packet director spawn sequence — used for
+/// both the LOGIN director (e.g. `OpeningDirector` at character-create)
+/// and the active CONTENT director (e.g. SEQ_005's `SimpleContentDirector`
+/// after `apply_create_content_area`).
+///
+/// Mirrors C# `Director.GetSpawnPackets` + `Director.GetInitPackets`:
+/// `AddActor(flag=0)` + 3 `SetNoticeEventCondition` (noticeEvent /
+/// noticeRequest / reqForChild) + Speed + Position(0,0,0) + Name +
+/// State(passive,0) + IsZoning(false) + `ActorInstantiate` (with the
+/// 6-param director bind) + the empty `/_init` SetActorProperty.
+///
+/// Without these packets on the client, any KickEvent /
+/// RunEventFunction targeting the director silently drops at the
+/// receiver's `+0x5c` gate (see meteor-decomp's
+/// `event_kick_receiver_decomp.md` / `reference_ffxiv_1x_actor_event_flags.md`).
+pub fn build_director_spawn_subpackets(
+    actor_id: u32,
+    zone_actor_id: u32,
+    class_path: &str,
+    class_name: &str,
+    zone_name: &str,
+) -> Vec<common::subpacket::SubPacket> {
+    let zone_short = shorten_zone_name(zone_name);
+    let mut class_lower = class_name.to_string();
+    if let Some(first) = class_lower.chars().next() {
+        let mut lowered = first.to_lowercase().to_string();
+        lowered.push_str(&class_lower[first.len_utf8()..]);
+        class_lower = lowered;
+    }
+    let max_class_len = 20usize.saturating_sub(zone_short.len());
+    if class_lower.len() > max_class_len {
+        class_lower.truncate(max_class_len);
+    }
+    let director_actor_name =
+        format!("{class_lower}_{zone_short}_0@{zone_actor_id:03X}00");
+    let director_bind_params = vec![
+        common::luaparam::LuaParam::String(class_path.to_string()),
+        common::luaparam::LuaParam::False,
+        common::luaparam::LuaParam::False,
+        common::luaparam::LuaParam::False,
+        common::luaparam::LuaParam::False,
+        common::luaparam::LuaParam::False,
+    ];
+    vec![
+        tx::actor::build_add_actor(actor_id, 0),
+        // C# `Director` ctor registers three notice-event conditions:
+        //   ("noticeEvent",   0xE, 0x0)   ← event the director fires
+        //   ("noticeRequest", 0x0, 0x1)
+        //   ("reqForChild",   0x0, 0x1)
+        // `Director.GetSpawnPackets` emits them right after `AddActor`
+        // via `SetNoticeEventCondition` (opcode 0x016B). Without these,
+        // the `KickEventPacket("noticeEvent")` a few packets later
+        // can't resolve to any registered condition on the director and
+        // the client silently drops it.
+        tx::actor_events::build_set_notice_event_condition_raw(
+            actor_id, 0x0E, 0x00, "noticeEvent",
+        ),
+        tx::actor_events::build_set_notice_event_condition_raw(
+            actor_id, 0x00, 0x01, "noticeRequest",
+        ),
+        tx::actor_events::build_set_notice_event_condition_raw(
+            actor_id, 0x00, 0x01, "reqForChild",
+        ),
+        tx::actor::build_set_actor_speed_default(actor_id),
+        tx::actor::build_set_actor_position(
+            actor_id, actor_id as i32, 0.0, 0.0, 0.0, 0.0, 0x0, false,
+        ),
+        tx::actor::build_set_actor_name(actor_id, 0, &director_actor_name),
+        tx::actor::build_set_actor_state(actor_id, 0, 0),
+        tx::actor::build_set_actor_is_zoning(actor_id, false),
+        tx::actor::build_actor_instantiate(
+            actor_id,
+            0,
+            0x3040,
+            &director_actor_name,
+            class_name,
+            &director_bind_params,
+        ),
+        // C# `Director.GetInitPackets` emits a single empty
+        // `SetActorProperty` with `/_init` target after the spawn —
+        // signals to the client that the director is initialised and
+        // safe to fire events against. Empty body (just the target
+        // marker); our existing `build_actor_property_init` emits three
+        // flag entries which is fine for a player but C# emits zero
+        // for a director.
+        build_director_init_packet(actor_id),
+    ]
+}
+
 /// Append the full 7-packet spawn sequence for a zone-resident "master"
 /// actor (area master, debug, or world master) — matches C# `Actor.
 /// GetSpawnPackets`: AddActor(0), Speed, SpawnPosition(spawnType=1),
@@ -1229,96 +1318,16 @@ impl WorldManager {
         // director's `AddActor` before it can resolve that reference.
         let mut subpackets: Vec<common::subpacket::SubPacket> = Vec::new();
         if let Some(spec) = &login_director_spec {
-            let zone_short = shorten_zone_name(&zone_name);
-            let mut class_lower = spec.class_name.clone();
-            if let Some(first) = class_lower.chars().next() {
-                let mut lowered = first.to_lowercase().to_string();
-                lowered.push_str(&class_lower[first.len_utf8()..]);
-                class_lower = lowered;
-            }
-            let max_class_len = 20usize.saturating_sub(zone_short.len());
-            if class_lower.len() > max_class_len {
-                class_lower.truncate(max_class_len);
-            }
-            let director_actor_name = format!(
-                "{class_lower}_{zone_short}_0@{zone_actor_id:03X}00",
-                zone_actor_id = spec.zone_actor_id
-            );
-            let director_bind_params = vec![
-                common::luaparam::LuaParam::String(spec.class_path.clone()),
-                common::luaparam::LuaParam::False,
-                common::luaparam::LuaParam::False,
-                common::luaparam::LuaParam::False,
-                common::luaparam::LuaParam::False,
-                common::luaparam::LuaParam::False,
-            ];
-            subpackets.push(tx::actor::build_add_actor(spec.actor_id, 0));
-            // C# `Director` ctor registers three notice-event conditions:
-            //   ("noticeEvent",   0xE, 0x0)   ← event the login director fires
-            //   ("noticeRequest", 0x0, 0x1)
-            //   ("reqForChild",   0x0, 0x1)
-            // `Director.GetSpawnPackets` emits them right after
-            // `AddActor` via `SetNoticeEventCondition` (opcode 0x016B).
-            // Without these, the `KickEventPacket("noticeEvent")` a few
-            // packets later can't resolve to any registered condition
-            // on the director and the client silently drops it — which
-            // is what we were seeing.
-            subpackets.push(tx::actor_events::build_set_notice_event_condition_raw(
+            subpackets.extend(build_director_spawn_subpackets(
                 spec.actor_id,
-                0x0E,
-                0x00,
-                "noticeEvent",
-            ));
-            subpackets.push(tx::actor_events::build_set_notice_event_condition_raw(
-                spec.actor_id,
-                0x00,
-                0x01,
-                "noticeRequest",
-            ));
-            subpackets.push(tx::actor_events::build_set_notice_event_condition_raw(
-                spec.actor_id,
-                0x00,
-                0x01,
-                "reqForChild",
-            ));
-            subpackets.push(tx::actor::build_set_actor_speed_default(spec.actor_id));
-            subpackets.push(tx::actor::build_set_actor_position(
-                spec.actor_id,
-                spec.actor_id as i32,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0x0,
-                false,
-            ));
-            subpackets.push(tx::actor::build_set_actor_name(
-                spec.actor_id,
-                0,
-                &director_actor_name,
-            ));
-            subpackets.push(tx::actor::build_set_actor_state(spec.actor_id, 0, 0));
-            subpackets.push(tx::actor::build_set_actor_is_zoning(spec.actor_id, false));
-            subpackets.push(tx::actor::build_actor_instantiate(
-                spec.actor_id,
-                0,
-                0x3040,
-                &director_actor_name,
+                spec.zone_actor_id,
+                &spec.class_path,
                 &spec.class_name,
-                &director_bind_params,
+                &zone_name,
             ));
-            // C# `Director.GetInitPackets` emits a single empty
-            // `SetActorProperty` with `/_init` target after the spawn —
-            // signals to the client that the director is initialised
-            // and safe to fire events against. Empty body (just the
-            // target marker); our existing `build_actor_property_init`
-            // emits three flag entries which is fine for a player but
-            // C# emits zero for a director. We build one directly.
-            subpackets.push(build_director_init_packet(spec.actor_id));
             tracing::info!(
                 director = spec.actor_id,
                 class_path = %spec.class_path,
-                name = %director_actor_name,
                 "login director spawn packets prepended"
             );
             // C# `onBeginLogin` calls `player:KickEvent(director,
@@ -1342,6 +1351,36 @@ impl WorldManager {
                     event = %kick.event_name,
                     args = kick.args.len(),
                     "KickEventPacket appended after director spawn"
+                );
+            }
+        }
+        // Active content director (e.g. SEQ_005's content director).
+        // Mirror of the login-director block above. The post-warp
+        // `DeleteAllActors` wipes the client's actor list; without
+        // re-emitting the content director's spawn packets here, any
+        // KickEvent / RunEventFunction targeting the content director
+        // silently drops at the receiver's `+0x5c` gate (see
+        // meteor-decomp `event_kick_receiver_decomp.md` —
+        // `ActorRegistry_lookup_actor` returns NULL → kick dropped →
+        // cinematic never starts → "Now Loading" forever).
+        //
+        // Skip if the content director is the same as the login
+        // director (already spawned above).
+        if let Some(active) = session.active_content_script.as_ref() {
+            if Some(active.director_actor_id) != login_director_spec.as_ref().map(|s| s.actor_id) {
+                let content_director_class_path =
+                    format!("/Director/{}", active.director_name);
+                subpackets.extend(build_director_spawn_subpackets(
+                    active.director_actor_id,
+                    active.parent_zone_id,
+                    &content_director_class_path,
+                    &active.director_name,
+                    &zone_name,
+                ));
+                tracing::info!(
+                    director = active.director_actor_id,
+                    director_name = %active.director_name,
+                    "content director spawn packets appended (post-warp respawn)"
                 );
             }
         }
