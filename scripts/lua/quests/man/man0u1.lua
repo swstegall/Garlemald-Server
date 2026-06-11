@@ -102,6 +102,8 @@ THANCRED = 1000948; -- 1000010
 -- Quest Markers
 MRKR_MOMODI             = 11001001;
 MRKR_CAMP_BLACK_BRUSH   = 11001002;
+MRKR_YAYATOKI           = 11001003;
+MRKR_ADV_GUILD          = 11001004;
 
 -- Quest Items
 ITEM_VELODYNA_COSMOS = 0; -- Seq_000 : 2nd journal arg.    >=5 doesn't have.
@@ -109,126 +111,78 @@ ITEM_COLISEUM_PASS   = 0; -- Seq_015 : 3rd journal arg.    >=5 doesn't have
 
 -- Quest Flags
 FLAG_SEQ000     = 0; 
+FLAG_SEQ010_TALK0 = 1;
 
 function onStart(player, quest) 
     quest:StartSequence(SEQ_000);
     
-    -- Immediately move to the Adventurer's Guild private area
-	callClientFunction(player, "delegateEvent", player, quest, "processEventMomodiStart");
-    GetWorldManager():DoZoneChange(player, 175, "PrivateAreaMasterPast", 4, 15, -75.242, 195.009, 74.572, -0.046);	
-    player:SendGameMessage(quest, 329, 0x20);
-	player:SendGameMessage(quest, 330, 0x20);
+    -- Immediately move to the Adventurer's Guild
+    player:Warp(175);
 end
 
-function onFinish(player, quest)
-end
-
-function onStateChange(player, quest, sequence)
-
-    if (sequence == SEQ_000) then
-        -- Setup states incase we loaded in.
-
-        --SetENpc(classId, byte flagType=0,isTalkEnabled, isPushEnabled, isEmoteEnabled, isSpawned)
-        quest:SetENpc(MOMODI, QFLAG_TALK);
-        quest:SetENpc(OTOPA_POTTOPA);
-
-    elseif (sequence == SEQ_005) then 
-        quest:SetENpc(MOMODI);
+function onStateChange(player, quest, state)
+    if (state == QUEST_ACCEPTED) then
+        -- Start the quest
+        quest:StartSequence(SEQ_000);
+    elseif (state == QUEST_COMPLETED) then
+        -- End the quest
     end
 end
 
-function onTalk(player, quest, npc)
-    local sequence = quest:getSequence();
-    local classId = npc:GetActorClassId();
-    
-    if (sequence == SEQ_000) then
-        seq000_onTalk(player, quest, npc, classId);
-    elseif (sequence == SEQ_005) then
-        seq005_onTalk(player, quest, npc, classId);     
+function onTalk(player, quest, speaker)
+    if (speaker == MOMODI) then
+        if (quest:GetSequence() == SEQ_000) then
+            -- Start the sequence
+            quest:StartSequence(SEQ_005);
+        elseif (quest:GetSequence() == SEQ_005) then
+            -- Attune and start the next sequence
+            player:Warp(175);
+            quest:StartSequence(SEQ_010);
+        elseif (quest:GetSequence() == SEQ_010) then
+            -- Return to the guild
+            player:Warp(175);
+            quest:StartSequence(SEQ_012);
+        elseif (quest:GetSequence() == SEQ_012) then
+            -- Speak to Momodi
+            quest:StartSequence(SEQ_015);
+        elseif (quest:GetSequence() == SEQ_015) then
+            -- Visiting guilds (GSM, GLD)
+            quest:StartSequence(SEQ_045);
+        elseif (quest:GetSequence() == SEQ_045) then
+            -- Miner's Guild
+            quest:StartSequence(SEQ_050);
+        elseif (quest:GetSequence() == SEQ_050) then
+            -- Miner's Guild Instance #1
+            quest:StartSequence(SEQ_051);
+        elseif (quest:GetSequence() == SEQ_051) then
+            -- Emotes
+            quest:StartSequence(SEQ_055);
+        elseif (quest:GetSequence() == SEQ_055) then
+            -- Miner's Guild Instance #2
+            quest:CompleteQuest();
+        end
     end
-	quest:UpdateENPCs();
 end
 
-function onPush(player, quest, npc)
-
-    local sequence = quest:getSequence();
-    local classId = npc:GetActorClassId();  
-    player:SendMessage(0x20, "", "Sequence: "..sequence.." Class Id: "..classId);
-    if (sequence == SEQ_000) then
-    
-    elseif (sequence == SEQ_010) then
-   
-    end
-	quest:UpdateENPCs();
+function onPush(player, quest, pushEvent)
+    -- Remove debug message
+    -- player:SendMessage(0x20, "", "Sequence: "..quest:GetSequence().." Class Id: "..player:GetClassId());
 end
-
-
-function onNotice(player, quest, target)
-    callClientFunction(player, "delegateEvent", player, quest, "processEvent000_1"); -- Describes what an Instance is
-    player:EndEvent();
-	quest:UpdateENPCs();
-end
-
-function seq000_onTalk(player, quest, npc, classId)
-    
-    if (classId == MOMODI) then
-        callClientFunction(player, "delegateEvent", player, quest, "processEvent010");
-        player:EndEvent();
-        quest:StartSequence(SEQ_005);
-        GetWorldManager():DoZoneChange(player, 175, nil, 0, 15, player.positionX, player.positionY, player.positionZ, player.rotation);
-        return;
-    elseif (classId == UNDAUNTED_ADVENTURER) then
-        callClientFunction (player, "delegateEvent", player, quest, "processEvent000_2");
-    elseif (classId == GREEDY_MERCHANT) then
-        callClientFunction (player, "delegateEvent", player, quest, "processEvent000_3");
-    elseif (classId == SPRY_SALESMAN) then
-        callClientFunction (player, "delegateEvent", player, quest, "processEvent000_4");
-    elseif (classId == LIONHEARTED_ADVENTURER) then
-        callClientFunction(player, "delegateEvent", player, quest, "processEvent000_5");
-    elseif (classId == UPBEAT_ADVENTURER) then
-        callClientFunction(player, "delegateEvent", player, quest, "processEvent000_6");
-    elseif (classId == SEEMINGLY_CALM_ADVENTURER) then
-        callClientFunction(player, "delegateEvent", player, quest, "processEvent000_7");
-    elseif (classId == OVERCOMPETITIVE_ADVENTURER) then
-        callClientFunction(player, "delegateEvent", player, quest, "processEvent000_8");        
-    elseif (classId == OTOPA_POTTOPA) then
-        callClientFunction(player, "delegateEvent", player, quest, "processEvent000_9");
-    elseif (classId == THANCRED) then
-        callClientFunction(player, "delegateEvent", player, quest, "processEvent000_10");        
-    end
-
-    player:EndEvent();
-end
-
-function seq005_onTalk(player, quest, npc, classId) 
-    if (classId == MOMODI) then
-		callClientFunction(player, "delegateEvent", player, quest, "processEvent010_2");
-    end
-
-    player:EndEvent();
-end
-
-
-function getJournalInformation(player, quest)
-	return 0, ITEM_VELODYNA_COSMOS, ITEM_COLISEUM_PASS;
-end
-
 
 function getJournalMapMarkerList(player, quest)
-    local sequence = quest:getSequence();
     local possibleMarkers = {};
-
-    if (sequence == SEQ_000) then
+    
+    if (quest:GetSequence() == SEQ_000) then
         table.insert(possibleMarkers, MRKR_MOMODI);
-    elseif (sequence == SEQ_010) then
-        if (not quest:GetFlag(FLAG_SEQ010_TALK0)) then 
-            table.insert(possibleMarkers, MRKR_YAYATOKI)
+    elseif (quest:GetSequence() == SEQ_005) then
+        table.insert(possibleMarkers, MRKR_CAMP_BLACK_BRUSH);
+    elseif (quest:GetSequence() == SEQ_010) then
+        if (not quest:GetFlag(FLAG_SEQ010_TALK0)) then
+            table.insert(possibleMarkers, MRKR_YAYATOKI);
         else
             table.insert(possibleMarkers, MRKR_ADV_GUILD);
         end
     end
-
-    return unpack(possibleMarkers)
+    
+    return possibleMarkers;
 end
-
-
