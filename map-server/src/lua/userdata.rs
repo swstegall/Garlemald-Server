@@ -5470,7 +5470,23 @@ impl UserData for LuaQuestDataHandle {
         });
 
         // --- Mutations queued through the processor ---------------------
-        methods.add_method("SetFlag", |_, this, bit: u32| {
+        // These are `_mut` and write through to the in-VM `this.flags`
+        // mirror IMMEDIATELY, not just the queued command: the getters
+        // above serve from that same snapshot, so a script that does
+        // `data:SetFlag(N)` then `data:GetFlags()` in the SAME hook call
+        // must see the new bit. Without the mirror update, man0g1's dance
+        // drill set the 6th emote flag then checked
+        // `bit32.band(GetFlags(), 0x7E) == 0x7E` on the next line — which
+        // still read the pre-6th snapshot (0x3E), so the completion beat
+        // never fired (Garlemald-Server #41: "did not proceed
+        // automatically after the last kid"; six QuestSetFlag drains, zero
+        // processEvent150). The queued command still owns DB persistence;
+        // this only keeps the current VM consistent. (Same
+        // write-through-the-mirror rule as SetMod / LuaParty:AddMember.)
+        methods.add_method_mut("SetFlag", |_, this, bit: u32| {
+            if bit < 32 {
+                this.flags |= 1u32 << bit;
+            }
             push(
                 &this.queue,
                 LuaCommand::QuestSetFlag {
@@ -5481,7 +5497,10 @@ impl UserData for LuaQuestDataHandle {
             );
             Ok(())
         });
-        methods.add_method("ClearFlag", |_, this, bit: u32| {
+        methods.add_method_mut("ClearFlag", |_, this, bit: u32| {
+            if bit < 32 {
+                this.flags &= !(1u32 << bit);
+            }
             push(
                 &this.queue,
                 LuaCommand::QuestClearFlag {
