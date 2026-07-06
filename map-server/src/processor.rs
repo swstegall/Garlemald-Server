@@ -9542,6 +9542,7 @@ impl PacketProcessor {
             } else {
                 (None, None)
             };
+        let had_deferred_warp = deferred_warp.is_some();
         tracing::debug!(
             session = session_id,
             deferred_warp = deferred_warp.is_some(),
@@ -9598,6 +9599,51 @@ impl PacketProcessor {
                 self.lua.as_ref(),
             )
             .await;
+        }
+
+        // Re-establish the active quests' ENPC conditions in the
+        // DESTINATION zone after an explicit (non-seamless) warp finishes.
+        // The seamless path already does this (handle_update_position 3c);
+        // an explicit cross-zone DoZoneChange did not, so a push trigger
+        // whose `onStateChange(SetENpc)` ran while the player was still in
+        // the ORIGIN zone found "no live NPC" and was never armed — e.g.
+        // man0g1 SEQ_055→060: the kids' chat runs the arm, THEN the warp
+        // to the White Wolf Gate zone lands, leaving GATE_TRIGGER (1090202)
+        // dead so the escort could never start (Garlemald-Server #41).
+        // Re-running the same idempotent re-establish (begin_sequence_swap
+        // + onStateChange + diff broadcast) now that the destination zone
+        // is current arms it, regardless of stream timing.
+        //
+        // GUARDED two ways: (1) skipped inside a content instance
+        // (`active_content_script` set) — re-running the escort quest's
+        // SEQ_065 onStateChange there would re-fire its one-shot
+        // FLAG_ESCORT_HANDOFF rescue arm (flag already consumed) and roll
+        // the duty back to SEQ_060; (2) skipped when a deferred login warp
+        // just replayed — its own RX 0x0007 does the re-establish for the
+        // final zone. (Garlemald-Server #41.)
+        let in_content_instance = self
+            .world
+            .session(session_id)
+            .await
+            .and_then(|s| s.active_content_script)
+            .is_some();
+        if !had_deferred_warp
+            && !in_content_instance
+            && let Some(handle) = self.registry.by_session(session_id).await
+        {
+            let actor_id = handle.actor_id;
+            let active_quest_ids: Vec<u32> = {
+                let c = handle.character.read().await;
+                c.quest_journal
+                    .slots
+                    .iter()
+                    .flatten()
+                    .map(|q| q.quest_id())
+                    .collect()
+            };
+            for quest_id in active_quest_ids {
+                self.apply_quest_update_enpcs(actor_id, quest_id).await;
+            }
         }
     }
 
