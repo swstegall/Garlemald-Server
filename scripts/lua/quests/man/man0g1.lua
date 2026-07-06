@@ -48,6 +48,16 @@ FLAG_EMOTE_DONE6	= 6;
 CNTR_SEQ15_LTW		= 0;
 CNTR_SEQ15_CNJ		= 1;
 
+-- One-shot handoff latch for the SEQ_065 escort start (same shape as
+-- man0l1's FLAG_ESCORT_HANDOFF): set by startMan0g1Content IMMEDIATELY
+-- BEFORE StartSequence(SEQ_065) so the onStateChange run it fires sees
+-- the flag SET, consumes it, and stays dormant. Any OTHER arrival at
+-- SEQ_065 (relog re-arm after the content died with the session, or a
+-- wedged save) sees it CLEAR → rolls back to SEQ_060 so the
+-- GATE_TRIGGER re-arms and the duty is retryable. Bit 7 — clear of the
+-- emote flags 1-6 (their completion mask is 0x7E; this is 0x80).
+FLAG_ESCORT_HANDOFF	= 7;
+
 -- Msg packs for the Npc LS
 NPCLS_MSGS = {
 	{330},
@@ -118,8 +128,14 @@ HELBHANTH		= 1000735;
 PASDEVILLET		= 1000738;
 JIJIMAYA		= 1000741;
 
--- Quest Markers
-MRKR_MIOUNNE	= 11000601;
+-- Quest Markers — 1100 + last-4-of-quest-id + index scheme (cross-quest:
+-- man0g0 11000501-04, man0l0 11000202-06). MeteorReborn declares all
+-- three (its man0g1.lua:123-125); pms only declared MIOUNNE and returned
+-- the other two as nil globals (Garlemald-Server #41 bug 4). Sheet rows
+-- confirmed in bahamut-client-data csv/quest_marker.csv:108-110.
+MRKR_MIOUNNE		= 11000601;
+MRKR_KID_TRIGGER	= 11000602;
+MRKR_GATE_TRIGGER	= 11000603;
 
 function onStart(player, quest) 
     quest:StartSequence(SEQ_000);
@@ -200,6 +216,20 @@ function onStateChange(player, quest, sequence)
 	elseif (sequence == SEQ_060) then
 		quest:SetENpc(GATE_TRIGGER, QFLAG_PUSH, false, true);
 	elseif (sequence == SEQ_065) then
+		-- Escort-duty rescue (man0l1 SEQ_050 pattern). This arm runs at
+		-- SEQ_065 in exactly two situations: (1) the legit escort start —
+		-- startMan0g1Content sets FLAG_ESCORT_HANDOFF then calls
+		-- StartSequence(SEQ_065), so THIS run sees the flag SET, consumes
+		-- it, and stays dormant; (2) everything else — the relog re-arm
+		-- for a player whose escort content died with the session, or a
+		-- wedged save. Flag CLEAR → roll back to SEQ_060 so the
+		-- GATE_TRIGGER re-arms and the duty is retryable from the gate.
+		local rescueData = quest:GetData();
+		if (rescueData:GetFlag(FLAG_ESCORT_HANDOFF)) then
+			rescueData:ClearFlag(FLAG_ESCORT_HANDOFF);
+		else
+			quest:StartSequence(SEQ_060);
+		end
 	elseif (sequence == SEQ_070) then
 		quest:SetENpc(STUMP_TRIGGER, QFLAG_PUSH, false, true);
 	elseif (sequence == SEQ_071) then		
@@ -408,9 +438,17 @@ end
 function seq000_onTalk(player, quest, npc, classId)
     if (classId == MIOUNNE) then
         
-        callClientFunction(player, "delegateEvent", player, quest, "processEvent100_1");        
+        callClientFunction(player, "delegateEvent", player, quest, "processEvent100_1");
         player:EndEvent();
-		quest:StartSequence(SEQ_003);
+		-- SEQ_005, not the upstream SEQ_003 (Garlemald-Server #41 bug 1):
+		-- pms never declares SEQ_003 (StartSequence(nil) crash);
+		-- MeteorReborn declares SEQ_003=3 but nothing ever advances 3→5 —
+		-- no onStateChange branch, and unlike man0l1 (whose aetheryte arm
+		-- checks SEQ_003) AetheryteParent.lua's 110006 arm gates on
+		-- SEQ_005. The intended 3→5 hop was never implemented upstream,
+		-- so the post-Roost state goes straight to "attune at Camp
+		-- Bentbranch".
+		quest:StartSequence(SEQ_005);
 				
 		
 		local director = GetWorldManager():GetArea(155):CreateDirector("AfterQuestWarpDirector", false);		
@@ -458,8 +496,13 @@ function seq015_onTalk(player, quest, npc, classId)
 	elseif (classId == HEREWARD) then
 		if (subseqLTW == 0) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent120");
-			data:IncCounter(CNTR_SEQ15_LTW);	
-			--give 1000g					
+			data:IncCounter(CNTR_SEQ15_LTW);
+			-- Geva's treant-vine appraisal (Garlemald-Server #41 bug 7).
+			-- Upstream's TODO said 1000g, but her own line in the
+			-- processEvent120 scene is "An even two thousand gil, no
+			-- more." (Mirke Loremonger transcript + Part-3 playthrough
+			-- footage) — retail dialogue wins.
+			player:AddGil(2000);
 		elseif (subseqLTW == 1) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent120_2");
 			data:IncCounter(CNTR_SEQ15_LTW);	
@@ -590,18 +633,15 @@ function onPush(player, quest, npc)
 		if (classId == GATE_TRIGGER) then
 			local result = callClientFunction(player, "delegateEvent", player, quest, "contentsJoinAskInBasaClass");
 			if (result == 1) then
-				-- DO ESCORT DUTY HERE
-				-- startMan0g1Content(player, quest);
-				-- For now just skip the sequence
-				quest:StartSequence(SEQ_065);
-				callClientFunction(player, "delegateEvent", player, quest, "processEvent180");
-				player:EndEvent();
-				quest:StartSequence(SEQ_070);
-				GetWorldManager():WarpToPrivateArea(player, "PrivateAreaMasterPast", 0, -770.197, 23, -1086.209);
+				-- The White Wolf Gate escort duty (Garlemald-Server #41
+				-- bug 2 — upstream shipped this arm as "DO ESCORT DUTY
+				-- HERE ... For now just skip the sequence" and
+				-- startMan0g1Content existed nowhere).
+				startMan0g1Content(player, quest);
 				return;
 			end
 			player:EndEvent();
-		end	
+		end
 	elseif (sequence == SEQ_070) then
 		if (classId == STUMP_TRIGGER) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent181");
@@ -621,6 +661,10 @@ function onPush(player, quest, npc)
 	elseif (sequence == SEQ_072) then
 		if (classId == BTN_TRIGGER) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent185");
+			-- Fufucha's mooglespeak payment — "You obtain 3000 gil."
+			-- is on film right after this debrief (Part 6, 01:12).
+			-- (Garlemald-Server #41.)
+			player:AddGil(3000);
 			player:EndEvent();
 			quest:NewNpcLsMsg(1);
 			quest:StartSequence(SEQ_075);
@@ -698,10 +742,12 @@ function onEmote(player, quest, npc, eventName)
 	quest:UpdateENPCs();
 end
 
+-- AfterQuestWarpDirector noticeEvent (armed in seq000_onTalk after the
+-- Roost scene): plays the gate tutorial and closes. Debug leftovers
+-- (a "Test" SendMessage + a doubled EndEvent) removed —
+-- Garlemald-Server #41 bug 6.
 function onNotice(player, quest, target)
-    player:EndEvent();
-    player:SendMessage(0x20, "", "Test");
-    callClientFunction(player, "delegateEvent", player, quest, "processEventTu_001");  
+    callClientFunction(player, "delegateEvent", player, quest, "processEventTu_001");
     player:EndEvent();
 end
 
@@ -749,54 +795,81 @@ function onNpcLS(player, quest, from, msgStep)
 	player:EndEvent();
 end
 
+-- ===== SEQ_065 — the White Wolf Gate escort duty (Garlemald-Server #41) =====
+-- Net-new content mirroring man0l1's startMan0l1Content 10-step shape
+-- (every ordering rule below is wire-proven on the man0l1 leg — see that
+-- function's comments for the receipts): rescue latch → journal update →
+-- CreateContentArea → director kick (Rust defers the 0x012F TX past the
+-- warp ack) → in-place duty-start cutscene → EndEvent BEFORE the warp →
+-- DoZoneChangeContent(spawnType 16).
+--
+-- Retail shape (Mirke Loremonger + the 7-part playthrough, #41): Powle
+-- and Sansa lead the player from the White Wolf Gate (Gridania's
+-- southwest exit) through the Central Shroud to the Lifemend Stump;
+-- ankle-biter (chigoe) ambushes en route; "There are 20 minutes
+-- remaining." attested mid-walk; arrival hands off to the Hermit of the
+-- Wood stump scene (SEQ_070+, the pre-existing ported beats).
+-- processEvent170 is the duty-start cutscene, processEvent180 the end
+-- cutscene (director side).
+--
+-- PROVISIONAL GEOMETRY: the warp-in anchor + content trail run a short
+-- arc near the stump until the real White-Wolf-Gate-to-stump route is
+-- recorded (player 0x00CA walk, the man0l1 round-7f recipe) — see
+-- SimpleContentMan0g101.lua TRAIL and seed/074.
+function startMan0g1Content(player, quest)
+	quest:GetData():SetFlag(FLAG_ESCORT_HANDOFF);
+	quest:StartSequence(SEQ_065);
+
+	local contentArea = player.CurrentArea:CreateContentArea(player, "/Area/PrivateArea/Content/PrivateAreaMasterSimpleContent", "Man0g101", "SimpleContentMan0g101", "Quest/QuestDirectorMan0g101", 150);
+	if (contentArea == nil) then
+		return;
+	end
+	local director = contentArea:GetContentDirector();
+	player:AddDirector(director);
+	director:StartDirector(false);
+	player:KickEvent(director, "noticeEvent", true);
+	player:SetLoginDirector(director);
+
+	-- Duty-start cutscene IN PLACE at the gate (arms the after-warp
+	-- veil; the director's questBaseRewardSeting dismisses it
+	-- post-warp — QuestDirectorMan0g101).
+	callClientFunction(player, "delegateEvent", player, quest, "processEvent170");
+
+	-- Close the push event BEFORE the warp (0x0131 ahead of the 0x00E2
+	-- reload latch — retail invariant; mid-reload EndEvent = the
+	-- desktopWidgetMode-16 menu lock).
+	player:EndEvent();
+
+	-- Duty warp into the zone-150 content instance. spawnType 16 →
+	-- wipe + 0x00E2(0x10) + 34108 "You have entered an instance." +
+	-- zone-in bundle. NOTHING may be queued after this call.
+	GetWorldManager():DoZoneChangeContent(player, contentArea, -700.0, 21.0, -1000.0, 2.4, 16);
+end
+
 function getJournalInformation(player, quest)
 	local data = quest:GetData();
 	return ENABLE_GL_TUTORIAL and 1 or 0, data:GetCounter(CNTR_SEQ15_LTW) * 5, data:GetCounter(CNTR_SEQ15_CNJ) * 5;
 end
 
+-- Journal map markers (Garlemald-Server #41 bugs 3-5): the SEQ_015
+-- branch indexed an undeclared `data` (nil-index crash), and the two
+-- MRKR_* returns were nil globals in pms (MeteorReborn declares them —
+-- matched above). Return shape follows MeteorReborn: scalar returns for
+-- the sequences with a known marker row; the Miounne marker covers the
+-- talk-to-Miounne beats (11000601 = her Roost spot in
+-- csv/quest_marker.csv). Sequences whose objective sits inside a
+-- private-area scene (or is provisional pending in-client probing)
+-- intentionally return nothing.
 function getJournalMapMarkerList(player, quest)
     local sequence = quest:getSequence();
     local possibleMarkers = {};
 
-    if (sequence == SEQ_000) then
-	
-    elseif (sequence == SEQ_005) then 
-	
-	elseif (sequence == SEQ_010) then 
-	
-	elseif (sequence == SEQ_012) then 
-	
-	elseif (sequence == SEQ_015) then 
-		local subseqLTW = data:GetCounter(CNTR_SEQ15_LTW);
-		local subseqCNJ = data:GetCounter(CNTR_SEQ15_CNJ);
-		
-	elseif (sequence == SEQ_040) then 
-        
-	elseif (sequence == SEQ_050) then 
-		
+    if (sequence == SEQ_010 or sequence == SEQ_012 or sequence == SEQ_105) then
+		return MRKR_MIOUNNE;
 	elseif (sequence == SEQ_055) then
 		return MRKR_KID_TRIGGER;
 	elseif (sequence == SEQ_060) then
 		return MRKR_GATE_TRIGGER;
-	elseif (sequence == SEQ_065) then
-	elseif (sequence == SEQ_070) then
-	elseif (sequence == SEQ_071) then
-	elseif (sequence == SEQ_072) then
-	
-	elseif (sequence == SEQ_075) then
-	
-	elseif (sequence == SEQ_080) then
-	
-	elseif (sequence == SEQ_085) then
-	
-	elseif (sequence == SEQ_090) then
-	
-	elseif (sequence == SEQ_095) then
-	
-	elseif (sequence == SEQ_100) then
-	
-	elseif (sequence == SEQ_105) then
-	
     end
 
     return unpack(possibleMarkers)
