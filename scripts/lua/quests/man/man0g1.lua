@@ -312,7 +312,9 @@ function onTalk(player, quest, npc)
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent140");
 			quest:StartSequence(SEQ_050);
 			player:EndEvent();
-			GetWorldManager():WarpToPrivateArea(player, "PrivateAreaMasterPast", 1, -223.792, 12, -1498.369, -1.74);
+			-- Zone pinned to 155 (scene PAs; fired from the 206 half —
+			-- see the CNJ_TRIG arm note). (Garlemald-Server #41.)
+			GetWorldManager():DoZoneChange(player, 155, "PrivateAreaMasterPast", 1, 15, -223.792, 12, -1498.369, -1.74);
 			return;
 		elseif (classId == MIOUNNE) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent137_2");
@@ -321,7 +323,8 @@ function onTalk(player, quest, npc)
 		if (classId == OPYLTYL) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent1000_3");
 			player:EndEvent();
-			GetWorldManager():WarpToPrivateArea(player, "PrivateAreaMasterPast", 1, -223.792, 12, -1498.369, -1.74);
+			-- Zone pinned to 155 (see the CNJ_TRIG arm note).
+			GetWorldManager():DoZoneChange(player, 155, "PrivateAreaMasterPast", 1, 15, -223.792, 12, -1498.369, -1.74);
 			return;
 		else
 			seq050_onTalk(player, quest, npc, classId);
@@ -332,7 +335,8 @@ function onTalk(player, quest, npc)
 		elseif (classId == OPYLTYL) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent1000_3");
 			player:EndEvent();
-			GetWorldManager():WarpToPrivateArea(player, "PrivateAreaMasterPast", 2, -231.474, 12, -1500.86, 0.73);
+			-- Zone pinned to 155 (see the CNJ_TRIG arm note).
+			GetWorldManager():DoZoneChange(player, 155, "PrivateAreaMasterPast", 2, 15, -231.474, 12, -1500.86, 0.73);
 		elseif (classId == AUNILLE or classId == NICOLLAUX or classId == SANSA or classId == POWLE or classId == RYD or classId == ELYN) then
 			local randNum = math.random(1, 2);
 			if (randNum == 1) then
@@ -359,7 +363,10 @@ function onTalk(player, quest, npc)
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent200");
 			quest:StartSequence(SEQ_090);
 			player:EndEvent();
-			GetWorldManager():WarpToPrivateArea(player, "PrivateAreaMasterPast", 3, 176.13, 27.5, -1581.84, -1.0);
+			-- Zone pinned to 155 (see the CNJ_TRIG arm note). The
+			-- SEQ_090→PA4 hop stays WarpToPrivateArea — it fires from
+			-- INSIDE this 155 PA, so current-zone resolution is right.
+			GetWorldManager():DoZoneChange(player, 155, "PrivateAreaMasterPast", 3, 15, 176.13, 27.5, -1581.84, -1.0);
 			return;
 		elseif (classId == WILLELDA) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent190_2");
@@ -640,7 +647,14 @@ function onPush(player, quest, npc)
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent130");
 			data:IncCounter(CNTR_SEQ15_CNJ);
 			player:EndEvent();
-			GetWorldManager():WarpToPrivateArea(player, "PrivateAreaMasterPast", 0, -353.05, 6.25, -1697.39, 0.774);
+			-- Zone PINNED to 155: the quest scene PAs all live under
+			-- fst0Town01 (upstream's 17 PA rows), but this push fires in
+			-- the 206 south half (the Fane district) — WarpToPrivateArea
+			-- resolves the CURRENT zone's PAs, misses, and falls back to
+			-- public (the "guild loads no NPCs" live report,
+			-- 2026-07-06). Explicit DoZoneChange is the Roost-entry-
+			-- proven form. (Garlemald-Server #41.)
+			GetWorldManager():DoZoneChange(player, 155, "PrivateAreaMasterPast", 0, 15, -353.05, 6.25, -1697.39, 0.774);
 			return;
 		end
 	elseif (sequence == SEQ_055) then
