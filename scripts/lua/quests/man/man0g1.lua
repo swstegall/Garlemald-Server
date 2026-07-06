@@ -405,7 +405,9 @@ function onTalk(player, quest, npc)
 			player:EndEvent();
 			quest:NewNpcLsMsg(1);
 			quest:StartSequence(SEQ_100);
-			GetWorldManager():WarpToPublicArea(player);
+			-- Zone 206 explicit at the Wailing Barracks (south half) —
+			-- stranded-half crash class (see the Swethyna exit note).
+			GetWorldManager():DoZoneChange(player, 206, nil, 0, 15, 176.13, 27.5, -1581.84, -1.0);
 			return;
 		elseif (classId == BURCHARD) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent210_2");
@@ -581,7 +583,14 @@ function seq015_onTalk(player, quest, npc, classId)
 			data:IncCounter(CNTR_SEQ15_CNJ);
 			quest:NewNpcLsMsg(1);
 			player:EndEvent();
-			GetWorldManager():WarpToPublicArea(player);
+			-- Exit to ZONE 206 public explicitly (the Fane door, live
+			-- town half). WarpToPublicArea from the 155 scene PA
+			-- stranded the player in 155-public deep in the 206 half —
+			-- a world-state retail never produces; the first 206-band
+			-- actor partner-streamed into that half-loaded client froze
+			-- Wine (live 2026-07-06 05:17:39, Kinnison stream → render
+			-- death). (Garlemald-Server #41.)
+			GetWorldManager():DoZoneChange(player, 206, nil, 0, 15, -350.0, 6.25, -1690.0, -2.4);
 			return true;
 		end
 	end
@@ -662,7 +671,11 @@ function onPush(player, quest, npc)
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent160");
 			player:EndEvent();
 			quest:StartSequence(SEQ_060);
-			GetWorldManager():WarpToPublicArea(player, -209.817, 18, -1477.372, 1.4);
+			-- Zone 206 explicit — the Growery district is the south
+			-- half; WarpToPublicArea from the 155 PA strands the player
+			-- in 155-public (the stranded-half crash class, see the
+			-- Swethyna exit note). (Garlemald-Server #41.)
+			GetWorldManager():DoZoneChange(player, 206, nil, 0, 15, -209.817, 18, -1477.372, 1.4);
 			return;
 		end
 	elseif (sequence == SEQ_060) then
@@ -691,9 +704,13 @@ function onPush(player, quest, npc)
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent182");
 			player:EndEvent();
 			quest:StartSequence(SEQ_072);
-			GetWorldManager():WarpToPublicArea(player, -185, 6, -962, -3);
+			-- Zone 155 explicit — (-185, -962) is the NORTH half; fired
+			-- from the zone-150 stump PA, WarpToPublicArea would land
+			-- 150-public instead (stranded-half class). The walk back
+			-- to the Growery (206) crosses the town seam normally.
+			GetWorldManager():DoZoneChange(player, 155, nil, 0, 15, -185, 6, -962, -3);
 			return;
-		end			
+		end
 	elseif (sequence == SEQ_072) then
 		if (classId == BTN_TRIGGER) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent185");
