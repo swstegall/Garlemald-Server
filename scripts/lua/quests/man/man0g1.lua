@@ -280,7 +280,13 @@ function onTalk(player, quest, npc)
     local classId = npc:GetActorClassId();
     
     if (sequence == SEQ_000) then
-        seq000_onTalk(player, quest, npc, classId);
+        -- true = the Miounne branch warped out of the Roost scene —
+        -- skip the trailing EndEvent/UpdateENPCs (post-warp commands
+        -- ship into the reload gap; man0l1 SEQ_015 early-return
+        -- pattern). (Garlemald-Server #41.)
+        if (seq000_onTalk(player, quest, npc, classId) == true) then
+            return;
+        end
     elseif (sequence == SEQ_005) then
 		if (classId == MIOUNNE) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent110_2");
@@ -451,16 +457,32 @@ function seq000_onTalk(player, quest, npc, classId)
 		quest:StartSequence(SEQ_005);
 				
 		
-		local director = GetWorldManager():GetArea(155):CreateDirector("AfterQuestWarpDirector", false);		
+		local director = GetWorldManager():GetArea(155):CreateDirector("AfterQuestWarpDirector", false);
 		director:StartDirector(true);
         player:AddDirector(director);
-		--player:SetLoginDirector(director);	     
+		-- SetLoginDirector is LOAD-BEARING, not optional (the pms port
+		-- shipped it commented out — untested upstream). It is the
+		-- login-routing tell (processor.rs is_login_scoped_burst): with
+		-- it, the zone-in bundle re-emits the director spawn + the
+		-- noticeEvent kick AFTER the same-map wipe reload, on a loaded
+		-- actor table. Without it the kick direct-dispatches pre-wipe,
+		-- the wipe destroys its owner, the client drops the answer, and
+		-- the kick-armed veil never clears — the live 2026-07-06
+		-- 02:03:19 hang (same class as the man0l1 Baderon menu-lock,
+		-- "Round-3 live test"). Canonical sequence documented in
+		-- AfterQuestWarpDirector.lua, which already routes 110006 back
+		-- to onNotice. (Garlemald-Server #41.)
+		player:SetLoginDirector(director);
 		player:KickEvent(director, "noticeEvent", true);
-		
+
 		quest:UpdateENPCs();
-        --GetWorldManager():WarpToPublicArea(player);
         GetWorldManager():DoZoneChange(player, 155, nil, 0, 15, player.positionX, player.positionY, player.positionZ, player.rotation);
-  
+		-- Warped: nothing may follow (onTalk's trailing EndEvent +
+		-- UpdateENPCs landing mid-reload is the desktopWidgetMode-16 /
+		-- lost-teardown hazard — the 02:03:19 drain shipped exactly
+		-- that pair after the DoZoneChange). (Garlemald-Server #41.)
+		return true;
+
     elseif (classId == BEAMING_ADVENTURER) then
         callClientFunction (player, "delegateEvent", player, quest, "processEvent100_6");
     elseif (classId == AMIABLE_ADVENTURER) then
