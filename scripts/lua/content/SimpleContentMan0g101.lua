@@ -69,32 +69,104 @@ KID_HURT_BARK_COOLDOWN = 10; -- ticks between "Ouch!" barks when a kid is taking
 ESCORT_RING_CLASS = 1290003;
 RING_MOVE_TICKS = 1;
 
+-- ============ ESCORT MOVEMENT + (optional) TRAIL RECORDING ============
+-- Retail model: the PLAYER leads to the Lifemend Stump and the two kids
+-- FOLLOW (player-relative, man0l1 round-7e) — they never lead. onUpdate
+-- moves Powle to close the gap to the player at run pace; Sansa trails
+-- Powle. The ankle biters sit evenly along the recorded route (seed/085).
+--
+-- RECORD_MODE is a one-shot CAPTURE toggle (movement is player-follow
+-- either way): true rides the invisible halo ring on the PLAYER every
+-- tick so its MoveActorToPosition log line (target
+-- map_server::runtime::quest_apply, on at the default map_server=debug)
+-- records the exact walked ground — extract the ring's lines from
+-- logs/map-server.log, dedupe + downsample, paste into TRAIL / ARRIVAL_GOAL
+-- / seed the biters. false = normal play (the ring rides Powle as the
+-- minimap duty halo). The route below WAS captured this way (2026-07-06,
+-- a 1004-unit gate→stump arc).
+RECORD_MODE = false;
+LEAD_DISTANCE = 5.0;         -- Powle closes to within this of the player (the follow gap)
+MOVE_EPSILON = 0.3;          -- (reserved) minimum player displacement to count as "walking"
+
 -- Same ambusher family as the Limsa escort: chigoe class 2205603,
 -- displayNameId 3205603 ("ankle biter"). The engaged/defeated rows
 -- 30120/30121 take their subject from the DispId-sender wire family
 -- (see #199/#202 — an actor-id LuaParam renders a blank subject).
 ANKLE_BITER_DISPLAY_ID = 3205603;
 
--- ============ PROVISIONAL TRAIL (Garlemald-Server #41) ============
--- Placeholder route: a short arc beside the Lifemend Stump (wiki marker
--- zone 150 ≈ (-800, 20, -1050); the SEQ_070 stump warp lands at
--- (-770.197, 23, -1086.209)). This exercises the complete duty pipeline
--- (spawn → walk → ambush → arrival → director handoff) but is NOT the
--- retail route. REPLACE with breadcrumbs decoded from a recorded player
--- walk (White Wolf Gate → stump; inbound 0x00CA positions — the man0l1
--- round-7f recipe: "player 0x00CA packets are a free navmesh
--- substitute"). Trail-recording round tracked in #41.
+-- ============ RECORDED ROUTE (Garlemald-Server #41) ============
+-- The player's real walked ground, White Wolf Gate → Lifemend Stump
+-- (recorded 2026-07-06 via RECORD_MODE, deduped + downsampled to ~18u; a
+-- 1004-unit arc). Reference + biter/arrival anchor only: the kids FOLLOW
+-- the player so they do NOT trace this, but the ankle biters are spaced
+-- along it (seed/085) and ARRIVAL_GOAL is its last point.
 TRAIL = {
-	{ x = -700.00, y = 21.00, z = -1000.00 },
-	{ x = -718.00, y = 21.00, z = -1014.00 },
-	{ x = -736.00, y = 21.50, z = -1028.00 },
-	{ x = -748.00, y = 22.00, z = -1042.00 },
-	{ x = -756.00, y = 22.00, z = -1052.00 },
+	{ x = -194.73, y = 3.54, z = -1021.33 },
+	{ x = -188.77, y = 3.68, z = -1003.75 },
+	{ x = -187.11, y = 3.99, z = -984.60 },
+	{ x = -186.58, y = 6.13, z = -966.65 },
+	{ x = -188.28, y = 5.42, z = -947.26 },
+	{ x = -193.27, y = 4.04, z = -928.21 },
+	{ x = -195.48, y = 3.72, z = -909.25 },
+	{ x = -185.13, y = 3.42, z = -892.53 },
+	{ x = -187.31, y = 3.57, z = -872.56 },
+	{ x = -185.66, y = 4.64, z = -852.29 },
+	{ x = -187.28, y = 4.33, z = -835.64 },
+	{ x = -203.65, y = 4.44, z = -824.99 },
+	{ x = -217.06, y = 4.43, z = -808.32 },
+	{ x = -234.92, y = 5.59, z = -810.88 },
+	{ x = -248.56, y = 4.39, z = -824.51 },
+	{ x = -263.54, y = 4.89, z = -839.57 },
+	{ x = -282.43, y = 4.20, z = -835.31 },
+	{ x = -299.81, y = 4.57, z = -832.41 },
+	{ x = -319.60, y = 7.55, z = -839.92 },
+	{ x = -336.40, y = 5.20, z = -852.87 },
+	{ x = -352.59, y = 4.00, z = -864.27 },
+	{ x = -369.09, y = 4.70, z = -876.71 },
+	{ x = -380.83, y = 4.18, z = -894.44 },
+	{ x = -396.64, y = 5.19, z = -902.42 },
+	{ x = -415.75, y = 4.09, z = -899.02 },
+	{ x = -433.36, y = 1.55, z = -900.18 },
+	{ x = -454.00, y = -0.69, z = -895.00 },
+	{ x = -473.40, y = 3.41, z = -893.16 },
+	{ x = -492.48, y = 4.73, z = -897.51 },
+	{ x = -510.17, y = 7.33, z = -904.99 },
+	{ x = -527.29, y = 5.18, z = -917.99 },
+	{ x = -543.59, y = 4.00, z = -928.30 },
+	{ x = -558.86, y = 5.26, z = -940.53 },
+	{ x = -570.57, y = 4.30, z = -952.23 },
+	{ x = -581.78, y = 4.75, z = -968.29 },
+	{ x = -600.16, y = 4.16, z = -963.35 },
+	{ x = -616.74, y = 3.72, z = -956.32 },
+	{ x = -637.37, y = 3.98, z = -953.99 },
+	{ x = -646.07, y = 3.75, z = -970.95 },
+	{ x = -639.33, y = 4.02, z = -990.88 },
+	{ x = -633.32, y = 7.12, z = -1011.26 },
+	{ x = -638.98, y = 11.53, z = -1029.27 },
+	{ x = -638.20, y = 19.00, z = -1049.53 },
+	{ x = -635.46, y = 21.42, z = -1067.89 },
+	{ x = -640.57, y = 23.03, z = -1085.74 },
+	{ x = -655.57, y = 22.68, z = -1100.03 },
+	{ x = -676.77, y = 21.01, z = -1096.99 },
+	{ x = -697.41, y = 22.81, z = -1091.66 },
+	{ x = -714.05, y = 22.86, z = -1084.68 },
+	{ x = -734.59, y = 20.01, z = -1088.34 },
+	{ x = -755.16, y = 22.64, z = -1092.80 },
+	{ x = -756.77, y = 22.77, z = -1092.33 },
 };
-ARRIVAL_GOAL = { x = -756.00, y = 22.00, z = -1052.00 };
--- Fail/eject anchor — the duty warp-in point (provisional White Wolf
--- Gate stand-in until the recorded walk supplies the real gate coords).
-GATE_EJECT = { x = -700.0, y = 21.0, z = -1000.0, rot = 2.4 };
+-- Destination = the Lifemend Stump (the last recorded point). The player
+-- reaching it, kids in tow, ends the duty and hands off to the Hermit of
+-- the Wood (SEQ_070).
+ARRIVAL_GOAL = { x = -756.77, y = 22.77, z = -1092.33 };
+-- Duty warp-in = the EXACT White Wolf Gate coords where the "Duty calls"
+-- dialog fires (seed/081 stand-and-mark). The Gridania region is one
+-- seamless coordinate space, so this gate point is valid inside the
+-- zone-150 instance. The halo ring spawns here and the kids (seed/084)
+-- beside it, so the escort BEGINS at the gate. Keep in sync with
+-- man0g1.lua startMan0g1Content.
+WARP_IN = { x = -194.73, y = 3.54, z = -1021.33, rot = -1.642 };
+-- Fail/eject returns the player to the gate warp-in.
+GATE_EJECT = { x = WARP_IN.x, y = WARP_IN.y, z = WARP_IN.z, rot = WARP_IN.rot };
 
 -- March/outcome barks — retail lines from the Mirke Loremonger
 -- transcript (speakers attested: Powle leads, Sansa seconds). The
@@ -112,9 +184,15 @@ BARKS = {
 	waveThanks  = { id = nil, who = "Powle", text = "It's a good thing you're with us!" },
 	kidHurt1    = { id = nil, who = "Sansa", text = "Ouch! Ow! Ooouch!" },
 	kidHurt2    = { id = nil, who = "Sansa", text = "What did I do to deserve this?" },
-	dawdle      = { id = nil, who = "Powle", text = "We're almost there. Come on, hurry!" },
+	-- Powle's PLAYER-FELL-BEHIND impatience line (Mirke Loremonger 28526).
+	-- NOT "We're almost there. Come on, hurry!" — that (Mirke 28532) is the
+	-- near-goal hurry-up, which lands on the nearGoal beat below.
+	dawdle      = { id = nil, who = "Powle", text = "I want to go home... This isn't fun. You're not fun." },
 	nearGoal    = { id = nil, who = "Powle", text = "It's just up ahead!" },
 	arrival     = { id = nil, who = "Powle", text = "We're here! And it's all thanks to you." },
+	-- Sansa seconds the arrival before the Hermit-of-the-Wood handoff
+	-- (Mirke Loremonger 28538).
+	arrivalSansa = { id = nil, who = "Sansa", text = "Look! The stump is just over there!" },
 };
 
 -- Per-player escort state, keyed by actor id (the VM is process-cached
@@ -161,14 +239,18 @@ function onCreate(starterPlayer, contentArea, director)
 	-- the ID is stored; director membership puts the ring in the
 	-- onUpdate monster roster where each tick re-acquires a queue-bound
 	-- handle; teardown despawn is automatic via spawned_actor_ids).
-	local ring = contentArea:SpawnActor(ESCORT_RING_CLASS, "escortAreaRange", TRAIL[1].x, TRAIL[1].y, TRAIL[1].z, 0);
+	local ring = contentArea:SpawnActor(ESCORT_RING_CLASS, "escortAreaRange", WARP_IN.x, WARP_IN.y, WARP_IN.z, 0);
 	escortState[starterPlayer.actorId].ringActorId = ring.actorId;
 
 	-- Active MainState so the kids stand ready and the biters render
 	-- hostile (tutorial-fight pattern). The kids never auto-attack —
 	-- no engage is ever scripted FOR them (retail: they don't fight).
-	powle:ChangeState(2);
-	sansa:ChangeState(2);
+	-- Civilian idle (state 0) for the kids. They're WEAPONLESS child
+	-- models: battle MainState (2) has no combat idle to resolve, so the
+	-- client fell back to the bind pose — the T-pose seen live 2026-07-06.
+	-- Only the biters (real monsters) take the hostile battle state.
+	powle:ChangeState(0);
+	sansa:ChangeState(0);
 	for i = 1, #mobs do
 		mobs[i]:ChangeState(2);
 	end
@@ -376,7 +458,18 @@ function onUpdate(tick, area)
 	-- moves and the halo falls off the minimap — #199 round 2).
 	if ring ~= nil and (state.lastRingTick == nil or tick - state.lastRingTick >= RING_MOVE_TICKS) then
 		state.lastRingTick = tick;
-		ring:MoveTo(powle.positionX, powle.positionY, powle.positionZ, 0.0, 2);
+		if RECORD_MODE then
+			-- TRAIL RECORDING: ride the halo on the PLAYER so its logged
+			-- MoveActorToPosition line captures the exact ground you walked.
+			-- The ring is the only Npc-kind actor (0x..B6..); the kids are
+			-- BattleNpc (0x..B4..). Extract after the walk with e.g.
+			--   grep 'MoveActorToPosition applied actor="0x..B6' logs/map-server.log
+			-- Runs every tick, ABOVE the hold/leash/arrival early-returns,
+			-- so the path is captured continuously — even while you fight.
+			ring:MoveTo(owner.positionX, owner.positionY, owner.positionZ, 0.0, 2);
+		else
+			ring:MoveTo(powle.positionX, powle.positionY, powle.positionZ, 0.0, 2);
+		end
 	end
 
 	-- Wave-outcome beat: contested count dropping back to zero = this
@@ -392,62 +485,37 @@ function onUpdate(tick, area)
 		return
 	end
 
-	-- ---- Arrival: the PLAYER and Powle both inside the goal radius ----
-	if (dist2d(owner.positionX, owner.positionZ, ARRIVAL_GOAL.x, ARRIVAL_GOAL.z) <= ARRIVAL_RADIUS
-			and dist2d(powle.positionX, powle.positionZ, ARRIVAL_GOAL.x, ARRIVAL_GOAL.z) <= ARRIVAL_RADIUS) then
+	-- ---- Arrival: the PLAYER reaches the stump (the kids follow, so they
+	-- arrive in tow) → duty complete, hand off to the Hermit of the Wood. ----
+	if dist2d(owner.positionX, owner.positionZ, ARRIVAL_GOAL.x, ARRIVAL_GOAL.z) <= ARRIVAL_RADIUS then
 		state.done = true;
 		emitBark(owner, BARKS.arrival);
+		emitBark(owner, BARKS.arrivalSansa);
 		sendSignal("escortComplete");
 		return;
 	end
 
-	-- ---- Powle traces the TRAIL breadcrumbs (recorded-ground recipe;
-	-- provisional arc until the real walk is recorded). He waits when
-	-- the player falls behind the leash. ----
+	-- ---- The kids FOLLOW the player (retail: the PLAYER leads to the
+	-- stump; the children tag along and never lead). Powle closes the gap
+	-- to the player at run pace, at the player's real ground Y; Sansa
+	-- trails Powle below. NO leash-hold — you walk freely and they keep up.
+	-- (TRAIL above is the recorded route, kept for reference + the seed/085
+	-- biter spacing; the kids do not trace it.) ----
 	local dPlayer = dist2d(powle.positionX, powle.positionZ, owner.positionX, owner.positionZ);
-
-	if not state.trailInit then
-		state.trailInit = true;
-		local bestI, bestD = 1, math.huge;
-		for i = 1, #TRAIL do
-			local d = dist2d(powle.positionX, powle.positionZ, TRAIL[i].x, TRAIL[i].z);
-			if d < bestD then bestI, bestD = i, d; end
-		end
-		state.wpIndex = bestI;
+	if dPlayer > LEAD_DISTANCE then
+		local d = math.max(dPlayer, 0.001);
+		local dx = (owner.positionX - powle.positionX) / d;
+		local dz = (owner.positionZ - powle.positionZ) / d;
+		local step = math.min(RUN_STEP, dPlayer);
+		powle:MoveTo(powle.positionX + dx * step, owner.positionY, powle.positionZ + dz * step,
+			math.atan(dx, dz), 2);
 	end
 
-	if dPlayer > PLAYER_LEASH then
-		if state.lastBarkTick == nil or tick - state.lastBarkTick >= BARK_INTERVAL_TICKS then
-			state.lastBarkTick = tick;
-			emitBark(owner, BARKS.dawdle);
-		end
-		return;
-	end
-
-	if state.wpIndex <= #TRAIL then
-		-- ON-TRAIL: step toward the next breadcrumb at ITS recorded Y;
-		-- skip THROUGH every breadcrumb already inside the radius in
-		-- one tick.
-		local wp, d;
-		repeat
-			wp = TRAIL[state.wpIndex];
-			d = wp and dist2d(powle.positionX, powle.positionZ, wp.x, wp.z) or nil;
-			if d ~= nil and d <= WAYPOINT_RADIUS then
-				state.wpIndex = state.wpIndex + 1;
-			end
-		until wp == nil or d == nil or d > WAYPOINT_RADIUS or state.wpIndex > #TRAIL;
-		if wp ~= nil and d ~= nil and d > WAYPOINT_RADIUS then
-			local dx = (wp.x - powle.positionX) / d;
-			local dz = (wp.z - powle.positionZ) / d;
-			local step = math.min(RUN_STEP, d);
-			powle:MoveTo(powle.positionX + dx * step, wp.y, powle.positionZ + dz * step,
-				math.atan(dx, dz), 2);
-			-- Near-goal call-out once the tail breadcrumb is in play.
-			if state.wpIndex >= #TRAIL and not state.calledNearGoal then
-				state.calledNearGoal = true;
-				emitBark(owner, BARKS.nearGoal);
-			end
-		end
+	-- Near-goal call-out as the player closes on the stump.
+	if not state.calledNearGoal
+			and dist2d(owner.positionX, owner.positionZ, ARRIVAL_GOAL.x, ARRIVAL_GOAL.z) <= 40.0 then
+		state.calledNearGoal = true;
+		emitBark(owner, BARKS.nearGoal);
 	end
 
 	-- Sansa tags along behind Powle (she never leads and never fights).

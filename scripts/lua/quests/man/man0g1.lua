@@ -376,7 +376,12 @@ function onTalk(player, quest, npc)
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent210");
 			quest:StartSequence(SEQ_095);
 			player:EndEvent();
-			GetWorldManager():WarpToPrivateArea(player, "PrivateAreaMasterPast", 4);
+			-- Enter the guild hall at the FRONT, facing the Nuala/Burchard
+			-- platform at the back — the player walks the scene rather than
+			-- landing on the commanders (the old target:None kept the PA3
+			-- Burchard-talk position). Coords frame-estimated; keep in sync
+			-- with seed/087 PA4 layout. (Garlemald-Server #41.)
+			GetWorldManager():WarpToPrivateArea(player, "PrivateAreaMasterPast", 4, 177.0, 27.5, -1581.0, 1.6);
 			return;
 		elseif (classId == NUALA) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent200_2");
@@ -696,9 +701,17 @@ function onPush(player, quest, npc)
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent181");
 			player:EndEvent();
 			quest:StartSequence(SEQ_071);
-			GetWorldManager():WarpToPrivateArea(player, "PrivateAreaMasterPast", 1);
+			-- Deterministic warp-in AT the exit-circle centre (the recorded
+			-- stump = SimpleContentMan0g101 ARRIVAL_GOAL). The old target:None
+			-- warp kept wherever the player happened to be when the stump push
+			-- fired, so the outward "leave the area" exit circle's distance was
+			-- non-deterministic — it could fire on arrival or need a long run
+			-- (Garlemald-Server #41). Starting the player at the centre means a
+			-- short, consistent walk-out always leaves. Keep coords + the r15
+			-- circle in sync with seed/086.
+			GetWorldManager():WarpToPrivateArea(player, "PrivateAreaMasterPast", 1, -756.77, 22.77, -1092.33, 2.4);
 			return;
-		end		
+		end
 	elseif (sequence == SEQ_071) then
 		if (classId == STUMP_EXIT_TRIGGER) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent182");
@@ -893,10 +906,14 @@ function startMan0g1Content(player, quest)
 	-- desktopWidgetMode-16 menu lock).
 	player:EndEvent();
 
-	-- Duty warp into the zone-150 content instance. spawnType 16 →
-	-- wipe + 0x00E2(0x10) + 34108 "You have entered an instance." +
-	-- zone-in bundle. NOTHING may be queued after this call.
-	GetWorldManager():DoZoneChangeContent(player, contentArea, -700.0, 21.0, -1000.0, 2.4, 16);
+	-- Duty warp into the zone-150 content instance at the EXACT White Wolf
+	-- Gate coords where the "Duty calls" dialog fires (seed/081 stand-and-
+	-- mark). The Gridania region (155/206/150) is one seamless coordinate
+	-- space, so the gate point is valid inside the zone-150 instance — the
+	-- player starts at the gate and walks across the Central Shroud to the
+	-- Lifemend Stump. spawnType 16 → wipe + 0x00E2(0x10) + 34108 "You have
+	-- entered an instance." + zone-in bundle. NOTHING may follow this call.
+	GetWorldManager():DoZoneChangeContent(player, contentArea, -194.73, 3.54, -1021.33, -1.642, 16);
 end
 
 function getJournalInformation(player, quest)
