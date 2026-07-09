@@ -46,9 +46,15 @@ function onCreate(starterPlayer, contentArea, director)
 	thancred:SetMod(modifiersGlobal.MinimumHpLock, 1);
 	niellefresne:SetMod(modifiersGlobal.MinimumHpLock, 1);
 
-	-- Arena fence prop, kept from the upstream import (same role as
-	-- Gridania's 1090384 stopper inside SimpleContent30010).
-	openingStoper = contentArea:SpawnActor(1090385, "openingstoper", -24.34, 192, 34.22, 0);
+	-- NO arena fence prop. The upstream import spawned 1090385 here
+	-- ("openingstoper") and its armed push circles outlived the
+	-- teardown's RemoveActor on the 1.23b client: the orphan "exit"
+	-- circle fired against the ghost after the SEQ_010 warp (client
+	-- crash ~4s into zone 175), and the disarm-before-remove attempt
+	-- crashed the client even earlier (see apply_despawn_actor's
+	-- parity note). Limsa's SimpleContent30002 — the upstream-tested
+	-- twin — ships no stopper either; the engagement latch plus the
+	-- tiny arena already contain the fight. (#26, PR #156 Rounds 6-7.)
 
 	director:AddMember(starterPlayer);
 	director:AddMember(director);

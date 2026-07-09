@@ -159,7 +159,7 @@ Ported the same twins develop now ships for Gridania (#28) and Limsa
   party-added allies for HUD HP bars, `MinimumHpLock` no-die
   guarantees, the engagement-latch `onUpdate` battle driver (latch
   re-armed in `onCreate` — the VM is process-cached), and the
-  upstream `1090385` arena stopper prop kept.
+  upstream `1090385` arena stopper prop kept (later dropped — Round 7).
 - Seed `055_uldah_seq005_tutorial.sql`: pools/groups 8-10 + spawn rows
   13-15 — Escaped Goobbue (2203301, genus 6, 500 HP per the 053 pacing
   rationale scaled to a single mob) and Thancred/Niellefresne
@@ -169,6 +169,94 @@ Ported the same twins develop now ships for Gridania (#28) and Limsa
 Branch rebased onto develop v0.1.5 (PR #35 + the Limsa #25 routing
 fixes — resumed-burst login-applier routing, EventUpdate LuaParams
 threading — all of which this flow rides).
+
+## Rounds 6-8 — the post-tutorial teardown crash (ported from PR #156)
+
+These three rounds were live-tested on the unmerged PR #156 branch
+(closed 2026-06-12). The findings are load-bearing — without them a
+fresh reader re-derives the teardown disarm as correct — so they are
+recorded here with per-fix status against the current tree (#53
+branch re-landed the Round-7 halves; the rest landed elsewhere or was
+superseded).
+
+### Round 6 — instant crash at the SEQ_010 warp + dead-path HUD fixes
+
+Retest of the Round-5 HUD work: ally names went blue (the zone-in
+roster fix landed) but the party list stayed empty, the goobbue gauge
+stayed empty, and the client closed INSTANTLY at the post-battle warp
+(previously ~4 s after arriving in zone 175). Log forensics:
+
+1. **Enemy gauge — the claim sat on a dead path.** The tutorial fight
+   engages via `quest_apply::apply_actor_engage` (content-driver
+   `ActorEngage` LuaCommands), never `BattleEvent::Engage`, so the
+   hateType=3 + 0x0187 emission never fired. *Status: superseded — the
+   2026-07-01 DepictionJudge decomp findings (dispatcher.rs) showed
+   hateType drives nameplate colour only and settled on hateType=2
+   with no 0x0187 claim; do not re-land the PR #156 flip.*
+2. **Party shrink against deleted actors.** The first session in which
+   the 3-member tutorial party survived to the teardown crashed when
+   the zone-in solo trio member-diffed 3→1 against ally actors the
+   client had already destroyed. *Status: superseded — the #46 round-5
+   wire finding (groups.rs) proved the client registers a group id
+   ONCE and ignores roster re-sends under a known id; the current
+   fresh-ordinal group-id scheme (`party_group_ordinal` bump at
+   teardown) removes the member-diff hazard by construction.*
+3. **Ghost QuestDirector followed the player to the city.**
+   ContentFinished never cleared `session.login_director`, so every
+   later zone-in re-spawned a director whose content group was gone.
+   *Status: landed via 86c8df2 (ContentFinished clears the
+   login-director reference), since extended.*
+
+### Round 7 — the teardown disarm WAS the instant crash; stopper dropped
+
+Retest of Round 6 WITH packet capture: the pre-despawn party shrink
+and the director clear both verified on the wire — and the client
+still closed instantly (zero IN packets after the burst). With those
+two eliminated, the one byte-level delta common to BOTH instant-death
+bursts (06:50:36.94x and 08:07:42.57x) versus the run that survived
+the load is the disarm itself: the SetEventStatus disables (`0x0136`
+×1 per ally + ×3 for the arena stopper) landing in the same burst as
+the EndEvent + RemoveActors. pmeteor's `Npc.Despawn` never emits
+disables.
+
+Fix, both halves pmeteor/twin-faithful (*status: re-landed on the #53
+branch*):
+
+- `apply_despawn_actor` reverted to RemoveActor-only (the parity note
+  documents the two captured instant-crashes).
+- `SimpleContent30079.lua` no longer spawns the 1090385 arena stopper —
+  the ONLY circle-bearing prop in the content area, i.e. the source of
+  the original +4s ghost-"exit" crash the disarm was trying to fix.
+  Limsa's SimpleContent30002 (the upstream-tested twin) ships no
+  stopper; the engagement latch + arena geometry contain the fight.
+  (Gridania's 30010 still spawns 1090384 — with the disarm gone it
+  carries the same latent +4s ghost-circle risk after its battle;
+  the event/dispatcher.rs missing-owner EndEvent release may cover it,
+  but that path is untested against mid-warp timing. Flagged for a
+  follow-up issue, out of #26's scope.)
+
+Also confirmed this round: the 0x0187 claim DID fire at engage (type
+30006) and the goobbue gauge still didn't render — the claim alone is
+not the gauge/party-list activator (consistent with the later
+DepictionJudge finding that the overhead gauge is a RET-stub in
+1.23b).
+
+### Round 8 — the party panel's missing repaint trigger
+
+From the 1.23b client decomp corpus: the decompiled
+`PartyGroupBaseClass:_onUpdateWork` repaints the desktop party panel
+ONLY on a `partyGroupWork` work-sync with `sub == "_init"` (or a
+`leader` tag sync). The 0x017C/D/F/E member trio updates the group
+object silently. pmeteor's WORLD server answers the party group's
+`/_init` with `partyGroupWork._globalTemp.owner =
+(leader << 32) | 0xB36F92` (World `Party.SendInitWorkValues`); our map
+server only answered content groups. *Status: HELD — the #46
+round-4/5 party-row fixes may already repaint the panel; retest
+before re-landing. If re-landing: reuse `group/party.rs::pack_owner`,
+gate the 0x0133 reply on `(high & 0xF000_0000) == 0x8000_0000`, and
+resolve the leader via the session/registry — the PR #156 extraction
+from the group id's low u32 is wrong under the current
+`party_group_index` multi-member layout `(leader << 16) | ordinal`.*
 
 ## Next test with client
 

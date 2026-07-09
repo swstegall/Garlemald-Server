@@ -1467,37 +1467,18 @@ pub(crate) async fn apply_despawn_actor(
     let Some(zone_arc) = world.zone(zone).await else {
         return;
     };
-    // Disarm the actor's event-condition triggers BEFORE the remove.
-    // The 1.23b client does NOT clear armed push circles when an actor
-    // is deleted — live-confirmed in the Ul'dah opener teardown (#26):
-    // the arena fence's outwards "exit" circle (radius 40) survived the
-    // stopper's RemoveActor, fired against the ghost when the SEQ_010
-    // warp repositioned the player >40y away, and the orphan event
-    // exchange (client EventStart vs our EndEvent echoes, mid
-    // zone-change) hard-crashed the client ~3 s into the warp.
-    let conditions = {
-        let c = handle.character.read().await;
-        c.base.event_conditions.clone()
-    };
-    if !conditions.is_empty() {
-        for sub in crate::packets::send::build_actor_event_status_packets(
-            actor_id,
-            &conditions,
-            false,
-            false,
-            Some(false),
-            false,
-        ) {
-            crate::runtime::broadcast::broadcast_around_actor(
-                world,
-                registry,
-                &zone_arc,
-                actor_id,
-                sub.to_bytes(),
-            )
-            .await;
-        }
-    }
+    // pmeteor parity: despawn is RemoveActor ONLY — no SetEventStatus
+    // disables first. A disarm pass was tried here (#26, the arena
+    // fence's ghost "exit" circle surviving RemoveActor) and it
+    // hard-closed the client INSTANTLY in two captured runs: the
+    // event-status disables landing in the same burst as the
+    // EndEvent + teardown removes are the one byte-level delta vs the
+    // run that survived the warp (packet forensics 2026-06-12, bursts
+    // at 06:50:36.94x and 08:07:42.57x vs the surviving load — PR #156
+    // Round 7). The ghost-circle problem is solved at the source
+    // instead: content areas must not spawn circle-bearing props
+    // (SimpleContent30079's stopper dropped — Limsa's 30002, the
+    // upstream-tested twin, never had one).
     let sub = crate::packets::send::actor::build_remove_actor(actor_id);
     let recipients = crate::runtime::broadcast::broadcast_around_actor(
         world,
