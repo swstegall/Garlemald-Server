@@ -459,7 +459,14 @@ function seq000_onTalk(player, quest, npc, classId)
     if (classId == MIOUNNE) then
         
         callClientFunction(player, "delegateEvent", player, quest, "processEvent100_1");
-        player:EndEvent();
+		-- Queue the SEQ_005 NPC-linkshell tutorial message from Miounne BEFORE
+		-- advancing + closing the event — the man0l1 seq000_onTalk order
+		-- (NewNpcLsMsg → StartSequence → EndEvent). Without it the onNotice
+		-- processEventTu_001 tutorial opens but the linkpearl carries NO
+		-- message ("You do not possess any such items"), so the player can
+		-- never read it, onNpcLS never fires, the tutorial can't complete, and
+		-- they are softlocked (live 2026-07-08). (Garlemald-Server #41.)
+		quest:NewNpcLsMsg(1);
 		-- SEQ_005, not the upstream SEQ_003 (Garlemald-Server #41 bug 1):
 		-- pms never declares SEQ_003 (StartSequence(nil) crash);
 		-- MeteorReborn declares SEQ_003=3 but nothing ever advances 3→5 —
@@ -469,6 +476,7 @@ function seq000_onTalk(player, quest, npc, classId)
 		-- so the post-Roost state goes straight to "attune at Camp
 		-- Bentbranch".
 		quest:StartSequence(SEQ_005);
+		player:EndEvent();
 				
 		
 		local director = GetWorldManager():GetArea(155):CreateDirector("AfterQuestWarpDirector", false);
@@ -809,12 +817,32 @@ function onEmote(player, quest, npc, eventName)
 end
 
 -- AfterQuestWarpDirector noticeEvent (armed in seq000_onTalk after the
--- Roost scene): plays the gate tutorial and closes. Debug leftovers
--- (a "Test" SendMessage + a doubled EndEvent) removed —
--- Garlemald-Server #41 bug 6.
+-- Roost scene): opens the NPC-linkshell tutorial, then closes the kick.
 function onNotice(player, quest, target)
-    callClientFunction(player, "delegateEvent", player, quest, "processEventTu_001");
-    player:EndEvent();
+    local sequence = quest:getSequence();
+    if (sequence == SEQ_005) then
+        -- processEventTu_001 is the NPC-linkshell tutorial (cancels the
+        -- desktop-widget mask + flashes the Path-Companion linkpearl). It is
+        -- a SYNCHRONOUS UI event that sends NO 0x012E EventUpdate, so it MUST
+        -- be driven with the RAW, non-parking RunEventFunction — NOT
+        -- callClientFunction. callClientFunction does RunEventFunction then
+        -- coroutine.yield("_WAIT_EVENT") and PARKS waiting for an EventUpdate
+        -- that never comes; the trailing EndEvent then never runs, the
+        -- noticeEvent stays open, and the client is event-locked (movement +
+        -- menus dead → softlock; live 2026-07-08 SEQ_005, "purged parked
+        -- coroutine" at disconnect). The raw form runs EndEvent, closing the
+        -- noticeEvent → menu works and the linkpearl is clickable → onNpcLS →
+        -- endTutorialMode. The proven man0l1 SEQ_003 fix.
+        -- (Garlemald-Server #41 / #46.)
+        player:RunEventFunction("delegateEvent", player, quest, "processEventTu_001");
+        player:EndEvent();
+    else
+        -- Safety net: a stray noticeEvent kick (e.g. the escort content
+        -- director's) landing here after the sequence advanced only needs the
+        -- EndEvent to close — leaving it open would event-lock the client.
+        player:EndEvent();
+    end
+    quest:UpdateENPCs();
 end
 
 function onNpcLS(player, quest, from, msgStep)
