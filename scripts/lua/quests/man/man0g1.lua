@@ -48,6 +48,16 @@ FLAG_EMOTE_DONE6	= 6;
 CNTR_SEQ15_LTW		= 0;
 CNTR_SEQ15_CNJ		= 1;
 
+-- One-shot handoff latch for the SEQ_065 escort start (same shape as
+-- man0l1's FLAG_ESCORT_HANDOFF): set by startMan0g1Content IMMEDIATELY
+-- BEFORE StartSequence(SEQ_065) so the onStateChange run it fires sees
+-- the flag SET, consumes it, and stays dormant. Any OTHER arrival at
+-- SEQ_065 (relog re-arm after the content died with the session, or a
+-- wedged save) sees it CLEAR → rolls back to SEQ_060 so the
+-- GATE_TRIGGER re-arms and the duty is retryable. Bit 7 — clear of the
+-- emote flags 1-6 (their completion mask is 0x7E; this is 0x80).
+FLAG_ESCORT_HANDOFF	= 7;
+
 -- Msg packs for the Npc LS
 NPCLS_MSGS = {
 	{330},
@@ -118,8 +128,14 @@ HELBHANTH		= 1000735;
 PASDEVILLET		= 1000738;
 JIJIMAYA		= 1000741;
 
--- Quest Markers
-MRKR_MIOUNNE	= 11000601;
+-- Quest Markers — 1100 + last-4-of-quest-id + index scheme (cross-quest:
+-- man0g0 11000501-04, man0l0 11000202-06). MeteorReborn declares all
+-- three (its man0g1.lua:123-125); pms only declared MIOUNNE and returned
+-- the other two as nil globals (Garlemald-Server #41 bug 4). Sheet rows
+-- confirmed in bahamut-client-data csv/quest_marker.csv:108-110.
+MRKR_MIOUNNE		= 11000601;
+MRKR_KID_TRIGGER	= 11000602;
+MRKR_GATE_TRIGGER	= 11000603;
 
 function onStart(player, quest) 
     quest:StartSequence(SEQ_000);
@@ -200,6 +216,20 @@ function onStateChange(player, quest, sequence)
 	elseif (sequence == SEQ_060) then
 		quest:SetENpc(GATE_TRIGGER, QFLAG_PUSH, false, true);
 	elseif (sequence == SEQ_065) then
+		-- Escort-duty rescue (man0l1 SEQ_050 pattern). This arm runs at
+		-- SEQ_065 in exactly two situations: (1) the legit escort start —
+		-- startMan0g1Content sets FLAG_ESCORT_HANDOFF then calls
+		-- StartSequence(SEQ_065), so THIS run sees the flag SET, consumes
+		-- it, and stays dormant; (2) everything else — the relog re-arm
+		-- for a player whose escort content died with the session, or a
+		-- wedged save. Flag CLEAR → roll back to SEQ_060 so the
+		-- GATE_TRIGGER re-arms and the duty is retryable from the gate.
+		local rescueData = quest:GetData();
+		if (rescueData:GetFlag(FLAG_ESCORT_HANDOFF)) then
+			rescueData:ClearFlag(FLAG_ESCORT_HANDOFF);
+		else
+			quest:StartSequence(SEQ_060);
+		end
 	elseif (sequence == SEQ_070) then
 		quest:SetENpc(STUMP_TRIGGER, QFLAG_PUSH, false, true);
 	elseif (sequence == SEQ_071) then		
@@ -250,7 +280,13 @@ function onTalk(player, quest, npc)
     local classId = npc:GetActorClassId();
     
     if (sequence == SEQ_000) then
-        seq000_onTalk(player, quest, npc, classId);
+        -- true = the Miounne branch warped out of the Roost scene —
+        -- skip the trailing EndEvent/UpdateENPCs (post-warp commands
+        -- ship into the reload gap; man0l1 SEQ_015 early-return
+        -- pattern). (Garlemald-Server #41.)
+        if (seq000_onTalk(player, quest, npc, classId) == true) then
+            return;
+        end
     elseif (sequence == SEQ_005) then
 		if (classId == MIOUNNE) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent110_2");
@@ -276,7 +312,9 @@ function onTalk(player, quest, npc)
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent140");
 			quest:StartSequence(SEQ_050);
 			player:EndEvent();
-			GetWorldManager():WarpToPrivateArea(player, "PrivateAreaMasterPast", 1, -223.792, 12, -1498.369, -1.74);
+			-- Zone pinned to 155 (scene PAs; fired from the 206 half —
+			-- see the CNJ_TRIG arm note). (Garlemald-Server #41.)
+			GetWorldManager():DoZoneChange(player, 155, "PrivateAreaMasterPast", 1, 15, -223.792, 12, -1498.369, -1.74);
 			return;
 		elseif (classId == MIOUNNE) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent137_2");
@@ -285,7 +323,8 @@ function onTalk(player, quest, npc)
 		if (classId == OPYLTYL) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent1000_3");
 			player:EndEvent();
-			GetWorldManager():WarpToPrivateArea(player, "PrivateAreaMasterPast", 1, -223.792, 12, -1498.369, -1.74);
+			-- Zone pinned to 155 (see the CNJ_TRIG arm note).
+			GetWorldManager():DoZoneChange(player, 155, "PrivateAreaMasterPast", 1, 15, -223.792, 12, -1498.369, -1.74);
 			return;
 		else
 			seq050_onTalk(player, quest, npc, classId);
@@ -296,7 +335,8 @@ function onTalk(player, quest, npc)
 		elseif (classId == OPYLTYL) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent1000_3");
 			player:EndEvent();
-			GetWorldManager():WarpToPrivateArea(player, "PrivateAreaMasterPast", 2, -231.474, 12, -1500.86, 0.73);
+			-- Zone pinned to 155 (see the CNJ_TRIG arm note).
+			GetWorldManager():DoZoneChange(player, 155, "PrivateAreaMasterPast", 2, 15, -231.474, 12, -1500.86, 0.73);
 		elseif (classId == AUNILLE or classId == NICOLLAUX or classId == SANSA or classId == POWLE or classId == RYD or classId == ELYN) then
 			local randNum = math.random(1, 2);
 			if (randNum == 1) then
@@ -323,7 +363,10 @@ function onTalk(player, quest, npc)
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent200");
 			quest:StartSequence(SEQ_090);
 			player:EndEvent();
-			GetWorldManager():WarpToPrivateArea(player, "PrivateAreaMasterPast", 3, 176.13, 27.5, -1581.84, -1.0);
+			-- Zone pinned to 155 (see the CNJ_TRIG arm note). The
+			-- SEQ_090→PA4 hop stays WarpToPrivateArea — it fires from
+			-- INSIDE this 155 PA, so current-zone resolution is right.
+			GetWorldManager():DoZoneChange(player, 155, "PrivateAreaMasterPast", 3, 15, 176.13, 27.5, -1581.84, -1.0);
 			return;
 		elseif (classId == WILLELDA) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent190_2");
@@ -333,7 +376,12 @@ function onTalk(player, quest, npc)
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent210");
 			quest:StartSequence(SEQ_095);
 			player:EndEvent();
-			GetWorldManager():WarpToPrivateArea(player, "PrivateAreaMasterPast", 4);
+			-- Enter the guild hall at the FRONT, facing the Nuala/Burchard
+			-- platform at the back — the player walks the scene rather than
+			-- landing on the commanders (the old target:None kept the PA3
+			-- Burchard-talk position). Coords frame-estimated; keep in sync
+			-- with seed/087 PA4 layout. (Garlemald-Server #41.)
+			GetWorldManager():WarpToPrivateArea(player, "PrivateAreaMasterPast", 4, 177.0, 27.5, -1581.0, 1.6);
 			return;
 		elseif (classId == NUALA) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent200_2");
@@ -362,7 +410,9 @@ function onTalk(player, quest, npc)
 			player:EndEvent();
 			quest:NewNpcLsMsg(1);
 			quest:StartSequence(SEQ_100);
-			GetWorldManager():WarpToPublicArea(player);
+			-- Zone 206 explicit at the Wailing Barracks (south half) —
+			-- stranded-half crash class (see the Swethyna exit note).
+			GetWorldManager():DoZoneChange(player, 206, nil, 0, 15, 176.13, 27.5, -1581.84, -1.0);
 			return;
 		elseif (classId == BURCHARD) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent210_2");
@@ -408,21 +458,53 @@ end
 function seq000_onTalk(player, quest, npc, classId)
     if (classId == MIOUNNE) then
         
-        callClientFunction(player, "delegateEvent", player, quest, "processEvent100_1");        
-        player:EndEvent();
-		quest:StartSequence(SEQ_003);
+        callClientFunction(player, "delegateEvent", player, quest, "processEvent100_1");
+		-- Queue the SEQ_005 NPC-linkshell tutorial message from Miounne BEFORE
+		-- advancing + closing the event — the man0l1 seq000_onTalk order
+		-- (NewNpcLsMsg → StartSequence → EndEvent). Without it the onNotice
+		-- processEventTu_001 tutorial opens but the linkpearl carries NO
+		-- message ("You do not possess any such items"), so the player can
+		-- never read it, onNpcLS never fires, the tutorial can't complete, and
+		-- they are softlocked (live 2026-07-08). (Garlemald-Server #41.)
+		quest:NewNpcLsMsg(1);
+		-- SEQ_005, not the upstream SEQ_003 (Garlemald-Server #41 bug 1):
+		-- pms never declares SEQ_003 (StartSequence(nil) crash);
+		-- MeteorReborn declares SEQ_003=3 but nothing ever advances 3→5 —
+		-- no onStateChange branch, and unlike man0l1 (whose aetheryte arm
+		-- checks SEQ_003) AetheryteParent.lua's 110006 arm gates on
+		-- SEQ_005. The intended 3→5 hop was never implemented upstream,
+		-- so the post-Roost state goes straight to "attune at Camp
+		-- Bentbranch".
+		quest:StartSequence(SEQ_005);
+		player:EndEvent();
 				
 		
-		local director = GetWorldManager():GetArea(155):CreateDirector("AfterQuestWarpDirector", false);		
+		local director = GetWorldManager():GetArea(155):CreateDirector("AfterQuestWarpDirector", false);
 		director:StartDirector(true);
         player:AddDirector(director);
-		--player:SetLoginDirector(director);	     
+		-- SetLoginDirector is LOAD-BEARING, not optional (the pms port
+		-- shipped it commented out — untested upstream). It is the
+		-- login-routing tell (processor.rs is_login_scoped_burst): with
+		-- it, the zone-in bundle re-emits the director spawn + the
+		-- noticeEvent kick AFTER the same-map wipe reload, on a loaded
+		-- actor table. Without it the kick direct-dispatches pre-wipe,
+		-- the wipe destroys its owner, the client drops the answer, and
+		-- the kick-armed veil never clears — the live 2026-07-06
+		-- 02:03:19 hang (same class as the man0l1 Baderon menu-lock,
+		-- "Round-3 live test"). Canonical sequence documented in
+		-- AfterQuestWarpDirector.lua, which already routes 110006 back
+		-- to onNotice. (Garlemald-Server #41.)
+		player:SetLoginDirector(director);
 		player:KickEvent(director, "noticeEvent", true);
-		
+
 		quest:UpdateENPCs();
-        --GetWorldManager():WarpToPublicArea(player);
         GetWorldManager():DoZoneChange(player, 155, nil, 0, 15, player.positionX, player.positionY, player.positionZ, player.rotation);
-  
+		-- Warped: nothing may follow (onTalk's trailing EndEvent +
+		-- UpdateENPCs landing mid-reload is the desktopWidgetMode-16 /
+		-- lost-teardown hazard — the 02:03:19 drain shipped exactly
+		-- that pair after the DoZoneChange). (Garlemald-Server #41.)
+		return true;
+
     elseif (classId == BEAMING_ADVENTURER) then
         callClientFunction (player, "delegateEvent", player, quest, "processEvent100_6");
     elseif (classId == AMIABLE_ADVENTURER) then
@@ -458,8 +540,13 @@ function seq015_onTalk(player, quest, npc, classId)
 	elseif (classId == HEREWARD) then
 		if (subseqLTW == 0) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent120");
-			data:IncCounter(CNTR_SEQ15_LTW);	
-			--give 1000g					
+			data:IncCounter(CNTR_SEQ15_LTW);
+			-- Geva's treant-vine appraisal (Garlemald-Server #41 bug 7).
+			-- Upstream's TODO said 1000g, but her own line in the
+			-- processEvent120 scene is "An even two thousand gil, no
+			-- more." (Mirke Loremonger transcript + Part-3 playthrough
+			-- footage) — retail dialogue wins.
+			player:AddGil(2000);
 		elseif (subseqLTW == 1) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent120_2");
 			data:IncCounter(CNTR_SEQ15_LTW);	
@@ -509,7 +596,14 @@ function seq015_onTalk(player, quest, npc, classId)
 			data:IncCounter(CNTR_SEQ15_CNJ);
 			quest:NewNpcLsMsg(1);
 			player:EndEvent();
-			GetWorldManager():WarpToPublicArea(player);
+			-- Exit to ZONE 206 public explicitly (the Fane door, live
+			-- town half). WarpToPublicArea from the 155 scene PA
+			-- stranded the player in 155-public deep in the 206 half —
+			-- a world-state retail never produces; the first 206-band
+			-- actor partner-streamed into that half-loaded client froze
+			-- Wine (live 2026-07-06 05:17:39, Kinnison stream → render
+			-- death). (Garlemald-Server #41.)
+			GetWorldManager():DoZoneChange(player, 206, nil, 0, 15, -350.0, 6.25, -1690.0, -2.4);
 			return true;
 		end
 	end
@@ -575,7 +669,14 @@ function onPush(player, quest, npc)
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent130");
 			data:IncCounter(CNTR_SEQ15_CNJ);
 			player:EndEvent();
-			GetWorldManager():WarpToPrivateArea(player, "PrivateAreaMasterPast", 0, -353.05, 6.25, -1697.39, 0.774);
+			-- Zone PINNED to 155: the quest scene PAs all live under
+			-- fst0Town01 (upstream's 17 PA rows), but this push fires in
+			-- the 206 south half (the Fane district) — WarpToPrivateArea
+			-- resolves the CURRENT zone's PAs, misses, and falls back to
+			-- public (the "guild loads no NPCs" live report,
+			-- 2026-07-06). Explicit DoZoneChange is the Roost-entry-
+			-- proven form. (Garlemald-Server #41.)
+			GetWorldManager():DoZoneChange(player, 155, "PrivateAreaMasterPast", 0, 15, -353.05, 6.25, -1697.39, 0.774);
 			return;
 		end
 	elseif (sequence == SEQ_055) then
@@ -583,44 +684,61 @@ function onPush(player, quest, npc)
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent160");
 			player:EndEvent();
 			quest:StartSequence(SEQ_060);
-			GetWorldManager():WarpToPublicArea(player, -209.817, 18, -1477.372, 1.4);
+			-- Zone 206 explicit — the Growery district is the south
+			-- half; WarpToPublicArea from the 155 PA strands the player
+			-- in 155-public (the stranded-half crash class, see the
+			-- Swethyna exit note). (Garlemald-Server #41.)
+			GetWorldManager():DoZoneChange(player, 206, nil, 0, 15, -209.817, 18, -1477.372, 1.4);
 			return;
 		end
 	elseif (sequence == SEQ_060) then
 		if (classId == GATE_TRIGGER) then
 			local result = callClientFunction(player, "delegateEvent", player, quest, "contentsJoinAskInBasaClass");
 			if (result == 1) then
-				-- DO ESCORT DUTY HERE
-				-- startMan0g1Content(player, quest);
-				-- For now just skip the sequence
-				quest:StartSequence(SEQ_065);
-				callClientFunction(player, "delegateEvent", player, quest, "processEvent180");
-				player:EndEvent();
-				quest:StartSequence(SEQ_070);
-				GetWorldManager():WarpToPrivateArea(player, "PrivateAreaMasterPast", 0, -770.197, 23, -1086.209);
+				-- The White Wolf Gate escort duty (Garlemald-Server #41
+				-- bug 2 — upstream shipped this arm as "DO ESCORT DUTY
+				-- HERE ... For now just skip the sequence" and
+				-- startMan0g1Content existed nowhere).
+				startMan0g1Content(player, quest);
 				return;
 			end
 			player:EndEvent();
-		end	
+		end
 	elseif (sequence == SEQ_070) then
 		if (classId == STUMP_TRIGGER) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent181");
 			player:EndEvent();
 			quest:StartSequence(SEQ_071);
-			GetWorldManager():WarpToPrivateArea(player, "PrivateAreaMasterPast", 1);
+			-- Deterministic warp-in AT the exit-circle centre (the recorded
+			-- stump = SimpleContentMan0g101 ARRIVAL_GOAL). The old target:None
+			-- warp kept wherever the player happened to be when the stump push
+			-- fired, so the outward "leave the area" exit circle's distance was
+			-- non-deterministic — it could fire on arrival or need a long run
+			-- (Garlemald-Server #41). Starting the player at the centre means a
+			-- short, consistent walk-out always leaves. Keep coords + the r15
+			-- circle in sync with seed/086.
+			GetWorldManager():WarpToPrivateArea(player, "PrivateAreaMasterPast", 1, -756.77, 22.77, -1092.33, 2.4);
 			return;
-		end		
+		end
 	elseif (sequence == SEQ_071) then
 		if (classId == STUMP_EXIT_TRIGGER) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent182");
 			player:EndEvent();
 			quest:StartSequence(SEQ_072);
-			GetWorldManager():WarpToPublicArea(player, -185, 6, -962, -3);
+			-- Zone 155 explicit — (-185, -962) is the NORTH half; fired
+			-- from the zone-150 stump PA, WarpToPublicArea would land
+			-- 150-public instead (stranded-half class). The walk back
+			-- to the Growery (206) crosses the town seam normally.
+			GetWorldManager():DoZoneChange(player, 155, nil, 0, 15, -185, 6, -962, -3);
 			return;
-		end			
+		end
 	elseif (sequence == SEQ_072) then
 		if (classId == BTN_TRIGGER) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent185");
+			-- Fufucha's mooglespeak payment — "You obtain 3000 gil."
+			-- is on film right after this debrief (Part 6, 01:12).
+			-- (Garlemald-Server #41.)
+			player:AddGil(3000);
 			player:EndEvent();
 			quest:NewNpcLsMsg(1);
 			quest:StartSequence(SEQ_075);
@@ -698,11 +816,33 @@ function onEmote(player, quest, npc, eventName)
 	quest:UpdateENPCs();
 end
 
+-- AfterQuestWarpDirector noticeEvent (armed in seq000_onTalk after the
+-- Roost scene): opens the NPC-linkshell tutorial, then closes the kick.
 function onNotice(player, quest, target)
-    player:EndEvent();
-    player:SendMessage(0x20, "", "Test");
-    callClientFunction(player, "delegateEvent", player, quest, "processEventTu_001");  
-    player:EndEvent();
+    local sequence = quest:getSequence();
+    if (sequence == SEQ_005) then
+        -- processEventTu_001 is the NPC-linkshell tutorial (cancels the
+        -- desktop-widget mask + flashes the Path-Companion linkpearl). It is
+        -- a SYNCHRONOUS UI event that sends NO 0x012E EventUpdate, so it MUST
+        -- be driven with the RAW, non-parking RunEventFunction — NOT
+        -- callClientFunction. callClientFunction does RunEventFunction then
+        -- coroutine.yield("_WAIT_EVENT") and PARKS waiting for an EventUpdate
+        -- that never comes; the trailing EndEvent then never runs, the
+        -- noticeEvent stays open, and the client is event-locked (movement +
+        -- menus dead → softlock; live 2026-07-08 SEQ_005, "purged parked
+        -- coroutine" at disconnect). The raw form runs EndEvent, closing the
+        -- noticeEvent → menu works and the linkpearl is clickable → onNpcLS →
+        -- endTutorialMode. The proven man0l1 SEQ_003 fix.
+        -- (Garlemald-Server #41 / #46.)
+        player:RunEventFunction("delegateEvent", player, quest, "processEventTu_001");
+        player:EndEvent();
+    else
+        -- Safety net: a stray noticeEvent kick (e.g. the escort content
+        -- director's) landing here after the sequence advanced only needs the
+        -- EndEvent to close — leaving it open would event-lock the client.
+        player:EndEvent();
+    end
+    quest:UpdateENPCs();
 end
 
 function onNpcLS(player, quest, from, msgStep)
@@ -749,54 +889,85 @@ function onNpcLS(player, quest, from, msgStep)
 	player:EndEvent();
 end
 
+-- ===== SEQ_065 — the White Wolf Gate escort duty (Garlemald-Server #41) =====
+-- Net-new content mirroring man0l1's startMan0l1Content 10-step shape
+-- (every ordering rule below is wire-proven on the man0l1 leg — see that
+-- function's comments for the receipts): rescue latch → journal update →
+-- CreateContentArea → director kick (Rust defers the 0x012F TX past the
+-- warp ack) → in-place duty-start cutscene → EndEvent BEFORE the warp →
+-- DoZoneChangeContent(spawnType 16).
+--
+-- Retail shape (Mirke Loremonger + the 7-part playthrough, #41): Powle
+-- and Sansa lead the player from the White Wolf Gate (Gridania's
+-- southwest exit) through the Central Shroud to the Lifemend Stump;
+-- ankle-biter (chigoe) ambushes en route; "There are 20 minutes
+-- remaining." attested mid-walk; arrival hands off to the Hermit of the
+-- Wood stump scene (SEQ_070+, the pre-existing ported beats).
+-- processEvent170 is the duty-start cutscene, processEvent180 the end
+-- cutscene (director side).
+--
+-- PROVISIONAL GEOMETRY: the warp-in anchor + content trail run a short
+-- arc near the stump until the real White-Wolf-Gate-to-stump route is
+-- recorded (player 0x00CA walk, the man0l1 round-7f recipe) — see
+-- SimpleContentMan0g101.lua TRAIL and seed/074.
+function startMan0g1Content(player, quest)
+	quest:GetData():SetFlag(FLAG_ESCORT_HANDOFF);
+	quest:StartSequence(SEQ_065);
+
+	local contentArea = player.CurrentArea:CreateContentArea(player, "/Area/PrivateArea/Content/PrivateAreaMasterSimpleContent", "Man0g101", "SimpleContentMan0g101", "Quest/QuestDirectorMan0g101", 150);
+	if (contentArea == nil) then
+		return;
+	end
+	local director = contentArea:GetContentDirector();
+	player:AddDirector(director);
+	director:StartDirector(false);
+	player:KickEvent(director, "noticeEvent", true);
+	player:SetLoginDirector(director);
+
+	-- Duty-start cutscene IN PLACE at the gate (arms the after-warp
+	-- veil; the director's questBaseRewardSeting dismisses it
+	-- post-warp — QuestDirectorMan0g101).
+	callClientFunction(player, "delegateEvent", player, quest, "processEvent170");
+
+	-- Close the push event BEFORE the warp (0x0131 ahead of the 0x00E2
+	-- reload latch — retail invariant; mid-reload EndEvent = the
+	-- desktopWidgetMode-16 menu lock).
+	player:EndEvent();
+
+	-- Duty warp into the zone-150 content instance at the EXACT White Wolf
+	-- Gate coords where the "Duty calls" dialog fires (seed/081 stand-and-
+	-- mark). The Gridania region (155/206/150) is one seamless coordinate
+	-- space, so the gate point is valid inside the zone-150 instance — the
+	-- player starts at the gate and walks across the Central Shroud to the
+	-- Lifemend Stump. spawnType 16 → wipe + 0x00E2(0x10) + 34108 "You have
+	-- entered an instance." + zone-in bundle. NOTHING may follow this call.
+	GetWorldManager():DoZoneChangeContent(player, contentArea, -194.73, 3.54, -1021.33, -1.642, 16);
+end
+
 function getJournalInformation(player, quest)
 	local data = quest:GetData();
 	return ENABLE_GL_TUTORIAL and 1 or 0, data:GetCounter(CNTR_SEQ15_LTW) * 5, data:GetCounter(CNTR_SEQ15_CNJ) * 5;
 end
 
+-- Journal map markers (Garlemald-Server #41 bugs 3-5): the SEQ_015
+-- branch indexed an undeclared `data` (nil-index crash), and the two
+-- MRKR_* returns were nil globals in pms (MeteorReborn declares them —
+-- matched above). Return shape follows MeteorReborn: scalar returns for
+-- the sequences with a known marker row; the Miounne marker covers the
+-- talk-to-Miounne beats (11000601 = her Roost spot in
+-- csv/quest_marker.csv). Sequences whose objective sits inside a
+-- private-area scene (or is provisional pending in-client probing)
+-- intentionally return nothing.
 function getJournalMapMarkerList(player, quest)
     local sequence = quest:getSequence();
     local possibleMarkers = {};
 
-    if (sequence == SEQ_000) then
-	
-    elseif (sequence == SEQ_005) then 
-	
-	elseif (sequence == SEQ_010) then 
-	
-	elseif (sequence == SEQ_012) then 
-	
-	elseif (sequence == SEQ_015) then 
-		local subseqLTW = data:GetCounter(CNTR_SEQ15_LTW);
-		local subseqCNJ = data:GetCounter(CNTR_SEQ15_CNJ);
-		
-	elseif (sequence == SEQ_040) then 
-        
-	elseif (sequence == SEQ_050) then 
-		
+    if (sequence == SEQ_010 or sequence == SEQ_012 or sequence == SEQ_105) then
+		return MRKR_MIOUNNE;
 	elseif (sequence == SEQ_055) then
 		return MRKR_KID_TRIGGER;
 	elseif (sequence == SEQ_060) then
 		return MRKR_GATE_TRIGGER;
-	elseif (sequence == SEQ_065) then
-	elseif (sequence == SEQ_070) then
-	elseif (sequence == SEQ_071) then
-	elseif (sequence == SEQ_072) then
-	
-	elseif (sequence == SEQ_075) then
-	
-	elseif (sequence == SEQ_080) then
-	
-	elseif (sequence == SEQ_085) then
-	
-	elseif (sequence == SEQ_090) then
-	
-	elseif (sequence == SEQ_095) then
-	
-	elseif (sequence == SEQ_100) then
-	
-	elseif (sequence == SEQ_105) then
-	
     end
 
     return unpack(possibleMarkers)

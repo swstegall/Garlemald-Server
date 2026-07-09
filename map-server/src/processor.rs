@@ -6870,22 +6870,37 @@ impl PacketProcessor {
         class_id: u32,
         requester_area: Option<&(String, u32)>,
     ) -> Option<ActorHandle> {
-        let actors = self.registry.actors_in_zone(zone_id).await;
+        // Search the session zone first, then its seamless partner zones.
+        // Split towns (Gridania 155/206, Limsa 133/230) seed each half's
+        // NPCs in its OWN zone but share one coordinate space, so a player
+        // whose session sits in one half must still resolve a quest ENPC
+        // seeded in the partner half — e.g. LNC-guild Willelda/Burchard live
+        // in 206 while the 155-session player stands at the (206) guild, and
+        // a mid-scene marker move (SEQ_080 Willelda → SEQ_085 Burchard) re-
+        // broadcasts with no re-stream to ride the spawn overlay. Mirrors the
+        // streaming path's `partner_zone_actors_around`. (Garlemald-Server #41.)
+        let mut zones = vec![zone_id];
+        if let Some(z) = self.world.zone(zone_id).await {
+            let region_id = z.read().await.core.region_id as u32;
+            zones.extend(self.world.seamless_partner_zones(region_id, zone_id).await);
+        }
         let mut root_match: Option<ActorHandle> = None;
-        for h in actors {
-            let matches = {
-                let c = h.character.read().await;
-                c.chara.actor_class_id == class_id
-            };
-            if !matches {
-                continue;
-            }
-            match (&h.private_area, requester_area) {
-                (Some(npc_area), Some(req)) if npc_area.as_ref() == req => return Some(h),
-                (None, None) => return Some(h),
-                // Root copy — fallback for a private-area player.
-                (None, Some(_)) if root_match.is_none() => root_match = Some(h),
-                _ => {}
+        for zid in zones {
+            for h in self.registry.actors_in_zone(zid).await {
+                let matches = {
+                    let c = h.character.read().await;
+                    c.chara.actor_class_id == class_id
+                };
+                if !matches {
+                    continue;
+                }
+                match (&h.private_area, requester_area) {
+                    (Some(npc_area), Some(req)) if npc_area.as_ref() == req => return Some(h),
+                    (None, None) => return Some(h),
+                    // Root copy — fallback for a private-area player.
+                    (None, Some(_)) if root_match.is_none() => root_match = Some(h),
+                    _ => {}
+                }
             }
         }
         root_match
@@ -9542,6 +9557,7 @@ impl PacketProcessor {
             } else {
                 (None, None)
             };
+        let had_deferred_warp = deferred_warp.is_some();
         tracing::debug!(
             session = session_id,
             deferred_warp = deferred_warp.is_some(),
@@ -9599,6 +9615,51 @@ impl PacketProcessor {
             )
             .await;
         }
+
+        // Re-establish the active quests' ENPC conditions in the
+        // DESTINATION zone after an explicit (non-seamless) warp finishes.
+        // The seamless path already does this (handle_update_position 3c);
+        // an explicit cross-zone DoZoneChange did not, so a push trigger
+        // whose `onStateChange(SetENpc)` ran while the player was still in
+        // the ORIGIN zone found "no live NPC" and was never armed — e.g.
+        // man0g1 SEQ_055→060: the kids' chat runs the arm, THEN the warp
+        // to the White Wolf Gate zone lands, leaving GATE_TRIGGER (1090202)
+        // dead so the escort could never start (Garlemald-Server #41).
+        // Re-running the same idempotent re-establish (begin_sequence_swap
+        // + onStateChange + diff broadcast) now that the destination zone
+        // is current arms it, regardless of stream timing.
+        //
+        // GUARDED two ways: (1) skipped inside a content instance
+        // (`active_content_script` set) — re-running the escort quest's
+        // SEQ_065 onStateChange there would re-fire its one-shot
+        // FLAG_ESCORT_HANDOFF rescue arm (flag already consumed) and roll
+        // the duty back to SEQ_060; (2) skipped when a deferred login warp
+        // just replayed — its own RX 0x0007 does the re-establish for the
+        // final zone. (Garlemald-Server #41.)
+        let in_content_instance = self
+            .world
+            .session(session_id)
+            .await
+            .and_then(|s| s.active_content_script)
+            .is_some();
+        if !had_deferred_warp
+            && !in_content_instance
+            && let Some(handle) = self.registry.by_session(session_id).await
+        {
+            let actor_id = handle.actor_id;
+            let active_quest_ids: Vec<u32> = {
+                let c = handle.character.read().await;
+                c.quest_journal
+                    .slots
+                    .iter()
+                    .flatten()
+                    .map(|q| q.quest_id())
+                    .collect()
+            };
+            for quest_id in active_quest_ids {
+                self.apply_quest_update_enpcs(actor_id, quest_id).await;
+            }
+        }
     }
 
     /// `pub(crate)` so integration tests can drive the stale-position /
@@ -9638,6 +9699,19 @@ impl PacketProcessor {
                 .set_position(Vector3::new(pkt.x, pkt.y, pkt.z), pkt.rot);
             c.base.move_state = pkt.move_state;
         }
+
+        // TEMP (#41 stand-and-mark): echo the client-reported position so
+        // scene-NPC floor heights can be read straight off the log —
+        // `grep 'stand-and-mark' logs/map-server.log | tail -1` while standing
+        // on the target spot. Remove once placements are dialed in.
+        tracing::debug!(
+            actor = actor_id,
+            x = pkt.x,
+            y = pkt.y,
+            z = pkt.z,
+            rot = pkt.rot,
+            "stand-and-mark player position",
+        );
 
         // 2. Update the zone's spatial grid.
         self.world
