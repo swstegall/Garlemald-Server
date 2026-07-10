@@ -165,3 +165,25 @@ leader (41.1/50.4, -480.0/-481.0) · 11001017 Concern stage (-91.4,
    keeps the arena solo; cosmetic divergence.
 6. DoEmote motion-message ids for Laugh/Deny/Upset/Soothe
    (21201/21241/21391/21341) are formula-derived, not capture-proven.
+7. **FIXED (2026-07-10 live-run regression):** `SetENpc` is class-keyed
+   end-to-end (QuestSetEnpc command → dispatcher claim → streaming
+   overlay), so arming `FLHAMINN` (1000038) at SEQ_060 lit BOTH public
+   spawns — the gate muster (2435, zone 170) AND the Concern stage
+   (2433, zone 209). The live player was pulled to the stage copy in
+   the Miner's Guild, got the gate wait-texts 144-146 with no cutscene,
+   then never found the 075 payment talk. Fix: seed/099 mints the
+   gate-variant class **1099100** (populace recipe, displayNameId
+   1900054, appearance cloned from 1000038) and repoints spawn 2435;
+   the script arms `FLHAMINN_GATE` at SEQ_060 and keeps `FLHAMINN` for
+   the SEQ_075 stage payment. Old saves self-heal: the ENPC set is not
+   persisted — login/zone-in re-runs `onStateChange`, which now arms
+   only the correct class. Live-verify: `!` over the stage F'lhaminn on
+   approach at SEQ_075 (streaming overlay), and NO `!` at the gate copy
+   from SEQ_080 on.
+8. Accepted divergence: the stage F'lhaminn (2433) is permanently
+   present during SEQ_000–070 — retail keeps the stage empty until 075
+   ("she rarely sings anymore", csv:292). Despawn/hide isn't viable
+   (`area:DespawnActor` is global-to-all-players,
+   `GetActorInWorldByUniqueId` is a Nil stub, static actor ids are
+   seed-order-fragile); after the seed/099 split she is an unclaimed
+   flavour populace NPC there — no icon, no quest dialogue. Harmless.

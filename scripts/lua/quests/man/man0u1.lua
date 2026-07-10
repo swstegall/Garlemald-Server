@@ -93,7 +93,11 @@ NITTMA_GUTTMA               = 1001286;
 CORGUEVAIS_SCENE            = 1001054; -- beaten-in-the-mines scene variant (header: 1000043/1001054)
 CORGUEVAIS                  = 1000043; -- present-day (camp echo)
 FLHAMINN_SCENE              = 1000842; -- the teaching/instance F'lhaminn (header roster)
-FLHAMINN                    = 1000038; -- base populace (gate muster + Concern stage)
+FLHAMINN                    = 1000038; -- base populace (Concern stage, spawn 2433)
+FLHAMINN_GATE               = 1099100; -- gate-muster variant (seed/099); SetENpc is
+                                       -- class-keyed, so the stage and gate spawns of
+                                       -- 1000038 armed together — retail scopes them
+                                       -- apart (marker 11001014 is gate-side only)
 MANIC_MINER                 = 1001283;
 MADDENED_MINER              = 1001284;
 MAUDLIN_MINER               = 1001287;
@@ -305,7 +309,10 @@ function onStateChange(player, quest, sequence)
 		-- The escort itself runs at THIS sequence: if the content dies
 		-- with the session, this re-arm puts the player back at the
 		-- gate with the trigger live — retry, no rollback state needed.
-		quest:SetENpc(FLHAMINN, QFLAG_TALK);
+		-- Gate variant, NOT the base class: arming FLHAMINN here lit
+		-- the Concern-stage copy too (live run 2026-07-10) and pulled
+		-- the player into the Miner's Guild for the wait texts.
+		quest:SetENpc(FLHAMINN_GATE, QFLAG_TALK);
 		quest:SetENpc(GATE_OF_NALD_TRIGGER, QFLAG_PUSH, false, true);
 	elseif (sequence == SEQ_065) then
 		-- Camp Black Brush, public zone 170 (no client-provable PA for
@@ -441,7 +448,7 @@ function onTalk(player, quest, npc)
 			seq058_onTalk(player, quest, npc, classId);
 		end
 	elseif (sequence == SEQ_060) then
-		if (classId == FLHAMINN) then
+		if (classId == FLHAMINN_GATE) then
 			-- Gate-side wait talk (texts 144-146 — no client event
 			-- exists for these; server-side says, man0l1
 			-- seq007_endSequence precedent).

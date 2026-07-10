@@ -3133,6 +3133,15 @@ pub async fn apply_quest_start_sequence(
     world: &WorldManager,
     lua: Option<&Arc<LuaEngine>>,
 ) {
+    // Forensic breadcrumb: several drain paths (fire_quest_event_hook,
+    // quest_apply resumes) reach here without any log line of their own,
+    // leaving sequence hops invisible in the map-server log.
+    tracing::debug!(
+        player = player_id,
+        quest = quest_id,
+        sequence,
+        "quest sequence transition",
+    );
     apply_quest_mutation(player_id, quest_id, registry, db, |q| {
         q.start_sequence(sequence)
     })
