@@ -67,19 +67,35 @@ ASSESSOR2			 		= 1000121;
 PTAHJHA						= 1000150;
 HALDBERK		 			= 1000160;
 LILINA			 			= 1000178;
-DODOROBA					= 1000196;
+DODOROBA					= 1000196;	-- scenery: no processEvent2000_* slot exists for him client-side
 IVAN			 			= 1000197;
 MERODAULYN		 			= 1000008;
 COQUETTISH_PIRATE			= 1000868;
 VOLUPTUOUS_PIRATE			= 1000115;
 PEACOCKISH_PIRATE			= 1000118;
+-- The two bodies sleeping on the lower deck (spawn anims 1007/1008) share
+-- the "seems to be knocked unconscious" examine (client text 170). The two
+-- collapsed assessors beside the vault (1000452/1000453, dead poses
+-- 1000/1001) have no examine text in man1l0.csv and stay scenery.
+THEWY_PIRATE				= 1000117;
+FRECKLED_PIRATE				= 1000119;
 TRIGGER_ACN_LOWER			= 1090083;
 TRIGGER_ACN_UPPER			= 1090084;
 
--- Quest Markers
-MRKR_TRIGGER_FSH			= 11000306;
-MRKR_TRIGGER_SEAFLD			= 11000307;
-MRKR_TRIGGER_ANC_LOWER		= 11000308;
+-- Quest Markers (client quest_marker.csv block 11000301-11000310; the
+-- coordinates pin each row to one leg. SEQ_122 reuses the Baderon marker;
+-- the three linkpearl waits carry none.)
+MRKR_BASE					= 11000300;
+MRKR_TRIGGER_ADVGUILD		= MRKR_BASE + 1;	-- SEQ_000: Wench-echo push trigger
+MRKR_BADERON				= MRKR_BASE + 2;	-- SEQ_010 / SEQ_122: Baderon at the Drowning Wench
+MRKR_WAEKBYRT				= MRKR_BASE + 3;	-- SEQ_020: Waekbyrt at the MRD guild
+MRKR_TRIGGER_MRD_LOWER		= MRKR_BASE + 4;	-- SEQ_030: Astalicia hold trigger
+MRKR_TRIGGER_MRD_UPPER		= MRKR_BASE + 5;	-- SEQ_040: Astalicia deck trigger
+MRKR_TRIGGER_FSH			= MRKR_BASE + 6;	-- SEQ_060: Fisherman's Bottom trigger
+MRKR_TRIGGER_SEAFLD			= MRKR_BASE + 7;	-- SEQ_070: the Swallowtail Roam spot (zone 128)
+MRKR_PTAHJHA				= MRKR_BASE + 8;	-- SEQ_090: P'tahjha at Mealvaan's Gate
+MRKR_TRIGGER_ACN_LOWER		= MRKR_BASE + 9;	-- SEQ_100: gate-echo lower trigger
+MRKR_TRIGGER_ACN_UPPER		= MRKR_BASE + 10;	-- SEQ_110: gate-echo upper trigger
 
 -- Msg packs for the Npc LS
 NPCLS_MSGS = {
@@ -139,8 +155,12 @@ function onStateChange(player, quest, sequence)
 	elseif (sequence == SEQ_070) then
 		quest:SetENpc(TRIGGER_SEAFLD, QFLAG_PUSH, false, true);
 		quest:SetENpc(NNMULIKA);
+	elseif (sequence == SEQ_080) then
+		quest:SetENpc(NNMULIKA);
 	elseif (sequence == SEQ_090) then
 		quest:SetENpc(PTAHJHA, QFLAG_TALK);
+		quest:SetENpc(BADERON);
+		quest:SetENpc(NNMULIKA);
 	elseif (sequence == SEQ_100) then
 		quest:SetENpc(TRIGGER_ACN_LOWER, QFLAG_PUSH, false, true);
 		quest:SetENpc(ASSESSOR1);
@@ -151,12 +171,18 @@ function onStateChange(player, quest, sequence)
 		quest:SetENpc(PEACOCKISH_PIRATE);
 		quest:SetENpc(MERODAULYN);
 		quest:SetENpc(COQUETTISH_PIRATE);
+		quest:SetENpc(THEWY_PIRATE);
+		quest:SetENpc(FRECKLED_PIRATE);
 		quest:SetENpc(IVAN);
 	elseif (sequence == SEQ_110) then
 		quest:SetENpc(TRIGGER_ACN_UPPER, QFLAG_PUSH, false, true);
+	elseif (sequence == SEQ_120) then
+		quest:SetENpc(BADERON);
+		quest:SetENpc(PTAHJHA);
 	elseif (sequence == SEQ_122) then
 		quest:SetENpc(BADERON, QFLAG_REWARD);
-	end	
+		quest:SetENpc(PTAHJHA);
+	end
 	
 end
 
@@ -207,6 +233,10 @@ function onTalk(player, quest, npc)
 		if (classId == NNMULIKA) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent600_2");
 		end
+	elseif (sequence == SEQ_080) then
+		if (classId == NNMULIKA) then
+			callClientFunction(player, "delegateEvent", player, quest, "processEvent1000_2");
+		end
 	elseif (sequence == SEQ_090) then
 		if (classId == PTAHJHA) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent2000");
@@ -215,19 +245,34 @@ function onTalk(player, quest, npc)
 			GetWorldManager():WarpToPrivateArea(player, "PrivateAreaMasterPast", 7);
 		elseif (classId == BADERON) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent610_2");
+		elseif (classId == NNMULIKA) then
+			callClientFunction(player, "delegateEvent", player, quest, "processEvent1000_3");
 		end
 	elseif (sequence == SEQ_100) then
 		seq000_100_onTalk(player, quest, npc, classId)
 	elseif (sequence == SEQ_110) then
+	elseif (sequence == SEQ_120) then
+		if (classId == BADERON) then
+			callClientFunction(player, "delegateEvent", player, quest, "processEvent2002_2");
+		elseif (classId == PTAHJHA) then
+			callClientFunction(player, "delegateEvent", player, quest, "processEvent1000_4");
+		end
 	elseif (sequence == SEQ_122) then
 		if (classId == BADERON) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEventComplete");
 			callClientFunction(player, "delegateEvent", player, quest, "sqrwa", 300, 1, 1, 2);
+			-- Retail payout per the issue-48 Part 3 recordings: 15,000 gil
+			-- on both; the 300 exp on H1VulIXuTFo's log lines and reward
+			-- widget (kSm2oJAfflo's OCR only caught the gil toast).
+			player:AddExp(300, player.charaWork.parameterSave.state_mainSkill[0], 0);
+			player:AddGil(15000);
 			player:EndEvent();
 			player:CompleteQuest(quest);
 			return;
+		elseif (classId == PTAHJHA) then
+			callClientFunction(player, "delegateEvent", player, quest, "processEvent1000_4");
 		end
-	end	
+	end
 	
 	player:EndEvent();
 	quest:UpdateENPCs();
@@ -290,9 +335,9 @@ function seq000_100_onTalk(player, quest, npc, classId)
 		callClientFunction(player, "delegateEvent", player, quest, "processEvent2000_8");
 	elseif (classId == COQUETTISH_PIRATE) then
 		callClientFunction(player, "delegateEvent", player, quest, "processEvent2000_9");
-	elseif (classId == 0) then  -- !!!MISSING DIALOG OWNER!!!
+	elseif (classId == THEWY_PIRATE) then
 		callClientFunction(player, "delegateEvent", player, quest, "processEvent2000_10");
-	elseif (classId == 0) then  -- !!!MISSING DIALOG OWNER!!!
+	elseif (classId == FRECKLED_PIRATE) then
 		callClientFunction(player, "delegateEvent", player, quest, "processEvent2000_11");
 	elseif (classId == IVAN) then
 		callClientFunction(player, "delegateEvent", player, quest, "processEvent2000_12");
@@ -397,5 +442,33 @@ end
 
 function getJournalMapMarkerList(player, quest)
 	local sequence = quest:getSequence();
-	
+	local possibleMarkers = {};
+
+	if (sequence == SEQ_000) then
+		table.insert(possibleMarkers, MRKR_TRIGGER_ADVGUILD);
+	elseif (sequence == SEQ_010) then
+		table.insert(possibleMarkers, MRKR_BADERON);
+	elseif (sequence == SEQ_020) then
+		table.insert(possibleMarkers, MRKR_WAEKBYRT);
+	elseif (sequence == SEQ_030) then
+		table.insert(possibleMarkers, MRKR_TRIGGER_MRD_LOWER);
+	elseif (sequence == SEQ_040) then
+		table.insert(possibleMarkers, MRKR_TRIGGER_MRD_UPPER);
+	elseif (sequence == SEQ_060) then
+		table.insert(possibleMarkers, MRKR_TRIGGER_FSH);
+	elseif (sequence == SEQ_070) then
+		table.insert(possibleMarkers, MRKR_TRIGGER_SEAFLD);
+	elseif (sequence == SEQ_090) then
+		table.insert(possibleMarkers, MRKR_PTAHJHA);
+	elseif (sequence == SEQ_100) then
+		table.insert(possibleMarkers, MRKR_TRIGGER_ACN_LOWER);
+	elseif (sequence == SEQ_110) then
+		table.insert(possibleMarkers, MRKR_TRIGGER_ACN_UPPER);
+	elseif (sequence == SEQ_122) then
+		table.insert(possibleMarkers, MRKR_BADERON);
+	end
+	-- SEQ_050/080/120 are linkpearl waits with no travel destination —
+	-- no marker, same as the sibling quests' non-travel beats.
+
+	return unpack(possibleMarkers);
 end
