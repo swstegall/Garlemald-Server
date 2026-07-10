@@ -53,6 +53,12 @@ function onEventStarted(player, actor, triggerName)
 	-- gap — the man0l0 Hob-crash shape). 50012 = "You are no longer
 	-- bound by duty." — on film right at this transition.
 	man0u1Quest:GetData():SetCounter(CNTR_SEQ15_GLD, 4);
+	-- SetCounter does NOT re-run onStateChange (only StartSequence/
+	-- UpdateENPCs do), and the echo-PA zone-in replays the LAST ENPC
+	-- snapshot — without this re-derivation Greinfarr lands un-iconed
+	-- in the echo scene (QFLAG_TALK gates on GLD==4). Branch review
+	-- finding, 2026-07-09.
+	man0u1Quest:UpdateENPCs();
 	player:SendGameMessage(GetWorldMaster(), 50012, 0x20);
 	player:EndEvent();
 	player:GetZone():ContentFinished();

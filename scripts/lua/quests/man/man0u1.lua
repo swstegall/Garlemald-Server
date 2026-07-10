@@ -607,8 +607,13 @@ function seq015_onTalk(player, quest, npc, classId)
 			-- the arena-gate trigger.
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent030_2");
 			data:IncCounter(CNTR_SEQ15_GLD);
-		else
+		elseif (subseqGLD >= 2) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent030_2");
+		else
+			-- Pre-briefing (only reachable via a relog inside the PA):
+			-- generic parade-gossip line rather than a pass check the
+			-- story hasn't set up yet.
+			callClientFunction(player, "delegateEvent", player, quest, "processEvent1000_1");
 		end
 	elseif (classId == GREINFARR) then
 		if (subseqGLD == 4) then
@@ -944,8 +949,16 @@ function onNotice(player, quest, target)
 	if (sequence == SEQ_000) then
 		-- The "what an Instance is" explainer (worldMaster says
 		-- 329/330 client-side) — pmeteor's implemented behavior,
-		-- sequence-gated so stray kicks can't replay it.
-		callClientFunction(player, "delegateEvent", player, quest, "processEvent000_1");
+		-- sequence-gated so stray kicks can't replay it. Driven with
+		-- the RAW non-parking RunEventFunction: the client body is two
+		-- bare worldMaster.say calls with NO talk-turn/cutscene/_wait,
+		-- i.e. the processEventTu_001 no-EventUpdate shape whose
+		-- callClientFunction park-forever event-lock is documented at
+		-- man0l1's onNotice — the raw form lets the EndEvent below
+		-- close the notice. (Currently no kick routes to 110010, so
+		-- this arm is dormant; kept park-safe for when the instance-
+		-- explainer beat gets wired.)
+		player:RunEventFunction("delegateEvent", player, quest, "processEvent000_1");
 		player:EndEvent();
 	else
 		-- Safety net: any stray noticeEvent kick (e.g. a content
@@ -1039,8 +1052,10 @@ function startMan0u1Coliseum(player, quest)
 	-- The bloodsands. Anchored at the GC-quest coliseum marker
 	-- (11092101 → -205.4, 150.9; floor y from the lobby rows) — the
 	-- only in-data arena anchor; flagged for in-client tuning
-	-- (seed/096).
-	GetWorldManager():DoZoneChangeContent(player, contentArea, -205.4, 192.0, 150.9, 0.0, 16);
+	-- (seed/096). Offset a few units from the gladiator's spawn point
+	-- (the sibling escorts' player-vs-duty-NPC spacing) so the player
+	-- doesn't materialize inside the opponent's model.
+	GetWorldManager():DoZoneChangeContent(player, contentArea, -209.9, 192.0, 146.4, 0.8, 16);
 end
 
 -- ===== The F'lhaminn escort (Garlemald-Server #53) =====

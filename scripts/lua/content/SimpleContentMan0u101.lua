@@ -24,9 +24,6 @@ require ("quests/man/man0u1")
 -- QuestDirectorMan0u101 (post-match cutscene + teardown).
 
 TEXT_BOUND_BY_DUTY   = 50011; -- "You are now bound by duty."
--- "<displayName> is defeated." — the DispId-sender wire family
--- (#199/#202); rendered against the PLAYER via the actor-id overload.
-TEXT_CHARA_DEFEATED  = 30121;
 
 TICKS_PER_SECOND = 2;
 -- No timer line was OCR'd in either retail arena capture; five
@@ -116,7 +113,29 @@ function onUpdate(tick, area)
 	local elapsed = tick - (state.startTick or tick);
 	if (owner:GetHP() <= 1 or elapsed >= ROUND_LIMIT_TICKS) then
 		state.done = true;
-		owner:SendGameMessage(GetWorldMaster(), TEXT_CHARA_DEFEATED, 0x20, owner.actorId);
+		-- Pacify the gladiator IN the completion tick: the sibling
+		-- escorts structurally forbid a cutscene landing in the same
+		-- drain as live combat packets (the arrival gate is
+		-- nearLive==0 + not anyEngaged; the director's wait(2)
+		-- render-settle exists for exactly this). The arena's loss
+		-- happens mid-combat by definition, so the disengage must be
+		-- explicit — civilian MainState stops the swings before the
+		-- director's kick + processEvent035 go out. (Branch review
+		-- finding, 2026-07-09.)
+		gladiator:ChangeState(0);
+		-- Retail revives the loser for the post-match scene ("Otto is
+		-- defeated." then straight to Greinfarr, no weakness). Restore
+		-- before the teardown clears the 1-HP pin — a 1-HP exit would
+		-- persist into open-world zone 170 later in the quest.
+		owner:SetHP(owner:GetMaxHP());
+		-- Defeat line. Retail renders "<Name> is defeated." through
+		-- the client's own KO machinery, which this pinned loss never
+		-- triggers; 30121 with a runtime actor id renders a BLANK
+		-- subject (the #199 DispId-sender finding), and player names
+		-- have no static sheet id — so the literal-fallback shape
+		-- (the sibling escorts' undecoded-bark recipe) carries the
+		-- beat until a live probe finds the right wire family.
+		owner:SendMessage(0x20, "", "You are defeated.");
 		sendSignal("coliseumFought");
 		return;
 	end
