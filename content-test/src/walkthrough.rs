@@ -333,6 +333,60 @@ impl Walkthrough {
         }
     }
 
+    /// Negative mirror of [`expect_enpc`]: the step must contain NO
+    /// `QuestSetEnpc` for the class at all — the scoping assertion for
+    /// split-class casts (e.g. man0u1's stage vs gate F'lhaminn, where
+    /// arming one class must not touch the other's spawn).
+    fn expect_no_enpc(&self, class: u32) -> Result<(), String> {
+        match self.step.iter().find_map(|c| match c {
+            LuaCommand::QuestSetEnpc {
+                actor_class_id,
+                quest_flag_type,
+                ..
+            } if *actor_class_id == class => Some(*quest_flag_type),
+            _ => None,
+        }) {
+            Some(f) => Err(format!(
+                "expected NO SetEnpc for class {class}, but found one with flag {f}: [{}]",
+                summarize(&self.step)
+            )),
+            None => Ok(()),
+        }
+    }
+
+    fn expect_gil(&self, amount: i32) -> Result<(), String> {
+        if self
+            .step
+            .iter()
+            .any(|c| matches!(c, LuaCommand::AddGil { amount: a, .. } if *a == amount))
+        {
+            Ok(())
+        } else {
+            Err(format!(
+                "expected AddGil({amount}), got [{}]",
+                summarize(&self.step)
+            ))
+        }
+    }
+
+    /// `quest:NewNpcLsMsg(from)` surfaces as a `QuestSetNpcLsFrom` command
+    /// (the linkpearl-glow trigger); the companion `PlayerSetNpcLs` pair is
+    /// implied by the same binding, so asserting the `from` write is enough.
+    fn expect_npc_ls_msg(&self, from: u32) -> Result<(), String> {
+        if self
+            .step
+            .iter()
+            .any(|c| matches!(c, LuaCommand::QuestSetNpcLsFrom { from: f, .. } if *f == from))
+        {
+            Ok(())
+        } else {
+            Err(format!(
+                "expected NewNpcLsMsg({from}) (QuestSetNpcLsFrom), got [{}]",
+                summarize(&self.step)
+            ))
+        }
+    }
+
     fn expect_delegate(&self, name: &str) -> Result<(), String> {
         let found = self.step.iter().any(|c| {
             matches!(c, LuaCommand::RunEventFunction { args, .. }
@@ -558,6 +612,24 @@ impl UserData for Walkthrough {
                 Ok(this)
             },
         );
+        methods.add_function("expectNoEnpc", |_, (this, class): (AnyUserData, u32)| {
+            this.borrow::<Walkthrough>()?
+                .expect_no_enpc(class)
+                .map_err(lua_err)?;
+            Ok(this)
+        });
+        methods.add_function("expectGil", |_, (this, amount): (AnyUserData, i32)| {
+            this.borrow::<Walkthrough>()?
+                .expect_gil(amount)
+                .map_err(lua_err)?;
+            Ok(this)
+        });
+        methods.add_function("expectNpcLsMsg", |_, (this, from): (AnyUserData, u32)| {
+            this.borrow::<Walkthrough>()?
+                .expect_npc_ls_msg(from)
+                .map_err(lua_err)?;
+            Ok(this)
+        });
         methods.add_function(
             "expectDelegate",
             |_, (this, name): (AnyUserData, String)| {

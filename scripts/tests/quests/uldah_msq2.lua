@@ -19,7 +19,9 @@ local LULUTSU          = 1000863
 local ARENA_TRIGGER    = 1090283
 local LINETTE          = 1000861
 local FLHAMINN_SCENE   = 1000842
-local FLHAMINN         = 1000038
+local FLHAMINN         = 1000038 -- Concern-stage spawn (SEQ_075 payment)
+local FLHAMINN_GATE    = 1099100 -- gate-muster variant (seed/099); split from
+                                 -- FLHAMINN so SEQ_060/075 arm one station each
 local MANIC_MINER      = 1001283
 local MADDENED_MINER   = 1001284
 local CORGUEVAIS_SCENE = 1001054
@@ -142,6 +144,17 @@ describe("Ul'dah - Court in the Sands (Man0u1)", function()
         w:talk(CORGUEVAIS_SCENE):expectDelegate("processEvent060")
             :ack():expectStartSequence(60)
 
+        -- SEQ_060 arms the GATE variant only: the class-scoped SetENpc on
+        -- 1000038 used to light the Concern-stage spawn too and pull the
+        -- player into the Miner's Guild (live run 2026-07-10).
+        w:stateChange(60)
+            :expectEnpc(FLHAMINN_GATE, QFLAG_TALK)
+            :expectNoEnpc(FLHAMINN)
+
+        -- Gate-side wait talk: server-side says only (texts 144-146), no
+        -- delegate, no advance.
+        w:talk(FLHAMINN_GATE):expectSequence(60)
+
         -- SEQ_060: the gate trigger -> duty confirm -> the escort content
         -- burst (man0u170 plays in place before the duty warp).
         w:push(GATE_OF_NALD):expectDelegate("contentsJoinAskInBasaClass")
@@ -175,9 +188,18 @@ describe("Ul'dah - Court in the Sands (Man0u1)", function()
         -- SEQ_070: Momodi's F'lhaminn gossip -> SEQ_075.
         w:talk(MOMODI):expectDelegate("processEvent200_2"):ack():expectStartSequence(75)
 
-        -- SEQ_075: the escort payment. The advance to SEQ_080 rides Momodi's
+        -- SEQ_075 arms the STAGE class only — the gate variant must stay
+        -- dark (the scoping mirror of the SEQ_060 assertion).
+        w:stateChange(75)
+            :expectEnpc(FLHAMINN, QFLAG_TALK)
+            :expectNoEnpc(FLHAMINN_GATE)
+
+        -- SEQ_075: the escort payment (man0u200 CS + the 3,000-gil toast +
+        -- the cave-in linkpearl glow). The advance to SEQ_080 rides Momodi's
         -- NpcLS cave-in pack (onNpcLS), not drivable from the hook bridge.
         w:talk(FLHAMINN):expectDelegate("processEvent200"):ack()
+            :expectGil(3000)
+            :expectNpcLsMsg(1)
     end)
 
     -- SEQ_075 -> SEQ_080 advances on the NpcLS read - seed SEQ_080.
