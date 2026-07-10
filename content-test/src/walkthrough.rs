@@ -354,21 +354,6 @@ impl Walkthrough {
         }
     }
 
-    fn expect_gil(&self, amount: i32) -> Result<(), String> {
-        if self
-            .step
-            .iter()
-            .any(|c| matches!(c, LuaCommand::AddGil { amount: a, .. } if *a == amount))
-        {
-            Ok(())
-        } else {
-            Err(format!(
-                "expected AddGil({amount}), got [{}]",
-                summarize(&self.step)
-            ))
-        }
-    }
-
     /// `quest:NewNpcLsMsg(from)` surfaces as a `QuestSetNpcLsFrom` command
     /// (the linkpearl-glow trigger); the companion `PlayerSetNpcLs` pair is
     /// implied by the same binding, so asserting the `from` write is enough.
