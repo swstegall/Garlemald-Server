@@ -151,12 +151,17 @@ describe("Ul'dah - Court in the Sands (Man0u1)", function()
             :expectEnpc(FLHAMINN_GATE, QFLAG_TALK)
             :expectNoEnpc(FLHAMINN)
 
-        -- Gate-side wait talk: server-side says only (texts 144-146), no
-        -- delegate, no advance.
-        w:talk(FLHAMINN_GATE):expectSequence(60)
+        -- The Gate of Nald meetup: talking to F'lhaminn now opens the
+        -- duty-join confirm. Her greeting lines 144-146 ARE the man0u170
+        -- cutscene (which plays once inside the content launch below), so
+        -- the old server-side wait-text that double-said them is gone.
+        -- Declining leaves the player at the gate.
+        w:talk(FLHAMINN_GATE):expectDelegate("contentsJoinAskInBasaClass")
+            :answer(0):expectSequence(60)
 
-        -- SEQ_060: the gate trigger -> duty confirm -> the escort content
-        -- burst (man0u170 plays in place before the duty warp).
+        -- Accepting (via F'lhaminn or the proximity trigger) launches the
+        -- escort: confirm -> content area -> man0u170 meetup cutscene (the
+        -- single pre-duty cutscene) -> duty warp.
         w:push(GATE_OF_NALD):expectDelegate("contentsJoinAskInBasaClass")
             :answer(1)
             :expectCreateContentArea()
