@@ -448,13 +448,17 @@ function onTalk(player, quest, npc)
 			seq058_onTalk(player, quest, npc, classId);
 		end
 	elseif (sequence == SEQ_060) then
-		if (classId == FLHAMINN_GATE) then
-			-- Gate-side wait talk (texts 144-146 — no client event
-			-- exists for these; server-side says, man0l1
-			-- seq007_endSequence precedent).
-			player:SendGameMessage(quest, 144, 0x20);
-			player:SendGameMessage(quest, 145, 0x20);
-			player:SendGameMessage(quest, 146, 0x20);
+		-- The Gate of Nald meetup: talking to F'lhaminn (like the
+		-- proximity trigger in onPush) opens the duty-join confirm. Her
+		-- greeting lines 144-146 ("Sorry to keep you waiting ... We
+		-- should get going") ARE the man0u170 cutscene, which plays once
+		-- inside startMan0u1Escort as the single pre-duty cutscene —
+		-- retail stages the meetup as that gate cutscene, not as loose
+		-- wait-text (verified across 4 playthroughs). The old server-side
+		-- SendGameMessage(144/145/146) here double-played those same
+		-- lines against the cutscene and is removed.
+		if (classId == FLHAMINN_GATE and tryStartMan0u1Escort(player, quest)) then
+			return; -- warped — nothing may follow
 		end
 		player:EndEvent();
 	elseif (sequence == SEQ_065) then
@@ -829,12 +833,9 @@ function onPush(player, quest, npc)
 		end
 	elseif (sequence == SEQ_060) then
 		if (classId == GATE_OF_NALD_TRIGGER) then
-			local result = callClientFunction(player, "delegateEvent", player, quest, "contentsJoinAskInBasaClass");
-			if (result == 1) then
-				startMan0u1Escort(player, quest);
+			if (tryStartMan0u1Escort(player, quest)) then
 				return;
 			end
-			player:EndEvent();
 		end
 	elseif (sequence == SEQ_090) then
 		if (classId == WARD_DOOR) then
@@ -1065,6 +1066,23 @@ function startMan0u1Coliseum(player, quest)
 	GetWorldManager():DoZoneChangeContent(player, contentArea, -209.9, 192.0, 146.4, 0.8, 16);
 end
 
+-- Gate of Nald hand-off shared by F'lhaminn's talk (onTalk SEQ_060) and
+-- the proximity trigger (onPush SEQ_060): the duty-join confirm, then
+-- the content launch. The man0u170 meetup cutscene (F'lhaminn's greeting
+-- lines 144-146) plays inside startMan0u1Escort, so neither entry point
+-- re-says those lines. Returns true when the escort launched (the caller
+-- must then return — the content warp has run and nothing may follow);
+-- false on decline (the confirm's own EndEvent has already closed).
+function tryStartMan0u1Escort(player, quest)
+	local result = callClientFunction(player, "delegateEvent", player, quest, "contentsJoinAskInBasaClass");
+	if (result == 1) then
+		startMan0u1Escort(player, quest);
+		return true;
+	end
+	player:EndEvent();
+	return false;
+end
+
 -- ===== The F'lhaminn escort (Garlemald-Server #53) =====
 -- Gate of Nald → Camp Black Brush, zone 170 (both endpoints on the
 -- field map per the quest_marker sheet: gate -34.5/-68.9 → camp
@@ -1083,9 +1101,11 @@ function startMan0u1Escort(player, quest)
 	player:KickEvent(director, "noticeEvent", true);
 	player:SetLoginDirector(director);
 
-	-- man0u170: the gate-side duty-start cutscene IN PLACE (arms the
-	-- after-warp veil; the director's questBaseRewardSeting dismisses
-	-- it post-warp).
+	-- man0u170: the Gate of Nald meetup cutscene IN PLACE — F'lhaminn's
+	-- greeting ("Sorry to keep you waiting ... We should get going",
+	-- lines 144-146). This is the SINGLE pre-duty cutscene; it arms the
+	-- after-warp veil that the director's questBaseRewardSeting dismisses
+	-- post-warp.
 	callClientFunction(player, "delegateEvent", player, quest, "processEvent070");
 
 	player:EndEvent();
