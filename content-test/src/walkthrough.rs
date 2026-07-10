@@ -454,6 +454,93 @@ impl Walkthrough {
         }
     }
 
+    /// Run the quest's `getJournalMapMarkerList` getter against the tracked
+    /// state (same direct-call path the live journal pane uses) and compare
+    /// the returned marker ids, in order, against the spec's expectation.
+    fn expect_markers(&self, expected: &[i64]) -> Result<(), String> {
+        let params = self
+            .engine
+            .call_quest_getter(
+                &self.script_path,
+                "getJournalMapMarkerList",
+                self.snapshot(),
+                self.handle(),
+            )
+            .map_err(|e| format!("getJournalMapMarkerList errored: {e}"))?;
+        let mut got: Vec<i64> = Vec::with_capacity(params.len());
+        for p in &params {
+            match p {
+                LuaParam::Int32(i) => got.push(i64::from(*i)),
+                other => {
+                    return Err(format!(
+                        "getJournalMapMarkerList returned a non-integer param {other:?} \
+                         at sequence {} — marker lists must be integer-only",
+                        self.sequence
+                    ));
+                }
+            }
+        }
+        if got == expected {
+            Ok(())
+        } else {
+            Err(format!(
+                "expected journal markers {expected:?} at sequence {}, got {got:?}",
+                self.sequence
+            ))
+        }
+    }
+
+    /// Assert the current step granted exactly this much gil (`AddGil`).
+    fn expect_gil(&self, amount: i32) -> Result<(), String> {
+        let found = self
+            .step
+            .iter()
+            .any(|c| matches!(c, LuaCommand::AddGil { amount: a, .. } if *a == amount));
+        if found {
+            Ok(())
+        } else {
+            Err(format!(
+                "expected AddGil({amount}), got [{}]",
+                summarize(&self.step)
+            ))
+        }
+    }
+
+    /// Assert the current step granted exactly this much exp (`AddExp`).
+    fn expect_exp(&self, exp: i32) -> Result<(), String> {
+        let found = self
+            .step
+            .iter()
+            .any(|c| matches!(c, LuaCommand::AddExp { exp: e, .. } if *e == exp));
+        if found {
+            Ok(())
+        } else {
+            Err(format!(
+                "expected AddExp({exp}), got [{}]",
+                summarize(&self.step)
+            ))
+        }
+    }
+
+    /// Assert the current step armed Baderon's linkpearl:
+    /// `quest:NewNpcLsMsg(from)` enqueues a `QuestSetNpcLsFrom` alongside
+    /// the ALERT icon flip — a dropped arm soft-locks the wait sequence in
+    /// live play while the hook walk otherwise stays green.
+    fn expect_npc_ls_alert(&self, from: u32) -> Result<(), String> {
+        let found = self
+            .step
+            .iter()
+            .any(|c| matches!(c, LuaCommand::QuestSetNpcLsFrom { from: f, .. } if *f == from));
+        if found {
+            Ok(())
+        } else {
+            Err(format!(
+                "expected QuestSetNpcLsFrom({from}) (quest:NewNpcLsMsg), got [{}]",
+                summarize(&self.step)
+            ))
+        }
+    }
+
     fn expect_completed(&self, quest_id: u32) -> Result<(), String> {
         if self.completed.contains(&quest_id) {
             Ok(())
@@ -473,6 +560,7 @@ fn resolve_quest(code: &str) -> Option<(u32, u32)> {
     Some(match code {
         "Man0l0" => (110_001, 193),
         "Man0l1" => (110_002, 193),
+        "Man1l0" => (110_003, 230),
         "Man0g0" => (110_005, 0),
         "Man0g1" => (110_006, 0),
         "Man0u0" => (110_009, 0),
@@ -597,6 +685,33 @@ impl UserData for Walkthrough {
                 Ok(this)
             },
         );
+        methods.add_function(
+            "expectMarkers",
+            |_, (this, expected): (AnyUserData, mlua::Variadic<i64>)| {
+                this.borrow::<Walkthrough>()?
+                    .expect_markers(&expected)
+                    .map_err(lua_err)?;
+                Ok(this)
+            },
+        );
+        methods.add_function("expectGil", |_, (this, amount): (AnyUserData, i32)| {
+            this.borrow::<Walkthrough>()?
+                .expect_gil(amount)
+                .map_err(lua_err)?;
+            Ok(this)
+        });
+        methods.add_function("expectExp", |_, (this, exp): (AnyUserData, i32)| {
+            this.borrow::<Walkthrough>()?
+                .expect_exp(exp)
+                .map_err(lua_err)?;
+            Ok(this)
+        });
+        methods.add_function("expectNpcLsAlert", |_, (this, from): (AnyUserData, u32)| {
+            this.borrow::<Walkthrough>()?
+                .expect_npc_ls_alert(from)
+                .map_err(lua_err)?;
+            Ok(this)
+        });
         methods.add_function("expectFlagSet", |_, (this, bit): (AnyUserData, u8)| {
             this.borrow::<Walkthrough>()?
                 .expect_flag_set(bit)

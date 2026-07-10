@@ -100,4 +100,85 @@ mod tests {
         sorted.sort();
         assert_eq!(names, sorted, "migrations are expected in filename order");
     }
+
+    /// Seed/099 contract: the Man1l0 seafield push trigger (spawn row 2090 +
+    /// the class-1090082 un-stripping) and the ASSESSOR1 gate-echo position
+    /// repair, applied twice for idempotency, against the pre-099 shapes the
+    /// seed guards on. The quest's SEQ_070 leg soft-locks without the spawn
+    /// (Garlemald-Server #48), and the content-test walkthrough can't see
+    /// seeds — this is the only automated coverage of the fix.
+    #[test]
+    fn man1l0_spawn_repairs_restore_trigger_and_assessor() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE gamedata_actor_class (
+                 id INTEGER PRIMARY KEY,
+                 classPath TEXT NOT NULL,
+                 displayNameId INTEGER NOT NULL DEFAULT 4294967295,
+                 propertyFlags INTEGER NOT NULL DEFAULT 0,
+                 eventConditions TEXT
+             );
+             CREATE TABLE server_spawn_locations (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 actorClassId INTEGER NOT NULL,
+                 uniqueId TEXT NOT NULL DEFAULT '',
+                 zoneId INTEGER NOT NULL,
+                 privateAreaName TEXT NOT NULL DEFAULT '',
+                 privateAreaLevel INTEGER NOT NULL DEFAULT 0,
+                 positionX REAL NOT NULL DEFAULT 0,
+                 positionY REAL NOT NULL DEFAULT 0,
+                 positionZ REAL NOT NULL DEFAULT 0,
+                 rotation REAL NOT NULL DEFAULT 0,
+                 actorState INTEGER NOT NULL DEFAULT 0,
+                 animationId INTEGER NOT NULL DEFAULT 0,
+                 customDisplayName TEXT DEFAULT NULL
+             );
+             -- Pre-099 shapes: the stripped seed/003 class row and the
+             -- seed/059 placeholder-at-origin ASSESSOR1 row.
+             INSERT INTO gamedata_actor_class VALUES (1090082, '', 0, 0, NULL);
+             INSERT INTO server_spawn_locations VALUES
+                 (2107, 1000120, 'man1l0_echo3_assessor2', 230,
+                  'PrivateAreaMasterPast', 7, 0, 0, 0, 0, 0, 0, NULL);",
+        )
+        .unwrap();
+
+        let mig = iter()
+            .find(|m| m.name == "099_man1l0_spawn_repairs.sql")
+            .expect("seed/099 must be bundled");
+        c.execute_batch(&mig.sql).unwrap();
+        c.execute_batch(&mig.sql).unwrap(); // idempotent re-run
+
+        let (path, flags): (String, i64) = c
+            .query_row(
+                "SELECT classPath, propertyFlags FROM gamedata_actor_class WHERE id = 1090082",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(path, "/Chara/Npc/Populace/PopulaceStandard");
+        assert_eq!(flags, 1);
+
+        let (zone, x, z): (i64, f64, f64) = c
+            .query_row(
+                "SELECT zoneId, positionX, positionZ FROM server_spawn_locations WHERE id = 2090",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(zone, 128, "seafield trigger belongs to sea0Field01");
+        assert!((x - 218.58).abs() < 1e-6 && (z - 1176.56).abs() < 1e-6);
+
+        let (ax, ay, az): (f64, f64, f64) = c
+            .query_row(
+                "SELECT positionX, positionY, positionZ \
+                 FROM server_spawn_locations WHERE id = 2107",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert!(
+            ax != 0.0 && ay != 0.0 && az != 0.0,
+            "ASSESSOR1 must no longer sit at the origin placeholder"
+        );
+    }
 }
