@@ -304,6 +304,21 @@ impl CoroutineScheduler {
         self.sleeping_on_time.iter().map(|(t, _)| *t).min()
     }
 
+    /// Testkit-only: fast-forward every time-parked deadline to *now* so a
+    /// following [`super::LuaEngine::tick`] resumes straight through script
+    /// `wait(n)` calls without wall-clock sleeping. The content-test
+    /// walkthrough bridge drives quest hooks that park on time (e.g.
+    /// man0u1's `onEmote` → `wait(2.5)`) through this — the same
+    /// expire-then-tick shape as `testkit::advance_one_time_park`, minus
+    /// the real sleep.
+    #[cfg(feature = "testkit")]
+    pub fn expire_time_parks(&mut self) {
+        let now = common::utils::millis_unix_timestamp();
+        for (deadline, _) in self.sleeping_on_time.iter_mut() {
+            *deadline = now;
+        }
+    }
+
     pub fn pending_signal_count(&self) -> usize {
         self.sleeping_on_signal.values().map(|v| v.len()).sum()
     }
