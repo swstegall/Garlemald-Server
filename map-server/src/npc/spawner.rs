@@ -114,6 +114,22 @@ impl SpawnContext<'_> {
             let Some(class) = self.actor_classes.get(&seed.class_id) else {
                 continue;
             };
+            // A class with an EMPTY classPath ships a 0x00CC
+            // ActorInstantiate with no class name and no client-script
+            // path — the 1.23b client dies parsing it (the #26
+            // post-tutorial crash: spawn row 943's class-0
+            // `mumpish_miqote` in the 175/PA_3 bundle, 4/4 lethal
+            // across packet history). seed/098 deletes the known rows;
+            // this guard covers the whole family.
+            if class.class_path.is_empty() {
+                tracing::warn!(
+                    class = seed.class_id,
+                    unique = %seed.unique_id,
+                    zone = seed.zone_id,
+                    "spawn skipped — empty classPath (client-fatal instantiate)",
+                );
+                continue;
+            }
             let actor_number = next_number;
             next_number += 1;
             let is_battle = self.battle_class_ids.contains(&seed.class_id);
