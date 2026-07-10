@@ -5511,19 +5511,33 @@ impl UserData for LuaQuestDataHandle {
             );
             Ok(())
         });
-        methods.add_method("SetCounter", |_, this, (idx, value): (u32, u32)| {
+        // The counter mutators follow the same write-through-the-mirror rule
+        // as SetFlag/ClearFlag above: the queued command owns persistence,
+        // but the in-VM `this.counters` copy must update IMMEDIATELY so a
+        // script that mutates then re-reads the same counter in the SAME
+        // hook call sees the new value. Without it, man0u1's SEQ_057 calming
+        // check (`data:IncCounter(CNTR_MANIC_CALM)` … then
+        // `data:GetCounter(CNTR_MANIC_CALM) >= #MANIC_SEQUENCE`) read the
+        // pre-inc snapshot and the both-becalmed advance never fired —
+        // the exact counter twin of the #41 SetFlag/GetFlags bug.
+        methods.add_method_mut("SetCounter", |_, this, (idx, value): (u32, u32)| {
+            let clamped = value.min(u16::MAX as u32) as u16;
+            let idx_u = idx as usize;
+            if idx_u < this.counters.len() {
+                this.counters[idx_u] = clamped;
+            }
             push(
                 &this.queue,
                 LuaCommand::QuestSetCounter {
                     player_id: this.player_id,
                     quest_id: this.quest_id,
                     idx: idx as u8,
-                    value: value.min(u16::MAX as u32) as u16,
+                    value: clamped,
                 },
             );
             Ok(())
         });
-        methods.add_method("IncCounter", |_, this, idx: u32| {
+        methods.add_method_mut("IncCounter", |_, this, idx: u32| {
             // DIAGNOSTIC (Garlemald-Server #46): confirm the binding runs on
             // resume AND log the queue Arc it pushes to, so we can compare it
             // against the queue drained by fire_player_event_and_drain. If the
@@ -5542,18 +5556,18 @@ impl UserData for LuaQuestDataHandle {
                     idx: idx as u8,
                 },
             );
-            // Meteor's `IncCounter` returns the post-inc value; without a
-            // live read of the mutated counter we echo the snapshot+1 so
-            // scripts comparing against the return value see a reasonable
-            // number. The processor applies the real wrapping increment.
+            // Meteor's `IncCounter` returns the post-inc value. The mirror
+            // update keeps same-call `GetCounter` reads consistent; the
+            // processor still applies the real persisted increment.
             let idx_u = idx as usize;
             if idx_u < this.counters.len() {
-                Ok(this.counters[idx_u].wrapping_add(1))
+                this.counters[idx_u] = this.counters[idx_u].wrapping_add(1);
+                Ok(this.counters[idx_u])
             } else {
                 Ok(0u16)
             }
         });
-        methods.add_method("DecCounter", |_, this, idx: u32| {
+        methods.add_method_mut("DecCounter", |_, this, idx: u32| {
             push(
                 &this.queue,
                 LuaCommand::QuestDecCounter {
@@ -5564,7 +5578,8 @@ impl UserData for LuaQuestDataHandle {
             );
             let idx_u = idx as usize;
             if idx_u < this.counters.len() {
-                Ok(this.counters[idx_u].wrapping_sub(1))
+                this.counters[idx_u] = this.counters[idx_u].wrapping_sub(1);
+                Ok(this.counters[idx_u])
             } else {
                 Ok(0u16)
             }

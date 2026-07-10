@@ -38,9 +38,13 @@
 //!     snapshot, so nothing but this harness advances the flags between
 //!     steps.
 //!
-//! Drivers (`onStart`/`stateChange`/`talk`/`push`) fire a hook and reset the
-//! "current step" command buffer; resumes (`ack`/`answer`) feed a simulated
-//! client `EventUpdate` into the parked coroutine and *extend* the buffer.
+//! Drivers (`onStart`/`stateChange`/`talk`/`push`/`emote`) fire a hook and
+//! reset the "current step" command buffer; resumes (`ack`/`answer`) feed a
+//! simulated client `EventUpdate` into the parked coroutine and *extend* the
+//! buffer. The `emote` driver additionally resumes through `wait(n)` time
+//! parks (man0u1's `onEmote` opens with `wait(2.5)`) by fast-forwarding the
+//! scheduler clock and ticking the engine — the headless mirror of the live
+//! game-loop ticker.
 //! Every quest-state command that comes back is applied to the tracked state.
 //! Assertions (`expect*`) check the current step's commands (or the tracked
 //! state) and raise a Lua error on mismatch, which the runner reports as a
@@ -194,6 +198,37 @@ impl Walkthrough {
             return Err(format!("{hook} errored: {e}"));
         }
         Ok(())
+    }
+
+    /// Resume through any `wait(n)` time parks the current step left behind:
+    /// fast-forward every parked deadline, then tick the engine and fold the
+    /// resumed batches into the step buffer. This is the headless mirror of
+    /// the live game-loop ticker (`LuaEngine::tick` once per tick) and the
+    /// testkit's `advance_one_time_park`, minus the wall-clock sleep. Bounded
+    /// so a pathological wait-loop fails the spec instead of hanging the run.
+    fn drive_time_parks(&mut self) -> Result<(), String> {
+        const MAX_WAIT_HOPS: usize = 8;
+        for _ in 0..MAX_WAIT_HOPS {
+            let pending = self
+                .engine
+                .scheduler()
+                .lock()
+                .map(|s| s.pending_time_count())
+                .unwrap_or(0);
+            if pending == 0 {
+                return Ok(());
+            }
+            if let Ok(mut scheduler) = self.engine.scheduler().lock() {
+                scheduler.expire_time_parks();
+            }
+            for (_owner, commands) in self.engine.tick() {
+                self.apply(&commands);
+                self.step.extend(commands);
+            }
+        }
+        Err(format!(
+            "coroutines still parked on wait() after {MAX_WAIT_HOPS} scheduler hops"
+        ))
     }
 
     /// Resume a parked coroutine with a simulated client `EventUpdate`,
@@ -364,6 +399,17 @@ impl Walkthrough {
             ))
         }
     }
+
+    fn expect_completed(&self, quest_id: u32) -> Result<(), String> {
+        if self.completed.contains(&quest_id) {
+            Ok(())
+        } else {
+            Err(format!(
+                "expected CompleteQuest({quest_id}); completed={:?} added={:?}",
+                self.completed, self.added
+            ))
+        }
+    }
 }
 
 /// Resolve a quest class code to `(quest_id, default_zone_id)`. Only the three
@@ -454,6 +500,24 @@ impl UserData for Walkthrough {
             }
             Ok(this)
         });
+        // `emote(classId, "emoteDefault1")` fires the quest's `onEmote` hook
+        // with the Meteor calling convention `(player, quest, npc, eventName)`,
+        // then resumes through any `wait(n)` park the hook opened with (the
+        // DoEmote animation delay) so the spec observes the post-wait commands
+        // in the same step.
+        methods.add_function(
+            "emote",
+            |_, (this, class_id, event_name): (AnyUserData, u32, String)| {
+                {
+                    let mut w = this.borrow_mut::<Walkthrough>()?;
+                    let npc = w.make_npc(class_id);
+                    w.fire("onEmote", vec![npc, QuestHookArg::Str(event_name)])
+                        .map_err(lua_err)?;
+                    w.drive_time_parks().map_err(lua_err)?;
+                }
+                Ok(this)
+            },
+        );
 
         // --- resumes (extend the step buffer) --------------------------
         methods.add_function("ack", |_, this: AnyUserData| {
@@ -530,5 +594,14 @@ impl UserData for Walkthrough {
                 .map_err(lua_err)?;
             Ok(this)
         });
+        methods.add_function(
+            "expectCompleted",
+            |_, (this, quest_id): (AnyUserData, u32)| {
+                this.borrow::<Walkthrough>()?
+                    .expect_completed(quest_id)
+                    .map_err(lua_err)?;
+                Ok(this)
+            },
+        );
     }
 }

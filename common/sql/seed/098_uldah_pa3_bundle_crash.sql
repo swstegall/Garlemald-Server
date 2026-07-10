@@ -1,0 +1,42 @@
+-- The Ul'dah post-battle-tutorial Wine crash — the 175/PA_3 zone-in
+-- bundle (Garlemald-Server #26, live playtest 2026-07-10 01:38).
+--
+-- With the teardown disarm + arena stopper already fixed, the client
+-- STILL died seconds into the QuestDirectorMan0u001 handoff warp
+-- (DoZoneChange 184 → 175 'PrivateAreaMasterPast' 3). Packet forensics
+-- against the surviving Gridania/Limsa handoffs (identical warp
+-- machinery, identical player-stream opcode order) pinned the delta to
+-- the DESTINATION spawn set — three seed-031 rows unique to Ul'dah's
+-- PA_3:
+--
+-- 1. Row 943 `mumpish_miqote`, actorClassId = 0 — the only class-0
+--    spawn row in the DB. Class 0 exists as a junk gamedata row
+--    (classPath ''), so the spawn pass materialized a real actor whose
+--    0x00CC ActorInstantiate carries an EMPTY class name and script
+--    path. That instantiate appears exactly FOUR times in the retained
+--    packet logs (2026-06-17, 2026-07-01, 2026-07-09 ×2) and every
+--    occurrence shows the same death signature (client pings stop
+--    instantly, type-0x1001 close ~15 s later) — including the
+--    2026-06-17 session that survived the Gridania handoff nine
+--    minutes earlier. The intended class (man0u0.lua: 1000992) is
+--    documented "Unused on this client version" — delete, don't
+--    reclass. (A matching engine guard now skips any empty-classPath
+--    spawn row — map-server npc/spawner.rs.)
+--
+-- 2. Rows 936/937 `door1`/`door2`, class 5900004 DoorStandard, with
+--    NEITHER a server_eventnpc_mapobj row NOR a gamedata_actor_
+--    appearance row — the spawn builder falls to the appearance branch
+--    and emits 0x00D6 with model_id 0 + all-zero slots, the documented
+--    nil-deref-on-model-load Wine crash family. Zone 184's three
+--    5900004 doors all carry mapobj rows (SetActorBGProperties branch)
+--    and survive; the Gridania PA door that once matched this shape
+--    was removed by migration 092 for the same reason. Neither the
+--    Limsa nor Gridania handoff destination ships a bare door. PA
+--    containment is already handled by blocker1/blocker2 (1090372
+--    push rows) + uldah_opening_exit — mirroring 092's "never attach
+--    the prop" rationale, the rows go.
+--
+-- DELETE-only migration (the migration-content guard accepts these).
+-- Idempotent by construction.
+
+DELETE FROM "server_spawn_locations" WHERE "id" IN (936, 937, 943);
