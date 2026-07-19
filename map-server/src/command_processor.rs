@@ -111,6 +111,7 @@ impl CommandProcessor {
             "talkto" => self.handle_talkto(&args).await,
             "pushtrigger" => self.handle_pushtrigger(&args).await,
             "setseq" => self.handle_setseq(&args).await,
+            "speed" => self.handle_speed(&args).await,
             other => format!("unknown command: {other} (args={:?})", args.rest()),
         };
         Ok(response)
@@ -133,7 +134,8 @@ impl CommandProcessor {
          warp <x> <y> <z> [name], warp <zone> <x> <y> <z> [name], \
          talkto <actor_class_id> <name>, \
          pushtrigger <actor_class_id> <name>, \
-         setseq <quest_id> <sequence> <name>"
+         setseq <quest_id> <sequence> <name>, \
+         speed <multiplier> [name]"
             .into()
     }
 
@@ -1138,6 +1140,52 @@ impl CommandProcessor {
             active_quests.len()
         )
     }
+
+    /// `speed <multiplier> [name]` - scale the target player's movement
+    /// speed to `multiplier`x normal. `<= 0` resets to 1x; capped at
+    /// 10x. Multiplier semantics are ours - the upstream GM script
+    /// (`Data/scripts/commands/gm/speed.lua`) takes raw stop/walk/run
+    /// bands and applies no clamp - but both funnel into the same
+    /// 0x00D0 SetActorSpeed packet (C# `Actor.ChangeSpeed`).
+    async fn handle_speed(&self, args: &Args<'_>) -> String {
+        let requested = match args.parse_f32(0) {
+            Ok(v) => v,
+            Err(e) => return format!("usage: speed <multiplier> [name] - {e}"),
+        };
+        let Some(name) = args.rest_joined(1) else {
+            return "usage: speed <multiplier> [name]".into();
+        };
+        match self.resolve_live_target(&name).await {
+            TargetLookup::Ok { actor_id, zone } => {
+                use crate::runtime::dispatcher::MovementSpeedOutcome;
+                let outcome = crate::runtime::dispatcher::apply_movement_speed(
+                    actor_id,
+                    requested,
+                    &self.registry,
+                    &self.world,
+                    &zone,
+                )
+                .await;
+                match outcome {
+                    MovementSpeedOutcome::Applied { multiplier } if requested > multiplier => {
+                        format!(
+                            "set {name}'s movement speed to {multiplier}x - capped from {requested}"
+                        )
+                    }
+                    MovementSpeedOutcome::Applied { multiplier } => {
+                        format!("set {name}'s movement speed to {multiplier}x")
+                    }
+                    MovementSpeedOutcome::Reset => {
+                        format!("reset {name}'s movement speed to 1x")
+                    }
+                    MovementSpeedOutcome::UnknownPlayer => {
+                        format!("{name} dropped from registry mid-call")
+                    }
+                }
+            }
+            TargetLookup::Err(e) => e,
+        }
+    }
 }
 
 enum TargetLookup {
@@ -1255,6 +1303,7 @@ mod tests {
         assert!(out.contains("revive"));
         assert!(out.contains("givegil"));
         assert!(out.contains("reload"));
+        assert!(out.contains("speed <multiplier>"));
     }
 
     #[tokio::test]
@@ -1424,6 +1473,41 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out, "Warp Target is not online");
+    }
+
+    #[tokio::test]
+    async fn speed_without_multiplier_reports_usage() {
+        let (cmd, _db) = fixture().await;
+        let out = cmd.run("speed").await.unwrap();
+        assert!(out.starts_with("usage: speed <multiplier> [name]"));
+    }
+
+    #[tokio::test]
+    async fn speed_non_numeric_multiplier_reports_usage() {
+        let (cmd, _db) = fixture().await;
+        let out = cmd.run("speed fast").await.unwrap();
+        assert!(out.contains("is not a float"));
+    }
+
+    #[tokio::test]
+    async fn speed_offline_target_is_reported() {
+        let (cmd, db) = fixture().await;
+        db.conn_for_test()
+            .call_db(|c| {
+                c.execute(
+                    r"INSERT INTO characters (id, userId, slot, serverId, name)
+                      VALUES (46, 0, 0, 0, 'Speed Target')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        // Name omitted → invoker; character exists in the DB but has
+        // no live ActorHandle.
+        let out = cmd.run_as("speed 2.5", Some("Speed Target")).await.unwrap();
+        assert_eq!(out, "Speed Target is not online");
     }
 
     #[tokio::test]

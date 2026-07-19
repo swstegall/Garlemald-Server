@@ -2122,9 +2122,18 @@ impl WorldManager {
         // When the player zones while mounted, the normal zone BGM is
         // overridden with the mount theme (64 = rental chocobo, 83 =
         // owned chocobo or goobbue). Non-mounted zones use the day BGM.
-        let (mount_state_char, rental_expire) = {
+        let (mount_state_char, rental_expire, speed_multiplier) = {
             let c = actor_handle.character.read().await;
-            (c.chara.mount_state, c.chara.rental_expire_time)
+            (
+                c.chara.mount_state,
+                c.chara.rental_expire_time,
+                // Re-derive the zone-in speed bands from the live
+                // MovementSpeed mod so any live source of it - the GM
+                // `!speed` multiplier, speed status effects - survives
+                // zone changes; an unset mod reads back as the default
+                // run speed, i.e. exactly the default bands.
+                c.get_speed() / tx::actor::SPEED_DEFAULT_RUN,
+            )
         };
         let music_id =
             if main_state == crate::actor::MAIN_STATE_MOUNTED as u8 && mount_state_char != 0 {
@@ -2158,7 +2167,7 @@ impl WorldManager {
             tx::actor::build_0x132(actor_id, 0x100, "commandRequest"),
             tx::actor::build_0x132(actor_id, 0x100, "widgetCreate"),
             tx::actor::build_0x132(actor_id, 0x100, "macroRequest"),
-            tx::actor::build_set_actor_speed_default(actor_id),
+            tx::actor::build_set_actor_speed_scaled(actor_id, speed_multiplier),
             // spawn_type 0x16 is the instant zone-in-complete bypass
             // (see `SPAWN_TYPE_INSTANT_ZONE_IN`): it must ship with
             // `isZoningPlayer = 0` — the pair is what makes the client

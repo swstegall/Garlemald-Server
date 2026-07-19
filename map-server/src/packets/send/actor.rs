@@ -162,8 +162,27 @@ pub fn build_set_actor_speed(
     SubPacket::new(OP_SET_ACTOR_SPEED, actor_id, data)
 }
 
+/// Default speed bands, mirroring C# `SetActorSpeedPacket.cs:33-36`
+/// (DEFAULT_STOP / DEFAULT_WALK / DEFAULT_RUN / DEFAULT_ACTIVE).
+pub const SPEED_DEFAULT_STOP: f32 = 0.0;
+pub const SPEED_DEFAULT_WALK: f32 = 2.0;
+pub const SPEED_DEFAULT_RUN: f32 = 5.0;
+pub const SPEED_DEFAULT_ACTIVE: f32 = 5.0;
+
 pub fn build_set_actor_speed_default(actor_id: u32) -> SubPacket {
-    build_set_actor_speed(actor_id, 0.0, 2.0, 5.0, 5.0)
+    build_set_actor_speed_scaled(actor_id, 1.0)
+}
+
+/// Default bands scaled by a movement-speed multiplier (stop stays 0);
+/// 1.0 reproduces the defaults exactly.
+pub fn build_set_actor_speed_scaled(actor_id: u32, multiplier: f32) -> SubPacket {
+    build_set_actor_speed(
+        actor_id,
+        SPEED_DEFAULT_STOP,
+        SPEED_DEFAULT_WALK * multiplier,
+        SPEED_DEFAULT_RUN * multiplier,
+        SPEED_DEFAULT_ACTIVE * multiplier,
+    )
 }
 
 /// 0x00D3 SetActorTargetAnimatedPacket — played w/ animation lock.
