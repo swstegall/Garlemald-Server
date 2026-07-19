@@ -158,12 +158,36 @@ pub fn build_set_actor_speed(
         c.write_f32::<LittleEndian>(speed).unwrap();
         c.write_u32::<LittleEndian>(slot).unwrap();
     }
+    // The entry count lives at body offset 0x80, not right after the
+    // pairs - the C# builder seeks there before writing it
+    // (`SetActorSpeedPacket.cs:58-60`). With the count anywhere else
+    // the client reads 0 entries and ignores the whole packet.
+    c.set_position(0x80);
     c.write_u32::<LittleEndian>(4).unwrap();
     SubPacket::new(OP_SET_ACTOR_SPEED, actor_id, data)
 }
 
+/// Default speed bands, mirroring C# `SetActorSpeedPacket.cs:33-36`
+/// (DEFAULT_STOP / DEFAULT_WALK / DEFAULT_RUN / DEFAULT_ACTIVE).
+pub const SPEED_DEFAULT_STOP: f32 = 0.0;
+pub const SPEED_DEFAULT_WALK: f32 = 2.0;
+pub const SPEED_DEFAULT_RUN: f32 = 5.0;
+pub const SPEED_DEFAULT_ACTIVE: f32 = 5.0;
+
 pub fn build_set_actor_speed_default(actor_id: u32) -> SubPacket {
-    build_set_actor_speed(actor_id, 0.0, 2.0, 5.0, 5.0)
+    build_set_actor_speed_scaled(actor_id, 1.0)
+}
+
+/// Default bands scaled by a movement-speed multiplier (stop stays 0);
+/// 1.0 reproduces the defaults exactly.
+pub fn build_set_actor_speed_scaled(actor_id: u32, multiplier: f32) -> SubPacket {
+    build_set_actor_speed(
+        actor_id,
+        SPEED_DEFAULT_STOP,
+        SPEED_DEFAULT_WALK * multiplier,
+        SPEED_DEFAULT_RUN * multiplier,
+        SPEED_DEFAULT_ACTIVE * multiplier,
+    )
 }
 
 /// 0x00D3 SetActorTargetAnimatedPacket — played w/ animation lock.
@@ -1204,6 +1228,51 @@ pub fn build_battle_parameter(actor_id: u32, general_parameter: &[i16; 35]) -> V
 }
 
 use std::io::Write as _;
+
+#[cfg(test)]
+mod set_actor_speed_tests {
+    use super::*;
+
+    /// Byte layout mirrors C# `SetActorSpeedPacket.cs`: four
+    /// (f32 speed, u32 slot) pairs at 0x00..0x20 and the entry count 4
+    /// at 0x80. The client applies `count` entries read from 0x80, so
+    /// a count written at 0x20 instead turns the packet into a no-op.
+    #[test]
+    fn speed_bands_and_count_match_the_csharp_layout() {
+        let pkt = build_set_actor_speed(0x0042_0001, 0.0, 2.0, 5.0, 5.0);
+        assert_eq!(pkt.game_message.opcode, OP_SET_ACTOR_SPEED);
+        assert_eq!(pkt.header.source_id, 0x0042_0001);
+        assert_eq!(pkt.data.len(), 0x88, "0xA8 total - 0x20 header");
+        for (i, (speed, slot)) in [(0.0f32, 0u32), (2.0, 1), (5.0, 2), (5.0, 3)]
+            .iter()
+            .enumerate()
+        {
+            let off = i * 8;
+            let got_speed = f32::from_le_bytes(pkt.data[off..off + 4].try_into().unwrap());
+            let got_slot = u32::from_le_bytes(pkt.data[off + 4..off + 8].try_into().unwrap());
+            assert_eq!(got_speed, *speed, "band {i} speed");
+            assert_eq!(got_slot, *slot, "band {i} slot");
+        }
+        assert!(
+            pkt.data[0x20..0x80].iter().all(|b| *b == 0),
+            "0x20..0x80 stays zero"
+        );
+        assert_eq!(
+            u32::from_le_bytes(pkt.data[0x80..0x84].try_into().unwrap()),
+            4,
+            "entry count at 0x80 per SetActorSpeedPacket.cs:58-60"
+        );
+    }
+
+    #[test]
+    fn scaled_bands_multiply_walk_run_active() {
+        let pkt = build_set_actor_speed_scaled(1, 2.0);
+        let speeds: Vec<f32> = (0..4)
+            .map(|i| f32::from_le_bytes(pkt.data[i * 8..i * 8 + 4].try_into().unwrap()))
+            .collect();
+        assert_eq!(speeds, vec![0.0, 4.0, 10.0, 10.0]);
+    }
+}
 
 #[cfg(test)]
 mod npc_property_init_tests {

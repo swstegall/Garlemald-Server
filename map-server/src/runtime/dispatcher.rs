@@ -2756,6 +2756,62 @@ pub async fn apply_home_point_revive(
     }
 }
 
+/// Ceiling for the `!speed` GM command's multiplier.
+const MOVEMENT_SPEED_MAX_MULTIPLIER: f32 = 10.0;
+
+/// Outcome of [`apply_movement_speed`] - surfaced so the GM command can
+/// echo what actually happened after the reset/clamp policy applied.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum MovementSpeedOutcome {
+    /// Bands scaled to `multiplier`x (already clamped to the ceiling).
+    Applied { multiplier: f32 },
+    /// Requested value was <= 0 (or NaN) - bands back to the defaults.
+    Reset,
+    /// Player not in the registry - nothing happened.
+    UnknownPlayer,
+}
+
+/// Scale a player's movement-speed bands to `requested`x the defaults
+/// (the `!speed` GM command). `requested <= 0` or NaN resets to 1x;
+/// values above [`MOVEMENT_SPEED_MAX_MULTIPLIER`] clamp to it. Also
+/// pins `Modifier::MovementSpeed` to the scaled run speed so
+/// `get_speed()` (Lua snapshots, the zone-in band derivation in
+/// `world_manager`) agrees with what the client renders. Fan-out
+/// mirrors C# `Actor.PostUpdate` for `ActorUpdateFlags.Speed`: the
+/// packet goes to the player and everyone around them.
+pub(crate) async fn apply_movement_speed(
+    player_id: u32,
+    requested: f32,
+    registry: &ActorRegistry,
+    world: &WorldManager,
+    zone: &Arc<RwLock<Zone>>,
+) -> MovementSpeedOutcome {
+    let Some(handle) = registry.get(player_id).await else {
+        return MovementSpeedOutcome::UnknownPlayer;
+    };
+    let reset = requested.is_nan() || requested <= 0.0;
+    let multiplier = if reset {
+        1.0
+    } else {
+        requested.min(MOVEMENT_SPEED_MAX_MULTIPLIER)
+    };
+    {
+        let mut c = handle.character.write().await;
+        c.chara.mods.set(
+            crate::actor::modifier::Modifier::MovementSpeed,
+            (tx::actor::SPEED_DEFAULT_RUN * multiplier) as f64,
+        );
+    }
+    let bytes = tx::actor::build_set_actor_speed_scaled(player_id, multiplier).to_bytes();
+    send_to_self_if_player(registry, world, player_id, bytes.clone()).await;
+    broadcast_around_actor(world, registry, zone, player_id, bytes).await;
+    if reset {
+        MovementSpeedOutcome::Reset
+    } else {
+        MovementSpeedOutcome::Applied { multiplier }
+    }
+}
+
 /// The zone broadcaster excludes the source actor, so Players who die or
 /// revive wouldn't otherwise see their own state-change packet. Send it
 /// directly to their session.
@@ -2778,6 +2834,108 @@ pub(crate) async fn send_to_self_if_player(
         let mut bytes = bytes;
         common::subpacket::SubPacket::stamp_target_id_if_zero(&mut bytes, handle.session_id);
         client.send_bytes(bytes).await;
+    }
+}
+
+#[cfg(test)]
+mod movement_speed_tests {
+    use super::*;
+    use crate::actor::Character;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use crate::zone::navmesh::StubNavmeshLoader;
+
+    fn make_zone(zone_id: u32) -> Zone {
+        Zone::new(
+            zone_id,
+            "test",
+            1,
+            "/Area/Zone/Test",
+            0,
+            0,
+            0,
+            false,
+            false,
+            false,
+            false,
+            false,
+            Some(&StubNavmeshLoader),
+        )
+    }
+
+    async fn fixture() -> (
+        Arc<WorldManager>,
+        Arc<ActorRegistry>,
+        Arc<RwLock<Zone>>,
+        ActorHandle,
+    ) {
+        let world = Arc::new(WorldManager::new());
+        let registry = Arc::new(ActorRegistry::new());
+        let zone_id = 100u32;
+        world.register_zone(make_zone(zone_id)).await;
+        let character = Character::new(7);
+        let handle = ActorHandle::new(7, ActorKindTag::Player, zone_id, 42, character);
+        registry.insert(handle.clone()).await;
+        let zone = world.zone(zone_id).await.expect("zone registered");
+        (world, registry, zone, handle)
+    }
+
+    #[tokio::test]
+    async fn multiplier_scales_the_movement_speed_mod() {
+        let (world, registry, zone, handle) = fixture().await;
+        let outcome = apply_movement_speed(7, 5.0, &registry, &world, &zone).await;
+        match outcome {
+            MovementSpeedOutcome::Applied { multiplier } => assert_eq!(multiplier, 5.0),
+            other => panic!("expected Applied, got {other:?}"),
+        }
+        let c = handle.character.read().await;
+        assert_eq!(c.get_speed(), 25.0, "run speed = 5.0 * multiplier");
+    }
+
+    #[tokio::test]
+    async fn multiplier_caps_at_ten() {
+        let (world, registry, zone, handle) = fixture().await;
+        let outcome = apply_movement_speed(7, 15.0, &registry, &world, &zone).await;
+        match outcome {
+            MovementSpeedOutcome::Applied { multiplier } => assert_eq!(multiplier, 10.0),
+            other => panic!("expected Applied, got {other:?}"),
+        }
+        let c = handle.character.read().await;
+        assert_eq!(c.get_speed(), 50.0);
+    }
+
+    #[tokio::test]
+    async fn zero_and_negative_reset_to_default() {
+        let (world, registry, zone, handle) = fixture().await;
+        apply_movement_speed(7, 5.0, &registry, &world, &zone).await;
+        let outcome = apply_movement_speed(7, 0.0, &registry, &world, &zone).await;
+        assert!(matches!(outcome, MovementSpeedOutcome::Reset));
+        assert_eq!(handle.character.read().await.get_speed(), 5.0);
+
+        apply_movement_speed(7, 5.0, &registry, &world, &zone).await;
+        let outcome = apply_movement_speed(7, -3.0, &registry, &world, &zone).await;
+        assert!(matches!(outcome, MovementSpeedOutcome::Reset));
+        assert_eq!(handle.character.read().await.get_speed(), 5.0);
+    }
+
+    /// NaN parses as a valid f32 (`"NaN".parse::<f32>()` succeeds) and
+    /// would sail through `min()` as 10x - it must reset instead.
+    #[tokio::test]
+    async fn nan_resets_to_default() {
+        let (world, registry, zone, handle) = fixture().await;
+        apply_movement_speed(7, 5.0, &registry, &world, &zone).await;
+        let outcome = apply_movement_speed(7, f32::NAN, &registry, &world, &zone).await;
+        assert!(matches!(outcome, MovementSpeedOutcome::Reset));
+        assert_eq!(handle.character.read().await.get_speed(), 5.0);
+    }
+
+    #[tokio::test]
+    async fn unknown_player_is_reported() {
+        let world = Arc::new(WorldManager::new());
+        let registry = Arc::new(ActorRegistry::new());
+        world.register_zone(make_zone(100)).await;
+        let zone = world.zone(100).await.expect("zone registered");
+        let outcome = apply_movement_speed(999, 2.0, &registry, &world, &zone).await;
+        assert!(matches!(outcome, MovementSpeedOutcome::UnknownPlayer));
     }
 }
 
