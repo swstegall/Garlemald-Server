@@ -109,14 +109,15 @@ Anchors: `lobby-server/src/{processor.rs,database.rs,character_creator.rs,hardco
   and dispatches lobby opcodes — `0x03` get-characters, `0x04` select-character,
   `0x05` session-acknowledge, `0x0B` modify-character.
 - **`database.rs`** runs the lobby's SQLite queries: resolve a user id from a
-  session token, list characters/retainers/reserved names, and look up the
-  destination world from the `servers` table.
+  session token and list characters/retainers/reserved names. The destination
+  world list itself is config, not DB — `configs/servers.toml`, loaded at
+  startup (`common::server_list`).
 - **`character_creator.rs`** holds the per-class starting equipment layout used
   during character creation.
 - **`hardcoded.rs`** carries the pre-built `SECURE_CONNECTION_ACKNOWLEDGMENT`
   blob — a fully-formed handshake packet the server encrypts and returns.
 - **Handoff** (`processor.rs`, the select-character path): on opcode `0x04` the
-  lobby resolves the character's world from the `servers` table and replies with
+  lobby resolves the character's world from the server list and replies with
   a **select-character confirm packet** (opcode `0x0F`) that embeds the
   character id, the session token, and the **world server's IP and port**. The
   client reads those and opens a new TCP connection to `world-server`.
@@ -214,7 +215,8 @@ client where to connect next:
 3. **Character list & select.** The client requests its characters (opcode
    `0x03`); the lobby returns chunked world/account/retainer/character list
    packets. On select (opcode `0x04`), the lobby looks up the character's world
-   in the `servers` table and replies with a confirm packet (opcode `0x0F`)
+   in the server list (`configs/servers.toml`) and replies with a confirm
+   packet (opcode `0x0F`)
    **embedding the world server's IP and port** plus the session token.
 4. **World connect** (`world-server` :54992). The client opens a new TCP
    connection to the world address it was just handed, presenting the token. The

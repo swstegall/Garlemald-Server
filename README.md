@@ -131,7 +131,7 @@ the same SQLite database by default.
 |---------------|----------------------|-------------------|------------------------------------------------------------|
 | `web-server`  | `configs/web.toml`   | `127.0.0.1:54993` | Signup / login; issues session tokens                      |
 | `lobby-server`| `configs/lobby.toml` | `127.0.0.1:54994` | Character list and world handoff                           |
-| `world-server`| `configs/world.toml` | `127.0.0.1:54992` | World registration (`world_id` keyed to the `servers` row) |
+| `world-server`| `configs/world.toml` | `127.0.0.1:54992` | World registration (`world_id` keyed to `configs/servers.toml`) |
 | `map-server`  | `configs/map.toml`   | `127.0.0.1:1989`  | Zone, actor, AI, and Lua host                              |
 
 Override any config path with `--config <path>` on the corresponding

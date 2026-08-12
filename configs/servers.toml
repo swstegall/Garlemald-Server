@@ -1,0 +1,17 @@
+# Garlemald server list (localhost defaults) — the worlds shown at
+# character select. Read by lobby-server (world list + handoff address)
+# and world-server (its own display name via `[server].world_id`).
+#
+# To rename a world, change its advertised IP/port, or add a second
+# world, edit this file and restart — no database access required.
+# If this file is missing, the servers fall back to exactly this
+# one-box localhost world.
+
+[[servers]]
+id            = 1
+name          = "Fernehalwes"
+address       = "127.0.0.1"
+port          = 54992
+list_position = 1
+max_chars     = 5000
+is_active     = true

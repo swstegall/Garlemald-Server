@@ -89,8 +89,14 @@ to change ports/binds; the comments in each file document its keys.
 |----------------|-----------------------|---------------------|-------------------------------------------------|
 | `web-server`   | `configs/web.toml`    | `127.0.0.1:54993`   | `[session].hours` = token lifetime (default 24) |
 | `lobby-server` | `configs/lobby.toml`  | `127.0.0.1:54994`   | `[database].path` shared with the others        |
-| `world-server` | `configs/world.toml`  | `127.0.0.1:54992`   | `[server].world_id` keys the `servers` row      |
+| `world-server` | `configs/world.toml`  | `127.0.0.1:54992`   | `[server].world_id` keys `configs/servers.toml` |
 | `map-server`   | `configs/map.toml`    | `127.0.0.1:1989`    | `[scripting].script_root`, `load_from_database` |
+
+The world list shown at character select (name, advertised address/port,
+active flag) is deployment config too: `configs/servers.toml`, read by
+lobby-server and world-server. Renaming a world or repointing its address is
+a text edit + restart — no DB access. If the file is missing, both fall back
+to the built-in one-box localhost world.
 
 ### The database
 

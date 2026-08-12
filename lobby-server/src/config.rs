@@ -34,6 +34,7 @@ use serde::Deserialize;
 pub struct Config {
     pub server: ServerSection,
     pub database: DatabaseSection,
+    pub servers: ServersSection,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -50,6 +51,14 @@ pub struct ServerSection {
 #[serde(default, deny_unknown_fields)]
 pub struct DatabaseSection {
     /// Path to the SQLite file, created on first run if missing.
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ServersSection {
+    /// Path to the server-list TOML (the worlds shown at character select).
+    /// Falls back to a built-in localhost world if the file is missing.
     pub path: PathBuf,
 }
 
@@ -71,6 +80,14 @@ impl Default for DatabaseSection {
     }
 }
 
+impl Default for ServersSection {
+    fn default() -> Self {
+        Self {
+            path: PathBuf::from("./configs/servers.toml"),
+        }
+    }
+}
+
 impl Config {
     pub fn bind_ip(&self) -> &str {
         &self.server.bind_ip
@@ -80,6 +97,9 @@ impl Config {
     }
     pub fn db_path(&self) -> &Path {
         &self.database.path
+    }
+    pub fn servers_path(&self) -> &Path {
+        &self.servers.path
     }
 
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {

@@ -36,6 +36,7 @@ pub mod migrations;
 pub mod packet;
 pub mod packet_diagnostics;
 pub mod packet_log;
+pub mod server_list;
 pub mod smoke;
 pub mod subpacket;
 pub mod utils;

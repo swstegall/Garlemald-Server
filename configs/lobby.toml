@@ -10,3 +10,8 @@ show_timestamp = true
 # Shared SQLite file used by all three servers. Created (with schema) on
 # first run if missing.
 path = "./data/garlemald.db"
+
+[servers]
+# World list shown at character select. Edit configs/servers.toml to
+# rename a world or change its advertised address/port — no DB edits.
+path = "./configs/servers.toml"
