@@ -71,6 +71,29 @@ async fn main() -> Result<()> {
         "config resolved"
     );
 
+    // World list served at character select — TOML config, not DB (issue #11).
+    let server_list = match common::server_list::ServerList::load(config.servers_path()) {
+        Ok(list) => {
+            tracing::info!(
+                path = %config.servers_path().display(),
+                worlds = list.servers.len(),
+                "server list loaded"
+            );
+            list
+        }
+        Err(e) => {
+            if smoke {
+                std::process::exit(common::smoke::smoke_fail(
+                    "Lobby",
+                    "config",
+                    &e.to_string(),
+                    common::smoke::EXIT_CONFIG,
+                ));
+            }
+            return Err(e);
+        }
+    };
+
     tracing::info!(db_path = %config.db_path().display(), "opening sqlite database");
     let db = match Database::open(config.db_path()).await {
         Ok(db) => db,
@@ -102,6 +125,6 @@ async fn main() -> Result<()> {
         }
     }
 
-    let processor = PacketProcessor::new(db);
+    let processor = PacketProcessor::new(db, &server_list);
     server::run(config, processor, smoke).await
 }

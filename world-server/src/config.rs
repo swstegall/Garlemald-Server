@@ -29,8 +29,9 @@ use serde::Deserialize;
 pub struct Config {
     pub server: ServerSection,
     pub database: DatabaseSection,
-    /// Populated at startup from the `servers` table. Default `"Unknown"` if
-    /// the row is missing.
+    pub servers: ServersSection,
+    /// Populated at startup from the server list config. Default `"Unknown"`
+    /// if the entry is missing.
     #[serde(skip, default = "default_server_name")]
     pub server_name: String,
 }
@@ -41,13 +42,22 @@ pub struct ServerSection {
     pub bind_ip: String,
     pub port: u16,
     pub show_timestamp: bool,
-    /// `servers.id` for this world; used to fetch the welcome MOTD.
+    /// This world's entry id in the server list config (`servers.toml`);
+    /// used to resolve the display name for the welcome MOTD.
     pub world_id: u32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DatabaseSection {
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ServersSection {
+    /// Path to the server-list TOML shared with lobby-server. Falls back to
+    /// a built-in localhost world if the file is missing.
     pub path: PathBuf,
 }
 
@@ -60,6 +70,7 @@ impl Default for Config {
         Self {
             server: ServerSection::default(),
             database: DatabaseSection::default(),
+            servers: ServersSection::default(),
             server_name: default_server_name(),
         }
     }
@@ -84,6 +95,14 @@ impl Default for DatabaseSection {
     }
 }
 
+impl Default for ServersSection {
+    fn default() -> Self {
+        Self {
+            path: PathBuf::from("./configs/servers.toml"),
+        }
+    }
+}
+
 impl Config {
     pub fn bind_ip(&self) -> &str {
         &self.server.bind_ip
@@ -96,6 +115,9 @@ impl Config {
     }
     pub fn db_path(&self) -> &Path {
         &self.database.path
+    }
+    pub fn servers_path(&self) -> &Path {
+        &self.servers.path
     }
 
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {

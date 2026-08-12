@@ -25,9 +25,9 @@
 //!
 //! The channel on which a session arrived (ZONE vs CHAT) is kept as an enum.
 //!
-//! Several fields (DBWorld extras, zone-server address, session channel tag)
-//! aren't yet read from any code path but are part of the wire schema the
-//! Map Server will consume in Phase 4 — keep them around.
+//! Several fields (zone-server address, session channel tag) aren't yet read
+//! from any code path but are part of the wire schema the Map Server will
+//! consume in Phase 4 — keep them around.
 #![allow(dead_code)]
 
 use std::sync::Arc;
@@ -40,18 +40,6 @@ use tokio::sync::mpsc;
 pub enum SessionChannel {
     Zone,
     Chat,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct DBWorld {
-    pub id: u32,
-    pub address: String,
-    pub port: u16,
-    pub list_position: u16,
-    pub population: u16,
-    pub name: String,
-    pub is_active: bool,
-    pub motd: String,
 }
 
 /// Outbound-packet handle for a connected player. Cloneable and Send so

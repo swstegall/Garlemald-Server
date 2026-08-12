@@ -29,7 +29,7 @@ use md5::{Digest, Md5};
 use std::io::Write;
 
 use crate::character_creator::{self, EQUIPMENT_SLOT_COUNT};
-use crate::data::{Account, CharaInfo, chara_info};
+use crate::data::{Account, CharaInfo, World, chara_info};
 use crate::database::Database;
 use crate::hardcoded::SECURE_CONNECTION_ACKNOWLEDGMENT;
 use crate::packets::{
@@ -65,11 +65,45 @@ pub enum Reply {
 
 pub struct PacketProcessor {
     db: Database,
+    /// Character-select world list, loaded once from `configs/servers.toml`
+    /// at startup (issue #11) — deployment config, not database state.
+    worlds: Vec<World>,
 }
 
 impl PacketProcessor {
-    pub fn new(db: Database) -> Self {
-        Self { db }
+    pub fn new(db: Database, server_list: &common::server_list::ServerList) -> Self {
+        let worlds = server_list
+            .servers
+            .iter()
+            .map(|s| World {
+                id: s.id as u16,
+                address: s.address.clone(),
+                port: s.port,
+                list_position: s.list_position,
+                // Live population is runtime state the lobby has never
+                // tracked — the old DB read hardcoded 2 as well.
+                population: 2,
+                name: s.name.clone(),
+                is_active: s.is_active,
+            })
+            .collect();
+        Self { db, worlds }
+    }
+
+    /// Worlds shown at character select — active entries only, matching the
+    /// old `SELECT … FROM servers WHERE isActive = 1`.
+    fn active_worlds(&self) -> Vec<World> {
+        self.worlds
+            .iter()
+            .filter(|w| w.is_active)
+            .cloned()
+            .collect()
+    }
+
+    /// Resolve a world by id, active or not — the old `WHERE id = :sid`
+    /// lookup did not filter on the active flag either.
+    fn world_by_id(&self, id: u32) -> Option<World> {
+        self.worlds.iter().find(|w| w.id as u32 == id).cloned()
     }
 
     /// Process one incoming `BasePacket`. Returns zero or more replies that
@@ -180,7 +214,7 @@ impl PacketProcessor {
     async fn handle_get_characters(&self, session: &mut LobbySession) -> Result<Vec<Reply>> {
         tracing::info!(user_id = session.current_user_id, "get_characters");
 
-        let worlds = self.db.get_servers().await.unwrap_or_default();
+        let worlds = self.active_worlds();
         let names = self
             .db
             .get_reserved_names(session.current_user_id)
@@ -254,11 +288,9 @@ impl PacketProcessor {
             .db
             .get_character(session.current_user_id, req.character_id)
             .await?;
-        let world = if let Some(c) = chara.as_ref() {
-            self.db.get_server(c.server_id as u32).await?
-        } else {
-            None
-        };
+        let world = chara
+            .as_ref()
+            .and_then(|c| self.world_by_id(c.server_id as u32));
 
         let Some(world) = world else {
             tracing::warn!(
@@ -352,11 +384,7 @@ impl PacketProcessor {
             );
         }
 
-        let world = self
-            .db
-            .get_server(world_id as u32)
-            .await
-            .unwrap_or_default();
+        let world = self.world_by_id(world_id as u32);
         let Some(world) = world else {
             let mut err = error_packet(
                 req.sequence,

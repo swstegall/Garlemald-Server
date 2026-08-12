@@ -105,18 +105,38 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Pull this world's metadata from the DB (falls back to "Unknown" if the
-    // row is missing, matching the C# `Program.cs` welcome message logic).
-    match db.get_server(config.world_id()).await {
-        Ok(Some(world)) => {
-            tracing::info!(name = %world.name, "loaded world info from DB");
-            config.server_name = world.name;
-        }
-        Ok(None) => {
-            tracing::warn!("world row missing; MOTD disabled");
-        }
+    // Resolve this world's display name from the server list config (falls
+    // back to "Unknown" if the entry is missing, matching the C# `Program.cs`
+    // welcome message logic). Issue #11: the list lives in servers.toml now,
+    // not the DB.
+    match common::server_list::ServerList::load(config.servers_path()) {
+        Ok(list) => match list.by_id(config.world_id()) {
+            Some(world) => {
+                tracing::info!(name = %world.name, "loaded world info from server list");
+                config.server_name = world.name.clone();
+            }
+            None => {
+                tracing::warn!(
+                    world_id = config.world_id(),
+                    path = %config.servers_path().display(),
+                    "world entry missing from server list; MOTD disabled"
+                );
+            }
+        },
         Err(e) => {
-            tracing::warn!(error = %e, "world lookup failed; MOTD disabled");
+            if smoke {
+                std::process::exit(common::smoke::smoke_fail(
+                    "World",
+                    "config",
+                    &e.to_string(),
+                    common::smoke::EXIT_CONFIG,
+                ));
+            }
+            // A present-but-malformed server list is a deployment error;
+            // fail fast like lobby-server does rather than booting with a
+            // config the operator thinks is in effect.
+            tracing::error!(error = %e, "server list load failed; aborting");
+            return Err(e);
         }
     }
 

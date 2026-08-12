@@ -860,26 +860,11 @@ CREATE TABLE IF NOT EXISTS sessions (
     expiration TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS servers (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    name         TEXT NOT NULL,
-    address      TEXT NOT NULL,
-    port         INTEGER NOT NULL,
-    listPosition INTEGER NOT NULL,
-    numchars     INTEGER NOT NULL DEFAULT 0,
-    maxchars     INTEGER NOT NULL DEFAULT 5000,
-    isActive     INTEGER NOT NULL DEFAULT 1
-);
-
 CREATE TABLE IF NOT EXISTS reserved_names (
     id     INTEGER PRIMARY KEY AUTOINCREMENT,
     userId INTEGER NOT NULL,
     name   TEXT NOT NULL
 );
 
--- Default localhost world row so a fresh database is usable out of the box.
--- Lobby iterates `servers WHERE isActive = true` and world-server looks up
--- its name by `worldId` (`servers.id`), so this seed makes a one-box
--- lobby/world/map rig boot against an empty DB without manual setup.
-INSERT OR IGNORE INTO servers (id, name, address, port, listPosition, isActive)
-VALUES (1, 'Fernehalwes', '127.0.0.1', 54992, 1, 1);
+-- The world/server list is deployment configuration, not database state —
+-- it lives in `configs/servers.toml` (see `common::server_list`, issue #11).

@@ -30,7 +30,6 @@ use common::db::ConnCallExt;
 use rusqlite::{OptionalExtension, named_params};
 use tokio_rusqlite::Connection;
 
-use crate::data::DBWorld;
 use crate::group::{Linkshell, LinkshellMember, RetainerGroupMember};
 
 pub struct Database {
@@ -56,31 +55,6 @@ impl Database {
             })
             .await
             .context("ping")
-    }
-
-    pub async fn get_server(&self, server_id: u32) -> Result<Option<DBWorld>> {
-        let row = self
-            .conn
-            .call_db(move |c| {
-                let v = c
-                    .query_row(
-                        "SELECT name, address, port FROM servers WHERE id = :sid",
-                        named_params! { ":sid": server_id },
-                        |r| {
-                            Ok(DBWorld {
-                                id: server_id,
-                                name: r.get::<_, String>(0)?,
-                                address: r.get::<_, String>(1)?,
-                                port: r.get::<_, u16>(2)?,
-                                ..Default::default()
-                            })
-                        },
-                    )
-                    .optional()?;
-                Ok(v)
-            })
-            .await?;
-        Ok(row)
     }
 
     /// Populate `session` state from the `characters` row. Returns whether a

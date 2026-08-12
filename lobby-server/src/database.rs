@@ -28,7 +28,7 @@ use rusqlite::{OptionalExtension, named_params};
 use tokio_rusqlite::Connection;
 
 use crate::character_creator::class_name_for_id;
-use crate::data::{Appearance, CharaInfo, Character, Retainer, World};
+use crate::data::{Appearance, CharaInfo, Character, Retainer};
 
 pub struct Database {
     conn: Connection,
@@ -317,61 +317,6 @@ impl Database {
             })
             .await?;
         Ok(())
-    }
-
-    pub async fn get_servers(&self) -> Result<Vec<World>> {
-        let rows = self
-            .conn
-            .call_db(|c| {
-                let mut stmt = c.prepare(
-                    "SELECT id, address, port, listPosition, name, isActive
-                     FROM servers WHERE isActive = 1",
-                )?;
-                let rows: Vec<World> = stmt
-                    .query_map([], |r| {
-                        Ok(World {
-                            id: r.get::<_, u16>(0)?,
-                            address: r.get::<_, String>(1)?,
-                            port: r.get::<_, u16>(2)?,
-                            list_position: r.get::<_, u16>(3)?,
-                            population: 2,
-                            name: r.get::<_, String>(4)?,
-                            is_active: r.get::<_, i64>(5)? != 0,
-                        })
-                    })?
-                    .collect::<rusqlite::Result<_>>()?;
-                Ok(rows)
-            })
-            .await?;
-        Ok(rows)
-    }
-
-    pub async fn get_server(&self, server_id: u32) -> Result<Option<World>> {
-        let row = self
-            .conn
-            .call_db(move |c| {
-                let v = c
-                    .query_row(
-                        "SELECT id, address, port, listPosition, name, isActive
-                         FROM servers WHERE id = :sid",
-                        named_params! { ":sid": server_id },
-                        |r| {
-                            Ok(World {
-                                id: r.get::<_, u16>(0)?,
-                                address: r.get::<_, String>(1)?,
-                                port: r.get::<_, u16>(2)?,
-                                list_position: r.get::<_, u16>(3)?,
-                                population: 2,
-                                name: r.get::<_, String>(4)?,
-                                is_active: r.get::<_, i64>(5)? != 0,
-                            })
-                        },
-                    )
-                    .optional()?;
-                Ok(v)
-            })
-            .await?;
-        Ok(row)
     }
 
     pub async fn get_characters(&self, user_id: u32) -> Result<Vec<Character>> {

@@ -77,17 +77,20 @@ mod tests {
             // migrations are a legitimate column-add path (see
             // `050_characters_quest_scenario_npc_ls.sql` for the first
             // landed example), `UPDATE` a legitimate data-fix path
-            // (`052_fix_tutorial_ally_pools.sql`), and `DELETE` a
+            // (`052_fix_tutorial_ally_pools.sql`), `DELETE` a
             // legitimate data-removal path
-            // (`092_remove_bluebadger_closed_gate.sql`), so the check is
-            // the union of all five.
+            // (`092_remove_bluebadger_closed_gate.sql`), and
+            // `DROP TABLE` a legitimate table-retirement path
+            // (`100_drop_servers_table.sql`), so the check is the union
+            // of all six.
             assert!(
                 mig.sql.contains("CREATE TABLE")
                     || mig.sql.contains("INSERT")
                     || mig.sql.contains("ALTER TABLE")
                     || mig.sql.contains("UPDATE")
-                    || mig.sql.contains("DELETE"),
-                "{} has none of CREATE TABLE / INSERT / ALTER TABLE / UPDATE / DELETE",
+                    || mig.sql.contains("DELETE")
+                    || mig.sql.contains("DROP TABLE"),
+                "{} has none of CREATE TABLE / INSERT / ALTER TABLE / UPDATE / DELETE / DROP TABLE",
                 mig.name,
             );
         }
