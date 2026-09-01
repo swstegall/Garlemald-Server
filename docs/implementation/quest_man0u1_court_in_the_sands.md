@@ -38,7 +38,7 @@ port was built from; every retail claim below cites its source.
 | 050 | Miner instance #1 — F'lhaminn teaches 6 emotes | 6 emotes done → 057 | teach `051_1..6` (Furious 103, Beckon 108, Laugh 121, Deny 125, Upset 140, Soothe 135 — in order), forgot-replay `051_7(quest,player,npc,51..56)`, go-signal `051_8`; crowd `050_2..14` |
 | 057 | Calm the miners: Maddened = Beckon; Manic = Soothe→Furious→Laugh | both calm → ending says (109,107,108,110,111,112,113) → 058 | rebuffs Manic `055_1..3`, Maddened `056_1..3` |
 | 058 | Miner instance #2 (reload) — Corguevais recovered | Corguevais talk | `processEvent060` (man0u160 CS: thanks + Linette assignment + F'lhaminn volunteers) → public |
-| 060 | Meet F'lhaminn at the Gate of Nald (zone 170) | gate trigger push → confirm → **escort content** (Man0u102) | gate talks (says 144/145/146), duty-start `processEvent070` (man0u170 CS) |
+| 060 | Meet F'lhaminn at the Gate of Nald (zone 170) | F'lhaminn talk **or** the proximity trigger → duty-join confirm → **escort content** (Man0u102) | `processEvent070` (man0u170 CS) — F'lhaminn's greeting lines 144/145/146 ("Sorry to keep you waiting … We should get going"). This IS the single pre-duty cutscene; it plays once inside the content launch. Do **not** also emit 144/145/146 as server-side wait-text (see finding 9). |
 | — | Escort duty: protect F'lhaminn, Gate of Nald → Camp Black Brush. 30-min timer, chinchilla (2204010) ambushes. Runs at SEQ 060 (relog → gate re-arms → retry, no rollback state needed) | arrival → director | banners 51005/50011/25018; barks 365-370/374/375; fail 371/372 |
 | 065 | Camp Black Brush (public 170) — the Ascilia echo | Ascilia talk → `080` echo CS → same-zone reload; then camp leader talk → says 176-183 → warp Ul'dah | `processEvent075` (arrival CS, fired by the escort director), `080` (Ascilia/Thancred echo CS), crowd `080_2..12` |
 | 070 | Momodi gossip | Momodi talk | `processEvent200_2` (texts 389/390) |
@@ -180,7 +180,23 @@ leader (41.1/50.4, -480.0/-481.0) · 11001017 Concern stage (-91.4,
    only the correct class. Live-verify: `!` over the stage F'lhaminn on
    approach at SEQ_075 (streaming overlay), and NO `!` at the gate copy
    from SEQ_080 on.
-8. Accepted divergence: the stage F'lhaminn (2433) is permanently
+8. **FIXED (2026-07-10, this branch):** the SEQ_060 gate meetup
+   double-played F'lhaminn's greeting. The port emitted texts 144/145/146
+   as server-side `SendGameMessage` on the `FLHAMINN_GATE` talk (built on
+   the "no client event exists for these" assumption) **and** fired
+   `processEvent070` (man0u170) on the trigger push — but a 4-playthrough
+   OCR sweep (eZgcq-FMpfw, XbDE5OQ_Y2g, WlKVCvRgQs0, 6eWqFhITeeM) proves
+   man0u170 **is** the cutscene that speaks 144/145/146 at the Gate of
+   Nald, so those lines showed twice. Fix: drop the server-side wait-text;
+   man0u170 is now the single pre-duty cutscene, played inside
+   `startMan0u1Escort`. Both F'lhaminn's talk and the proximity trigger
+   now route through a shared `tryStartMan0u1Escort` (confirm → launch),
+   so talking to her is no longer a dead click. The retail geography is
+   unchanged and confirmed: one continuous guild cutscene (man0u160,
+   ending "await me at the Gate of Nald") → travel → the man0u170 gate
+   meetup → escort duty launches from the gate → man0u175 is the
+   post-duty Camp Black Brush arrival (not pre-duty).
+9. Accepted divergence: the stage F'lhaminn (2433) is permanently
    present during SEQ_000–070 — retail keeps the stage empty until 075
    ("she rarely sings anymore", csv:292). Despawn/hide isn't viable
    (`area:DespawnActor` is global-to-all-players,
