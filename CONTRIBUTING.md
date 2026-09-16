@@ -18,7 +18,8 @@ assigned issue → PR using only these docs:
 Development is coordinated through the project **Discord** and a shared **GitHub
 project board**.
 
-- Join the Discord: <https://discord.gg/CVjwWs6jnX>.
+- Join the Bahamut Discord: <https://discord.gg/GUDC2pDNGD> (development has
+  moved there from the Garlemald Discord).
 - Ask a maintainer (in Discord) to add you as a **collaborator** on:
   - the **Garlemald-Server** repository, and
   - the **Garlemald project board** —

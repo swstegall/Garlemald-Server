@@ -3,7 +3,12 @@
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE.md)
 [![Rust](https://img.shields.io/badge/rust-1.95-orange.svg)](rust-toolchain.toml)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#quick-start)
-[![Discord](https://img.shields.io/badge/discord-join-5865F2.svg)](https://discord.gg/CVjwWs6jnX)
+[![Discord](https://img.shields.io/badge/discord-join-5865F2.svg)](https://discord.gg/GUDC2pDNGD)
+
+> **Bahamut is the new home of the FINAL FANTASY XIV 1.23b development I am
+> working on moving forward.** If you'd like to participate as a developer or
+> tester, or try our hosted server, join our Discord:
+> <https://discord.gg/GUDC2pDNGD>
 
 A private-server emulator for **FINAL FANTASY XIV v1.23b** — the final
 patch of the original 1.0 release, not *A Realm Reborn* — written from
@@ -178,9 +183,9 @@ pull request:
 ## Contributing
 
 Contributions are welcome. The short version: ask for collaborator + project-board
-access on [Discord](https://discord.gg/CVjwWs6jnX), pick an issue from the board's
-**Ready** column, branch off **`develop`**, keep CI green
-(`fmt` / `clippy` / `build` / `test`), and open a PR into **`develop`**. The full
+access on the [Bahamut Discord](https://discord.gg/GUDC2pDNGD), pick an issue from
+the board's **Ready** column, branch off **`develop`**, keep CI green (`fmt` /
+`clippy` / `build` / `test`), and open a PR into **`develop`**. The full
 walkthrough is in **[`CONTRIBUTING.md`](CONTRIBUTING.md)**.
 
 ## Attribution and licensing
@@ -226,7 +231,10 @@ under which this project is distributed.
 
 ## Community
 
-Development discussion, bug reports, and questions for the maintainer
-happen on the Garlemald Server Discord:
+> **Note:** development has moved from the Garlemald Discord to the Bahamut
+> Discord. The link below points there now.
 
-<https://discord.gg/CVjwWs6jnX>
+Development discussion, bug reports, and questions for the maintainer
+happen on the Bahamut Discord:
+
+<https://discord.gg/GUDC2pDNGD>
