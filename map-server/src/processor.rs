@@ -625,6 +625,37 @@ impl PacketProcessor {
                 );
             }
         }
+        if let Some(handle) = self.registry.by_session(session_id).await {
+            // A content run the player was in dies with the session:
+            // ContentFinished was the only teardown, so an abandoned run's
+            // content-band BattleNpcs leaked into the base zone and were
+            // streamed to every later visitor. (Garlemald-Server #194.)
+            let active = self
+                .world
+                .session(session_id)
+                .await
+                .and_then(|s| s.active_content_script.clone());
+            if let Some(active) = active {
+                crate::runtime::quest_apply::apply_content_finished(
+                    active.parent_zone_id,
+                    &active.area_name,
+                    &self.registry,
+                    &self.world,
+                    self.lua.as_ref(),
+                )
+                .await;
+            }
+            // Take the player's actor out of the zone and tell everyone
+            // around: it used to stay in `zone.core` as a frozen ghost that
+            // every later zone-in bundle included. (Garlemald-Server #195.)
+            crate::runtime::quest_apply::apply_despawn_actor(
+                handle.zone_id,
+                handle.actor_id,
+                &self.registry,
+                &self.world,
+            )
+            .await;
+        }
         self.registry.remove_session(session_id).await;
         self.world.remove_session(session_id).await;
         let reply = tx::build_session_end(session_id, 1, 0);
@@ -10465,6 +10496,132 @@ pub(crate) fn build_player_snapshot_from_character(
         id => id,
     };
     snapshot
+}
+
+#[cfg(test)]
+mod session_end_cleanup_tests {
+    use super::*;
+    use crate::data::{ActiveContentScript, ClientHandle, Session};
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use crate::zone::area::{ActorKind, StoredActor};
+    use crate::zone::navmesh::StubNavmeshLoader;
+    use crate::zone::outbox::AreaOutbox;
+    use crate::zone::zone::Zone;
+
+    /// Session end removes the player's actor from the zone (no ghost,
+    /// #195) and tears down the content run it was in (no leaked content
+    /// BattleNpcs, #194).
+    #[tokio::test]
+    async fn session_end_despawns_player_and_content_actors() {
+        const ZONE: u32 = 100;
+        const SESSION: u32 = 42;
+        const PLAYER: u32 = 42;
+        const DIRECTOR: u32 = 0x6530_0003;
+        const MOB: u32 = 0x460C_0008;
+        let world = Arc::new(WorldManager::new());
+        let registry = Arc::new(ActorRegistry::new());
+        let db_path = std::env::temp_dir().join(format!(
+            "garlemald-session-end-{}.db",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let db = Arc::new(Database::open(db_path).await.expect("db"));
+
+        let mut zone = Zone::new(
+            ZONE,
+            "test",
+            1,
+            "/Area/Zone/Test",
+            0,
+            0,
+            0,
+            false,
+            false,
+            false,
+            false,
+            false,
+            Some(&StubNavmeshLoader),
+        );
+        let mut ob = AreaOutbox::new();
+        for (id, kind) in [(PLAYER, ActorKind::Player), (MOB, ActorKind::BattleNpc)] {
+            zone.core.add_actor(
+                StoredActor {
+                    actor_id: id,
+                    kind,
+                    position: common::Vector3::ZERO,
+                    grid: (0, 0),
+                    is_alive: true,
+                },
+                &mut ob,
+            );
+        }
+        world.register_zone(zone).await;
+        registry
+            .insert(ActorHandle::new(
+                PLAYER,
+                ActorKindTag::Player,
+                ZONE,
+                SESSION,
+                Character::new(PLAYER),
+            ))
+            .await;
+        registry
+            .insert(ActorHandle::new(
+                MOB,
+                ActorKindTag::BattleNpc,
+                ZONE,
+                0,
+                Character::new(MOB),
+            ))
+            .await;
+        let (tx, _rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+        let client = ClientHandle::new(SESSION, tx);
+        world.register_client(SESSION, client.clone()).await;
+        let mut session = Session {
+            id: SESSION,
+            current_zone_id: ZONE,
+            active_content_script: Some(ActiveContentScript {
+                parent_zone_id: ZONE,
+                area_name: "test01".to_string(),
+                area_class_path: "/Area/PrivateArea/ContentArea".to_string(),
+                director_name: "TestDirector".to_string(),
+                director_actor_id: DIRECTOR,
+                content_area_actor_id: 0,
+                content_script: "TestContent".to_string(),
+                warp_complete: true,
+                spawned_actor_ids: vec![MOB],
+            }),
+            ..Session::default()
+        };
+        session
+            .transient_director_members
+            .insert(DIRECTOR, vec![PLAYER, DIRECTOR, MOB]);
+        world.upsert_session(session).await;
+
+        let processor = PacketProcessor {
+            db,
+            world: world.clone(),
+            registry: registry.clone(),
+            lua: None,
+            cmd: None,
+        };
+        let sub = SubPacket::new(OP_SESSION_END, SESSION, Vec::new());
+        processor.handle_session_end(&client, &sub).await.unwrap();
+
+        let zone = world.zone(ZONE).await.unwrap();
+        let z = zone.read().await;
+        assert!(
+            !z.core.contains(PLAYER),
+            "player actor left behind as a ghost"
+        );
+        assert!(
+            !z.core.contains(MOB),
+            "content BattleNpc leaked into the base zone"
+        );
+        assert!(registry.get(MOB).await.is_none());
+    }
 }
 
 #[cfg(test)]
