@@ -834,6 +834,17 @@ pub enum LuaCommand {
         trigger: String,
         args: Vec<LuaCommandArg>,
     },
+    /// `player:SetEventStatus(actor, conditionName, enabled, type)` — the
+    /// 0x0136 packet that enables/disables one of an actor's event
+    /// conditions on this player's client (e.g. a tutorial exit door's
+    /// push trigger). (Garlemald-Server #187.)
+    SetEventStatus {
+        player_id: u32,
+        actor_id: u32,
+        condition: String,
+        enabled: bool,
+        kind: u8,
+    },
     Warp {
         player_id: u32,
         zone_id: u32,

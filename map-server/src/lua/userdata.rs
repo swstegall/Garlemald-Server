@@ -2962,7 +2962,38 @@ impl UserData for LuaPlayer {
             );
             Ok(())
         });
-        methods.add_method("SetEventStatus", |_, _this, _status: Value| Ok(()));
+        // `player:SetEventStatus(npc, "pushDefault", enabled, type)` — the
+        // opening tutorials toggle push triggers with it (exit doors,
+        // Ascilia, Rostnsthal). It used to discard its arguments, so the
+        // toggles never reached the client. (Garlemald-Server #187.)
+        methods.add_method(
+            "SetEventStatus",
+            |_, this, (target, condition, enabled, kind): (Value, String, Option<bool>, Option<i64>)| {
+                let actor_id = match &target {
+                    Value::UserData(ud) => ud
+                        .borrow::<LuaActor>()
+                        .ok()
+                        .map(|a| a.actor_id)
+                        .or_else(|| ud.borrow::<LuaDirectorHandle>().ok().map(|h| h.actor_id)),
+                    Value::Integer(i) => Some(*i as u32),
+                    _ => None,
+                };
+                let Some(actor_id) = actor_id else {
+                    return Ok(());
+                };
+                push(
+                    &this.queue,
+                    LuaCommand::SetEventStatus {
+                        player_id: this.snapshot.actor_id,
+                        actor_id,
+                        condition,
+                        enabled: enabled.unwrap_or(true),
+                        kind: kind.unwrap_or(0).clamp(0, 255) as u8,
+                    },
+                );
+                Ok(())
+            },
+        );
 
         // --- Equipment / inventory ------------------------------------------
         // `player:GetEquipment():Set(slots, srcPositions, srcPackage)` —

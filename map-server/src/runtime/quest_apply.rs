@@ -648,6 +648,19 @@ pub async fn apply_runtime_lua_command(
             apply_change_music(player_id, music_id, registry, world).await;
             true
         }
+        LC::SetEventStatus {
+            player_id,
+            actor_id,
+            condition,
+            enabled,
+            kind,
+        } => {
+            apply_set_event_status(
+                player_id, actor_id, &condition, enabled, kind, registry, world,
+            )
+            .await;
+            true
+        }
         LC::ChangeSpeed {
             player_id,
             stop,
@@ -1322,6 +1335,41 @@ async fn apply_play_animation(
 /// Music track mode is 0 (immediate switch); MUSIC_CROSSFADE etc. are
 /// available constants but not currently parameterised — pmeteor's Lua
 /// API takes a single id.
+/// 0x0136 `SetEventStatus` to the player's client: enable or disable
+/// one of `actor_id`'s event conditions. (Garlemald-Server #187.)
+async fn apply_set_event_status(
+    player_id: u32,
+    actor_id: u32,
+    condition: &str,
+    enabled: bool,
+    kind: u8,
+    registry: &ActorRegistry,
+    world: &WorldManager,
+) {
+    let Some(handle) = registry.get(player_id).await else {
+        return;
+    };
+    let session_id = handle.session_id;
+    if session_id == 0 {
+        return;
+    }
+    let Some(client) = world.client(session_id).await else {
+        return;
+    };
+    let mut sub =
+        crate::packets::send::actor::build_set_event_status(actor_id, enabled, kind, condition);
+    sub.set_target_id(session_id);
+    client.send_bytes(sub.to_bytes()).await;
+    tracing::debug!(
+        player = format!("0x{player_id:08X}"),
+        actor = format!("0x{actor_id:08X}"),
+        condition,
+        enabled,
+        kind,
+        "SetEventStatus applied",
+    );
+}
+
 async fn apply_change_music(
     player_id: u32,
     music_id: u16,

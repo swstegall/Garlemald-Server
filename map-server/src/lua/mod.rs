@@ -4208,6 +4208,51 @@ mod tests {
     /// re-park -> F-press signal resume -> `_WAIT_TIME` re-park ->
     /// ticker drain. All with global.lua's BARE yield pairs.
     /// (Garlemald-Server #28.)
+    /// `player:SetEventStatus(actor, condition, enabled, type)` must queue
+    /// a SetEventStatus command (it used to discard its arguments).
+    /// (Garlemald-Server #187.)
+    #[test]
+    fn set_event_status_queues_command() {
+        let root = tmpdir();
+        std::fs::create_dir_all(root.join("directors/Quest")).unwrap();
+        std::fs::write(root.join("global.lua"), "").unwrap();
+        std::fs::write(
+            root.join("directors/Quest/QuestDirectorToggle.lua"),
+            r#"
+                function onEventStarted(player, director, eventType, eventName)
+                    player:SetEventStatus(director, "pushDefault", false, 2)
+                end
+            "#,
+        )
+        .unwrap();
+        let engine = LuaEngine::new(&root);
+        let result = engine.call_director_on_event_started(
+            &root.join("directors/Quest/QuestDirectorToggle.lua"),
+            sample_snapshot(),
+            sample_director(CommandQueue::new()),
+            "noticeEvent".to_string(),
+            5,
+            vec![],
+        );
+        assert!(result.error.is_none(), "errored: {:?}", result.error);
+        let status = result.commands.iter().find_map(|c| match c {
+            LuaCommand::SetEventStatus {
+                actor_id,
+                condition,
+                enabled,
+                kind,
+                ..
+            } => Some((*actor_id, condition.clone(), *enabled, *kind)),
+            _ => None,
+        });
+        let (actor_id, condition, enabled, kind) =
+            status.unwrap_or_else(|| panic!("no SetEventStatus in {:?}", result.commands));
+        assert_ne!(actor_id, 0);
+        assert_eq!(condition, "pushDefault");
+        assert!(!enabled);
+        assert_eq!(kind, 2);
+    }
+
     #[test]
     fn full_cinematic_signal_wait_chain_round_trip() {
         let root = tmpdir();
