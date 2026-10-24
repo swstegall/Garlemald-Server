@@ -72,6 +72,13 @@ function onEventStarted(player, actor, triggerName)
 		player:EndEvent();
 		wait(1);
 		kickEventContinue(player, actor, "noticeEvent", "noticeEvent");
+		-- The kicked noticeEvent must be ended again: left open, the client
+		-- stays in event mode, so F (active mode) and attacks are dead and
+		-- the fight can never start. Same targeting lesson + EndEvent as the
+		-- DoW branch; it returns once a wolf is targeted, with movement,
+		-- hotbar and targeting unlocked.
+		callClientFunction(player, "delegateEvent", player, man0u0Quest, "processTtrBtl002", nil, nil, nil);
+		player:EndEvent();
 		closeTutorialWidget(player);
 		openTutorialWidget(player, CONTROLLER_KEYBOARD, TUTORIAL_DEFEATENEMY);
 		waitForSignal("battleComplete");
