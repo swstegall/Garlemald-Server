@@ -9293,6 +9293,32 @@ impl PacketProcessor {
             return;
         };
 
+        // Populace NPCs with their own menu script (chocobo lender, shops,
+        // leve publishers, …) run that script for the talk; a quest's
+        // onTalk only belongs there when the quest registered the NPC
+        // (`quest:SetENpc`). Otherwise the quest's generic tail
+        // `player:EndEvent()` closes the NPC's event while its script is
+        // still parked on the first callClientFunction — the chocobo
+        // lender's welcome line went out with an EndEvent in the same
+        // flush and the menu never answered. PopulaceStandard NPCs keep
+        // the every-quest fan-out (stub quests don't register ENPCs).
+        if hook_name == "onTalk"
+            && npc_spec.class_path.contains("/Populace/")
+            && !npc_spec.class_path.ends_with("/PopulaceStandard")
+        {
+            let registered = {
+                let c = handle.character.read().await;
+                c.quest_journal
+                    .slots
+                    .iter()
+                    .flatten()
+                    .any(|q| q.state.current.contains_key(&npc_spec.actor_class_id))
+            };
+            if !registered {
+                return;
+            }
+        }
+
         for quest_id in active_quest_ids {
             // Pass the eventName as the hook's trailing arg —
             // `onEmote(player, quest, npc, eventName)` /
