@@ -2505,6 +2505,32 @@ impl PacketProcessor {
         // the duplicate emission cleanly.
     }
 
+    /// Boot pass for the open-world monsters: spawns every zone-load battle
+    /// NPC (`spawnType = 0`) through the same path as `SpawnBattleNpcById`.
+    /// Actor numbers start at `0x20000` per zone: clear of the populace
+    /// seeds' sequential numbers and of `CONTENT_ACTOR_BAND_BIT` (0x40000),
+    /// which would mark these as content-instance actors. Returns how many
+    /// were spawned.
+    pub async fn spawn_zone_load_battle_npcs(&self) -> usize {
+        const FIRST_ACTOR_NUMBER: u32 = 0x2_0000;
+        let rows = match self.db.list_zone_load_battle_npcs().await {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!(error = %e, "zone-load battle npc list failed");
+                return 0;
+            }
+        };
+        let mut next: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+        for &(bnpc_id, zone_id) in &rows {
+            let number = next.entry(zone_id).or_insert(FIRST_ACTOR_NUMBER);
+            let actor_id = (4u32 << 28) | (zone_id << 19) | *number;
+            *number += 1;
+            self.apply_spawn_battle_npc_by_id(bnpc_id, zone_id, actor_id)
+                .await;
+        }
+        rows.len()
+    }
+
     /// B1 of the SEQ_005 unblock plan — port of the C# in
     /// `Map Server/WorldManager.cs:514 SpawnBattleNpcById`. Joins the
     /// four `server_battlenpc_*` seed tables on `bnpc_id`, materialises

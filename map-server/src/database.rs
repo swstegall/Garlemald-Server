@@ -631,6 +631,30 @@ impl Database {
         Ok(rows)
     }
 
+    /// Every battle NPC that spawns with its zone (`spawnType = 0`, not in a
+    /// private area) - the open-world monsters - as `(bnpcId, zoneId)`,
+    /// ordered so actor numbers come out the same on every boot.
+    pub async fn list_zone_load_battle_npcs(&self) -> Result<Vec<(u32, u32)>> {
+        let rows = self
+            .conn
+            .call_db(|c| {
+                let mut stmt = c.prepare(
+                    r"SELECT bsl.bnpcId, bgr.zoneId
+                      FROM server_battlenpc_spawn_locations bsl
+                      INNER JOIN server_battlenpc_groups bgr ON bsl.groupId = bgr.groupId
+                      WHERE bgr.spawnType = 0
+                        AND (bgr.privateAreaName IS NULL OR bgr.privateAreaName = '')
+                      ORDER BY bgr.zoneId, bsl.bnpcId",
+                )?;
+                let rows = stmt
+                    .query_map([], |r| Ok((r.get::<_, u32>(0)?, r.get::<_, u32>(1)?)))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await?;
+        Ok(rows)
+    }
+
     /// Load one `BattleNpcSpawn` row by `bnpc_id` — the spawn-locations,
     /// groups, pools, and genus tables joined into a single DTO. Returns
     /// `None` if `bnpc_id` doesn't exist in `server_battlenpc_spawn_locations`.

@@ -401,6 +401,15 @@ pub async fn run() -> Result<()> {
                 };
                 let spawned = ctx.spawn_all_actors().await;
                 tracing::info!(count = spawned.len(), "npc spawn pass complete");
+                let spawner = crate::processor::PacketProcessor {
+                    db: db.clone(),
+                    world: world.clone(),
+                    registry: registry.clone(),
+                    lua: Some(lua.clone()),
+                    cmd: Some(cmd.clone()),
+                };
+                let monsters = spawner.spawn_zone_load_battle_npcs().await;
+                tracing::info!(count = monsters, "zone-load battle npc spawn pass complete");
             }
             Err(e) => {
                 tracing::warn!(error = %e, "actor classes load failed; skipping spawn pass");

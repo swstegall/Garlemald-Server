@@ -1,0 +1,813 @@
+mob_name,ge_page_title,join_pass,client_display_name,mob_range_actor_ids,other_range_actor_ids,client_race_id,client_race_name,client_race_block,client_plural,spawn_container,client_leve,client_quest,client_proper_name,ge_family,removed_before_arr,notorious_monster,level_low,level_high,hp_low,hp_high
+Aetherbound Slave,Aetherbound Slave,exact,aetherbound slave,2202505,,1025,Ogre,,aetherbound slaves,leve-or-quest,,,0,Ogre,0,Y,55,,,
+Ahriman,Ahriman,exact,ahriman,2101705 2101706 2101713 2201704,6500030,1017,Ahriman,,ahriman,persistent | leve-or-quest,Curing Gout,,0,Ahriman,0,,65,74,6087,7267
+Akoman,Akoman,exact,akoman,2201707,,1017,Ahriman,,Akoman,leve-or-quest,,,1,Ahriman,0,Y,55,,,
+Akoman's Daewa,Akoman's Daewa,exact,akoman's daewa,2201708,,1017,Ahriman,,Akoman's daewas,leve-or-quest,,,1,Ahriman,0,,55,,,
+Ala Mhigan Axeman,Ala Mhigan Axeman,exact,ala mhigan axeman,2289041,1001979,1890,,"named opponents of scripted fights - job-quest champions, coliseum challengers, Grand Company and bandit duel squads; 93 percent of its GE mobs are notorious monsters against a 12 percent baseline, and it sits past a deliberate gap from the 80x faction run",Ala Mhigan axemen,leve-or-quest,,,1,Enemy Humanoid,0,Y,53,53,,
+Ala Mhigan Bladedancer,Ala Mhigan Bladedancer,exact,ala mhigan bladedancer,2289010,,1890,,"named opponents of scripted fights - job-quest champions, coliseum challengers, Grand Company and bandit duel squads; 93 percent of its GE mobs are notorious monsters against a 12 percent baseline, and it sits past a deliberate gap from the 80x faction run",Ala Mhigan bladedancers,leve-or-quest,,,1,Enemy Humanoid,0,Y,36,36,,
+Ala Mhigan Bowman,Ala Mhigan Bowman,exact,ala mhigan bowman,2289042,1001980,1890,,"named opponents of scripted fights - job-quest champions, coliseum challengers, Grand Company and bandit duel squads; 93 percent of its GE mobs are notorious monsters against a 12 percent baseline, and it sits past a deliberate gap from the 80x faction run",Ala Mhigan bowmen,leve-or-quest,,,1,Enemy Humanoid,0,Y,53,53,,
+Ala Mhigan Challenger,Ala Mhigan Challenger,exact,ala mhigan challenger,2289006 2289007 2289008 2289011 2289012,1000601,1890,,"named opponents of scripted fights - job-quest champions, coliseum challengers, Grand Company and bandit duel squads; 93 percent of its GE mobs are notorious monsters against a 12 percent baseline, and it sits past a deliberate gap from the 80x faction run",Ala Mhigan challengers,leve-or-quest,,Thrill of the Fight,1,Enemy Humanoid,0,x,20,36,,
+Ala Mhigan Pikeman,Ala Mhigan Pikeman,exact,ala mhigan pikeman,2289040,1001978,1890,,"named opponents of scripted fights - job-quest champions, coliseum challengers, Grand Company and bandit duel squads; 93 percent of its GE mobs are notorious monsters against a 12 percent baseline, and it sits past a deliberate gap from the 80x faction run",Ala Mhigan pikemen,leve-or-quest,,,1,Enemy Humanoid,0,Y,53,53,,
+Ala Mhigan Shaman,Ala Mhigan Shaman,exact,ala mhigan shaman,2289043,1001981,1890,,"named opponents of scripted fights - job-quest champions, coliseum challengers, Grand Company and bandit duel squads; 93 percent of its GE mobs are notorious monsters against a 12 percent baseline, and it sits past a deliberate gap from the 80x faction run",Ala Mhigan shamans,leve-or-quest,,,1,Enemy Humanoid,0,Y,53,53,,
+Alchemist's Tinder,Alchemist's Tinder,exact,alchemist's tinder,2109908 2109909 2109910 2109911,,1099,妖火 (仮),,alchemist's tinders,persistent,,,0,Wisp,0,,50,,2393,
+Aldgoat Billy,Aldgoat Billy,exact,aldgoat billy,2102301 2102302 2102314 2102315 2102316 2202309,,1023,Aldgoats,,aldgoat billies,persistent | leve-or-quest,,,0,Aldgoat,0,,30,39,2193,2813
+Aldgoat Nanny,Aldgoat Nanny,exact,aldgoat nanny,2102305 2102306 2102317 2102318 2102319 2202308,,1023,Aldgoats,,aldgoat nannies,persistent | leve-or-quest,,,0,Aldgoat,0,,20,29,2046,2661
+All-seeing Eye,All-seeing Eye,exact,all-seeing eye,2301701,,1017,Ahriman,,All-seeing Eyes,instanced-dungeon,,,1,Ahriman,0,x,N/A,,N/A,
+Alpgrot Orobon,Alpgrot Orobon,exact,alpgrot orobon,2304501,6500040,1045,Angler,,alpgrot orobons,instanced-dungeon,,,0,Angler,0,,52,52,,
+Alpha Coywolf,Alpha Coywolf,exact,alpha coywolf,2201409,,1014,Wolf/Hyena/Hellhound,,alpha coywolves,leve-or-quest,,,0,Wolf,0,,13,,801,
+Alpha Eft,Alpha Eft,exact,alpha eft,2201309,,1013,Salamander,,alpha efts,leve-or-quest,,,0,Salamander,0,,50,50,,
+Alpha Gnat,Alpha Gnat,exact,alpha gnat,2200607,,1006,Gnat,,alpha gnats,leve-or-quest,,,0,Gnat,0,,30,,,
+Alpha Miteling,Alpha Miteling,exact,alpha miteling,2201113,,1011,Crab,,alpha mitelings,leve-or-quest,,,0,Diremite,0,,50,,,
+Alpha Roseling,Alpha Roseling,exact,alpha roseling,2202712,,1027,Flytrap,,alpha roselings,leve-or-quest,,,0,Landtrap,0,,30,30,,
+Alpha Toad,Alpha Toad,exact,alpha toad,2203106,,1031,Gigantoad,,alpha toads,leve-or-quest,,,0,Toad,0,,50,,,
+Alux,Alux,exact,alux,2102609,,1026,Imp,,alux,persistent,,,0,Imp,0,x,42,,"27,489",
+Alvara Sourkiss,Alvara Sourkiss,exact,alvara sourkiss,2280133,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",Alvara Sourkiss,leve-or-quest,Wanted: Alvara Sourkiss,,1,Enemy Humanoid,0,,,,,
+Amalj'aa Bowyer,Amalj'aa Bowyer,exact,amalj'aa bowyer,2106515 2162007 2162008 2162009 2206511 2206544,,1065,Amlaj'aa,,Amalj'aa bowyers,persistent | leve-or-quest,,,1,Amalj'aa,0,,42,,,
+Amalj'aa Bruiser,Amalj'aa Bruiser,exact,amalj'aa bruiser,2162019 2162020 2162021,,1620,,"a second Amalj'aa roster, named by office and stronghold rather than by job - the Zahar'ak garrison, its clerical titles and the Burned converts; near-disjoint in naming from race 1065, which holds the rest of the Amalj'aa, but overlapping it in both zone and level",Amalj'aa bruisers,persistent,,,1,Amalj'aa,0,,27,29,,
+Amalj'aa Chief,Amalj'aa Chief,exact,amalj'aa chief,2206528 2206530 2206531,,1065,Amlaj'aa,,Amalj'aa chiefs,leve-or-quest,,,1,Amalj'aa,0,Y,59,59,,
+Amalj'aa Divinator,Amalj'aa Divinator,exact,amalj'aa divinator,2162031 2162032 2162033,,1620,,"a second Amalj'aa roster, named by office and stronghold rather than by job - the Zahar'ak garrison, its clerical titles and the Burned converts; near-disjoint in naming from race 1065, which holds the rest of the Amalj'aa, but overlapping it in both zone and level",Amalj'aa divinators,persistent,,,1,Amalj'aa,0,,47,49,,
+Amalj'aa Drubber,Amalj'aa Drubber,exact,amalj'aa drubber,2106501 2106538 2106539 2106540 2206503,,1065,Amlaj'aa,,Amalj'aa drubber,persistent | leve-or-quest,,,1,Amalj'aa,0,,,,,
+Amalj'aa Grappler,Amalj'aa Grappler,exact,amalj'aa grappler,2106503 2106504 2106505 2106506 2106507,,1065,Amlaj'aa,,Amalj'aa grapplers,persistent,,,1,Amalj'aa,0,,65,99,5891,11513
+Amalj'aa Grunt,Amalj'aa Grunt,exact,amalj'aa grunt,2106537,,1065,Amlaj'aa,,Amalj'aa grunts,persistent,,,1,Amalj'aa,0,,30,,2741,
+Amalj'aa Hunter,Amalj'aa Hunter,exact,amalj'aa hunter,2162001 2162002 2162003,,1620,,"a second Amalj'aa roster, named by office and stronghold rather than by job - the Zahar'ak garrison, its clerical titles and the Burned converts; near-disjoint in naming from race 1065, which holds the rest of the Amalj'aa, but overlapping it in both zone and level",Amalj'aa hunters,persistent,,,1,Amalj'aa,0,,27,29,,
+Amalj'aa Inculcator,Amalj'aa Inculcator,exact,amalj'aa inculcator,2206507,,1065,Amlaj'aa,,Amalj'aa inculcators,leve-or-quest,,,1,Amalj'aa,0,,50,70,4385,6500
+Amalj'aa Javelineer,Amalj'aa Javelineer,exact,amalj'aa javelineer,2162010 2162011 2162012,,1620,,"a second Amalj'aa roster, named by office and stronghold rather than by job - the Zahar'ak garrison, its clerical titles and the Burned converts; near-disjoint in naming from race 1065, which holds the rest of the Amalj'aa, but overlapping it in both zone and level",Amalj'aa javelineers,persistent,,,1,Amalj'aa,0,,27,29,,
+Amalj'aa Lancer,Amalj'aa Lancer,exact,amalj'aa lancer,2106508 2162016 2162017 2162018 2206508 2206523 2206535 2206536,,1065,Amlaj'aa,,Amalj'aa lancers,persistent | leve-or-quest,,,1,Amalj'aa,0,,55,55,,
+Amalj'aa Pugilist,Amalj'aa Pugilist,exact,amalj'aa pugilist,2106502 2206504 2206533 2206534 2206539 2206546,,1065,Amlaj'aa,,Amalj'aa pugilist,persistent | leve-or-quest,,,1,Amalj'aa,0,,36,59,1987,5234
+Amalj'aa Shaman,Amalj'aa Shaman,exact,amalj'aa shaman,2106522 2206517 2206524 2206537 2206538 2206541 2206547,,1065,Amlaj'aa,,Amalj'aa shamans,persistent | leve-or-quest,,Lord Errant,1,Amalj'aa,0,,55,55,,
+Amalj'aa Stargazer,Amalj'aa Stargazer,exact,amalj'aa stargazer,2162025 2162026 2162027,,1620,,"a second Amalj'aa roster, named by office and stronghold rather than by job - the Zahar'ak garrison, its clerical titles and the Burned converts; near-disjoint in naming from race 1065, which holds the rest of the Amalj'aa, but overlapping it in both zone and level",Amalj'aa stargazers,persistent,,,1,Amalj'aa,0,,27,29,,
+Amalj'aa Striker,Amalj'aa Striker,exact,amalj'aa striker,2106541,,1065,Amlaj'aa,,Amalj'aa strikers,persistent,,Freedom Isn't Free,1,Amalj'aa,0,,32,34,,
+Amalj'aa Transfigurator,Amalj'aa Transfigurator,exact,amalj'aa transfigurator,2206514 2206516,,1065,Amlaj'aa,,Amalj'aa transfigurators,leve-or-quest,,,1,Amalj'aa,0,,45,66,2385,3605
+Amalj'aa Transfisticator,Amalj'aa Transfisticator,exact,amalj'aa transfisticator,2206501 2206502,,1065,Amlaj'aa,,Amalj'aa transfisticators,leve-or-quest,,,1,Amalj'aa,0,,45,66,1987,3605
+Amalj'aa Transfixer,Amalj'aa Transfixer,exact,amalj'aa transfixer,2206505,,1065,Amlaj'aa,,Amalj'aa transfixers,leve-or-quest,,,1,Amalj'aa,0,,36,66,2385,3605
+Amalj'aa Trooper,Amalj'aa Trooper,exact,amalj'aa trooper,2206509 2206510,,1065,Amlaj'aa,,Amalj'aa troopers,leve-or-quest,,,1,Amalj'aa,0,,36,66,2385,3605
+Amateur Footpad,Amateur Footpad,exact,amateur footpad,2280101,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",amateur footpads,leve-or-quest,,,0,Enemy Humanoid,0,,,,,
+Amateur Highwayman,Amateur Highwayman,exact,amateur highwayman,2280103,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",amateur highwaymen,leve-or-quest,,,0,Enemy Humanoid,0,,,,,
+Amateur Raider,Amateur Raider,exact,amateur raider,2280105,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",amateur raiders,leve-or-quest,,,0,Enemy Humanoid,0,,,,,
+Anemone,Anemone,exact,anemone,2105405 2105406 2105411 2205408,,1054,Jellyfish,,anemones,persistent | leve-or-quest,Soft Targets,,0,Aurelia,0,,45,54,2252,2688
+Angler,Angler,exact,angler,2104501 2104509 2204505,,1045,Angler,,anglers,persistent | leve-or-quest,From the Sea to the Trees,Fishing for Answers,0,Angler,0,,20,24,682,920
+Ankle Biter,Ankle Biter,exact,ankle biter,2205603,,1056,Chigoe,,ankle biters,leve-or-quest,,,0,Chigoe,0,,10,,2,3
+Anole,Anole,exact,anole,2100201 2100202 2100214 2100215,,1002,Raptor,,anoles,persistent,,,0,Raptor,0,,55,64,3387,4043
+Anole Familiar,Anole Familiar,exact,anole familiar,2200205,6500035,1002,Raptor,,anole familiars,leve-or-quest,,,0,Raptor,0,,19,,2783,
+Anole Stalker,Anole Stalker,exact,anole stalker,2200206,,1002,Raptor,,anole stalkers,leve-or-quest,,,0,Raptor,0,,40,52,,
+Antares,Antares,exact,antares,2301102,,1011,Crab,,Antares,instanced-dungeon,,,1,Diremite,0,x,38,38,,
+Antelope Doe,Antelope Doe,exact,antelope doe,2100301 2100302 2100312 2100313 2100314,,1003,Antelope,,antelope does,persistent,,A Hypocritical Oath,0,Antelope,0,,20,29,1342,1508
+Antelope Stag,Antelope Stag,exact,antelope stag,2100305 2100306,,1003,Antelope,,antelope stags,persistent,,,0,Antelope,0,,45,54,2517,3004
+Antling Digger,Antling Digger,exact,antling digger,2103001 2103002 2103010 2103011 2103012,,1030,Antling,,antling diggers,persistent,,,0,Antling,0,,35,39,1693,1876
+Antling Forager,Antling Forager,exact,antling forager,2103003 2103004,,1030,Antling,,antling foragers,persistent,,,0,Antling,0,,50,54,2339,2530
+Antling Worker,Antling Worker,exact,antling worker,2203001 2203002 2203003 2203011,1001857,1030,Antling,,antling workers,leve-or-quest,Antling Invasion,Pride and Duty (Will Take You from the Mountain),0,Antling,0,,35,59,847,1919
+Apep,Apep,exact,apep,2100723,,1007,Basilisk,,Apep,persistent,,,1,Basilisk,0,,53,53,,
+Apkallu,Apkallu,exact,apkallu,2102902 2102905 2202901 2202902,,1029,Apkallu,,apkallus,persistent | leve-or-quest,,,0,Apkallu,0,,55,59,2258,2443
+Arbor Squirrel,Arbor Squirrel,exact,arbor squirrel,2104005 2104006,,1040,Rat,,arbor squirrels,persistent,,,0,Rodent,0,,20,29,1364,1774
+Ascian,Ascian,exact,ascian,2106901 2206901,,1069,Ascian,,Ascians,persistent | leve-or-quest,,Toll of the Warden,1,Ascian,0,,,,,
+Ashdrake,Ashdrake,exact,ashdrake,2102226 2102227 2102228,,1022,Drake,,ashdrake,persistent,,,0,Drake,0,,43,49,,
+Atomos,Atomos,exact,atomos,2111001 2111002 2111003 2111004 2111005 2111006 2111007 2111008,,1110,,"not a block: the race Atomos, missing from this dump's copy of xtx_monsterRace. It is one display name over 24 actors, the shape of the primal and single-creature races, and it sits immediately after the table's last row 1109",Atomos,persistent,,,1,Primal,0,Y,60,,,
+Aurelia,Aurelia,exact,aurelia,2105401 2105402 2105410 2105412 2205407,,1054,Jellyfish,,aurelias,persistent | leve-or-quest,Dream a Little Bream | Jellyfish in a Barrel | Seeing to the Overseers,Shapeless Melody,0,Aurelia,0,,10,19,175,385
+Aurora Angler,Aurora Angler,exact,aurora angler,2104508,,1045,Angler,,aurora anglers,persistent,,The Penultimate Prank,0,Angler,0,,30,30,,
+B'khenna the Pheonixfire,B'khenna the Phoenixfire,exact,b'khenna the phoenixfire,2280121,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",B'khenna the Phoenixfire,leve-or-quest,Still Wanted: B'khenna the Phoenixfire | Wanted: B'khenna the Phoenixfire,,1,Enemy Humanoid,0,,,,,
+Balloon,Balloon,exact,balloon,2101602,,1016,Bomb,,balloons,persistent,"Operation: Frame Work | Operation: Shuteye | Operation: Up, Up, and Away",Gone with the Wind,0,Bomb,0,,35,39,1904,2110
+Bandicoot,Bandicoot,exact,bandicoot,2105715 2105716,,1057,Hedgemole,,bandicoots,persistent,,,0,Mole,0,,55,59,4032,4362
+Bandit Spearman,Bandit Spearman,exact,bandit spearman,2180125 2180126 2180166 2180167 2180168 2280135 2280136,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",bandit spearmen,persistent | leve-or-quest,,,0,Enemy Humanoid,0,,,,,
+Banemite,Banemite,exact,banemite,2101106 2101107,,1011,Crab,,banemites,persistent,,,0,Diremite,0,,65,74,3142,3751
+Banescale Guivre,Banescale Guivre,exact,banescale guivre,2102215,,1022,Drake,,banescale guivres,persistent,,,0,Drake,0,,70,74,4333,4688
+Barbatos,Barbatos,exact,barbatos,2203503,1001973,1035,Gargoyle,,Barbatos,leve-or-quest,,Always Bet on Black,1,Gargoyle,0,Yes,,,,
+Bardi,Bardi,exact,bardi,2101413,,1014,Wolf/Hyena/Hellhound,,Bardi,persistent,,The Archer's Anthem,1,Wolf,0,x,42,,"19,992",
+Bark Eft,Bark Eft,exact,bark eft,2101307,,1013,Salamander,,bark efts,persistent,,,0,Salamander,0,,50,54,5408,5850
+Bark Weevil,Bark Weevil,exact,bark weevil,2203901,,1039,Weevil,,bark weevils,leve-or-quest,Evil Weevils,,0,Beetle,0,,3,15,56,255
+Barometz,Barometz,exact,barometz,2102718,,1027,Flytrap,,Barometz,persistent,,,1,Landtrap,0,x,36,,17424,
+Basilisk,Basilisk,exact,basilisk,2100709 2100710 2100711 2100712 2100719,9020002,1007,Basilisk,,basilisks,persistent,Looting the Larder,Good Vibrations,0,Basilisk,0,,75,89,6455,8506
+Bastard Mite,Bastard Mite,exact,bastard mite,2301105,,1011,Crab,,bastard mites,instanced-dungeon,,,0,Diremite,0,,39,39,,
+Batraal,Batraal,exact,batraal,2303501,,1035,Gargoyle,,Batraal,instanced-dungeon,,,1,Gargoyle,0,Yes,,,,
+Battle Drake,Battle Drake,exact,battle drake,2102220 2102222 2102223 2102224 2102225 2202207 2202209,,1022,Drake,,battle drakes,persistent | leve-or-quest,,,0,Drake,0,,52,57,,
+Battrap,Battrap,exact,battrap,2102710,,1027,Flytrap,,battraps,persistent,,,0,Landtrap,0,,45,49,1855,2007
+Beady Beetle,Beady Beetle,exact,beady beetle,2103902 2103903,,1039,Weevil,,beady beetles,persistent,,,0,Beetle,0,,5,14,337,802
+Bee Cloud,Bee Cloud,exact,bee cloud,2205301 2205302 2205303 2205309,,1053,Swarm,,bee clouds,leve-or-quest,,,0,Swarm,0,,5,40,76,793
+Beryl Crab,Beryl Crab,exact,beryl crab,2107613,,1076,Crab,,beryl crabs,persistent,,Beryl Overboard,0,Crab,0,,20,20,,
+Biast,Biast,exact,biast,2102209 2102210 2102217 2202204,6500029,1022,Drake,,biasts,persistent | leve-or-quest,,,0,Drake,0,,60,69,3558,4249
+Bigmouth Orobon,Bigmouth Orobon,exact,bigmouth orobon,2104506,,1045,Angler,,bigmouth orobon,persistent,,,0,Angler,0,,40,44,1682,1819
+Bile Gnat,Bile Gnat,exact,bile gnat,2200602,,1006,Gnat,,bile gnats,leve-or-quest,,,0,Gnat,0,,40,68,769,1959
+Bilge-soaked Buccaneer,Bilge-soaked Buccaneer,exact,bilge-soaked buccaneer,2280211 2280212,,1802,,"pirates - buccaneers, Black Crow, Kraken, Mistbeard",bilge-soaked buccaneers,leve-or-quest,,,0,Enemy Humanoid,0,,,,,
+Bixie,Bixie,exact,bixie,2208701,,1087,キマイラ (仮),,Bixie,leve-or-quest,,,1,Chimera,0,Y,55,,,
+Black Bat,Black Bat,exact,black bat,2104103 2104112,,1041,Bat,,black bats,persistent,,,0,Bat,0,,15,19,265,1061
+Black Crow Cleaver,Black Crow Cleaver,exact,black crow cleaver,2180217 2180219,,1802,,"pirates - buccaneers, Black Crow, Kraken, Mistbeard",Black Crow cleavers,persistent,,,1,Enemy Humanoid,0,,47,49,,
+Black Crow Swashbuckler,Black Crow Swashbuckler,exact,black crow swashbuckler,2180214 2180218,,1802,,"pirates - buccaneers, Black Crow, Kraken, Mistbeard",Black Crow swashbucklers,persistent,,,1,Enemy Humanoid,0,,47,49,,
+Black Eft,Black Eft,exact,black eft,2101305 2101306 2101321 2101322 2101323,,1013,Salamander,,black efts,persistent,,,0,Salamander,0,,40,49,4444,5303
+Black Wolf,Black Wolf (1.x),exact,black wolf,2101427 2101428,,1014,Wolf/Hyena/Hellhound,,black wolves,persistent,,,0,Wolf,0,,53,56,,
+Blind Eft,Blind Eft,exact,blind eft,2101309 2101310,,1013,Salamander,,blind efts,persistent,,,0,Salamander,0,,40,44,4444,4807
+Bloated Bogy,Bloated Bogy,exact,bloated bogy,2104304 2104305,,1043,Ghost,,bloated bogies,persistent,,,0,Ghost,0,,20,24,682,920
+Bloated Burble,Bloated Burble,exact,bloated burble,2204404,,1044,Phurble,,bloated burbles,leve-or-quest,,,0,Snurble,0,,40,52,,
+Bloodied Buccaneer,Bloodied Buccaneer,exact,bloodied buccaneer,2280203 2280204,,1802,,"pirates - buccaneers, Black Crow, Kraken, Mistbeard",bloodied buccaneers,leve-or-quest,,,0,Enemy Humanoid,0,,,,,
+Bloodshore Bell,Bloodshore Bell,exact,bloodshore bell,2105403,,1054,Jellyfish,,Bloodshore bells,persistent,,,1,Aurelia,0,,20,24,751,1150
+Bloodshot Eye,Bloodshot Eye,exact,bloodshot eye,2201705,,1017,Ahriman,,bloodshot eyes,leve-or-quest,Eye of the Miner | Eyeopener | Red Eye,,0,Ahriman,0,,40,52,,
+Bloodthirsty Wolf,Bloodthirsty Wolf,exact,bloodthirsty wolf,2201407,,1014,Wolf/Hyena/Hellhound,,bloodthirsty wolves,leve-or-quest,,,0,Wolf,0,,1,13,152,801
+Bloody Revenant,Bloody Revenant,exact,bloody revenant,2104314 2104315,,1043,Ghost,,bloody revenants,persistent,,,0,Ghost,0,,41,41,,
+Blotched Mongrel,Blotched Mongrel,exact,blotched mongrel,2201414 2201415 2201416,,1014,Wolf/Hyena/Hellhound,,blotched mongrels,leve-or-quest,,,0,Wolf,0,,40,52,1590,2759
+Bog Yarzon,Bog Yarzon,exact,bog yarzon,2205507,,1055,Yarzon,,bog yarzons,leve-or-quest,Yarz on Me,,0,Yarzon,0,,35,59,847,1919
+Bogy,Bogy,exact,bogy,2104302 2104303 2104322 2104324 2104325 2104326 2204314,,1043,Ghost,,bogies,persistent | leve-or-quest,,,0,Ghost,0,,10,14,525,688
+Bomb,Bomb (Enemy),exact,bomb,2101601 2101611 2201604,,1016,Bomb,,bombs,persistent | leve-or-quest,,,0,Bomb,0,,30,34,1645,1849
+Bomb Baron,Bomb Baron,exact,bomb baron,2101610,,1016,Bomb,,bomb barons,persistent,,Lance of Fury,0,Bomb,0,x,42,,"29,988",
+Bomb Ember,Bomb Ember,exact,bomb ember,2101609,,1016,Bomb,,bomb embers,persistent,,,0,Bomb,0,,30,,1645,
+Bone Nix,Bone Nix,exact,bone nix,2303101,6500043,1031,Gigantoad,,bone nixes,instanced-dungeon,,,0,Toad,0,,52,52,,
+Branded Drake,Branded Drake,exact,branded drake,2202202 2202203,,1022,Drake,,branded drakes,leve-or-quest,,,0,Drake,0,,40,75,1081,4781
+Brimstone Bomb,Brimstone Bomb,exact,brimstone bomb,2201602,,1016,Bomb,,brimstone bomb,leve-or-quest,,,0,Bomb,0,,40,52,,
+Brine Bogy,Brine Bogy,exact,brine bogy,2204305,,1043,Ghost,,brine bogies,leve-or-quest,,,0,Ghost,0,,,,,
+Bristletail Marmot,Bristletail Marmot,exact,bristletail marmot,2104022,,1040,Rat,,bristletail marmots,persistent,,The Search for Sicksa,0,Rodent,0,,10,,1019,
+Brutal Sheep,Brutal Sheep,exact,brutal sheep,2106022,,1060,Sheep,,brutal sheep,persistent,,,0,Ram,0,,40,43,,
+Buata,Buata,exact,buata,2101515,,1015,Boar,,Buata,persistent,,,1,Boar,0,Y,55,55,,
+Bumble Beetle,Bumble Beetle,exact,bumble beetle,2103901,,1039,Weevil,,bumble beetles,persistent,,,0,Beetle,0,,1,7,,
+Burble,Burble,exact,burble,2104407,,1044,Phurble,,burbles,persistent,A Fine Host | Back in Back | Tapping the Spine,,0,Snurble,0,,20,22,400,450
+Burned Brother,Burned Brother,exact,burned brother,2162045,,1620,,"a second Amalj'aa roster, named by office and stronghold rather than by job - the Zahar'ak garrison, its clerical titles and the Burned converts; near-disjoint in naming from race 1065, which holds the rest of the Amalj'aa, but overlapping it in both zone and level",Burned Brothers,persistent,,,1,Amalj'aa,0,,55,,,
+Buzzard,Buzzard,exact,buzzard,2101201 2101209 2201205,,1012,Vulture,,buzzards,persistent | leve-or-quest,,,0,Vulture,0,,40,44,1562,1689
+Buzzing Djigga,Buzzing Djigga,exact,buzzing djigga,2105607 2105608,,1056,Chigoe,,buzzing djiggas,persistent,,,0,Chigoe,0,,40,49,1802,2150
+Cactuar,Cactuar,exact,cactuar,2100901 2100902 2100911 2100914 2100915 2100916,,1009,Sabotender,,cactuars,persistent,A Leg Up | Threading the Needles,Lost in Rage,0,Cactuar,0,,20,24,887,997
+Cactuar Jack,Cactuar Jack,exact,cactuar jack,2100910,,1009,Sabotender,,Cactuar Jack,persistent,,Lost in Rage,1,Cactuar,0,x,47,,26449,
+Cactuar Jaques,Cactuar Jaques,exact,cactuar jaques,2200907,,1009,Sabotender,,Cactuar Jaques,leve-or-quest,,,1,Cactuar,0,Y,55,,,
+Cadaverous Cockatrice,Cadaverous Cockatrice,exact,cadaverous cockatrice,2202004 2202005 2202013,,1020,Cockatrice,,cadaverous cockatrices,leve-or-quest,,,0,Cockatrice,0,,40,52,1060,2529
+Canopy Galago,Canopy Galago,exact,canopy galago,2100502,,1005,Opo-opo,,canopy galagos,persistent,,,0,Opo-opo,0,,20,24,1092,1227
+Canyon Condor,Canyon Condor,exact,canyon condor,2201208,,1012,Vulture,,canyon condors,leve-or-quest,,Curious Gorge Goes to the Bazaar,0,Vulture,0,,43,,,
+Capricious Cassie,Capricious Cassie,exact,capricious cassie,2101011,,1010,Morbol,,Capricious Cassie,persistent,,,1,Morbol,0,Y,55,55,,
+Carrier Ladybug,Carrier Ladybug,exact,carrier ladybug,2203903,,1039,Weevil,,carrier ladybugs,leve-or-quest,,,0,Beetle,0,,20,44,405,1377
+Carrion Chiglet,Carrion Chiglet,exact,carrion chiglet,2205602,,1056,Chigoe,,carrion chiglets,leve-or-quest,,,0,Chigoe,0,,10,30,86,461
+Carrion Chigoe,Carrion Chigoe,exact,carrion chigoe,2105603 2105604,,1056,Chigoe,,carrion chigoes,persistent,,,0,Chigoe,0,,10,19,408,928
+Cassiopeia,Cassiopeia,exact,cassiopeia,2105404 2105413 2105414 2105415,,1054,Jellyfish,,cassiopeias,persistent,,,0,Aurelia,0,,20,29,868,1331
+Cave Bat,Cave Bat,exact,cave bat,2104101 2104102 2104113,,1041,Bat,,cave bats,persistent,,,0,Bat,0,,5,14,673,917
+Cavern Eft,Cavern Eft,exact,cavern eft,2201303 2201304 2201305,,1013,Salamander,,cavern eft,leve-or-quest,,,0,Salamander,0,,40,68,1346,2958
+Cavernulous Coblyn,Cavernulous Coblyn,exact,cavernulous coblyn,2202102 2202103,,1021,Coblyn,,cavernulous coblyns,leve-or-quest,,,0,Coblyn,0,,10,26,62,813
+Cell Mite,Cell Mite,exact,cell mite,2301101,,1011,Crab,,cell mites,instanced-dungeon,,,0,Diremite,0,,39,39,,
+Cellar Puk,Cellar Puk,exact,cellar puk,2100109 2100110,,1001,Puk,,cellar puks,persistent,Necrologos: The Moons' Mistress,,0,Puk,0,,30,34,1279,1438
+Ceruleum Generator,Ceruleum Generator,exact,ceruleum generator,2210802,1002064,1108,オブジェクト,,ceruleum generators,leve-or-quest,,,0,Unknown,0,,50,,,
+Chain Bearer,Chain Bearer,exact,chain bearer,2304302,,1043,Ghost,,chain bearers,instanced-dungeon,,,0,Ghost,0,,55,55,,
+Chiglet,Chiglet,exact,chiglet,2205601 2205608,,1056,Chigoe,,chiglets,leve-or-quest,Crushing Chiglets | Lack of Humours | Weevil Panic,,0,Chigoe,0,,3,15,47,213
+Chigoe,Chigoe,exact,chigoe,2105601 2105602 2105609 2105612 2105613 2105614 2205610 2205611,,1056,Chigoe,,chigoes,persistent | leve-or-quest,,,0,Chigoe,0,,4,10,289,686
+Chinchilla,Chinchilla,exact,chinchilla,2204010,,1040,Rat,,chinchillas,leve-or-quest,,,0,Rodent,0,,10,,,
+Cinderbelly Eft,Cinderbelly Eft,exact,cinderbelly eft,2101308,,1013,Salamander,,cinderbelly efts,persistent,,,0,Salamander,0,,55,59,5967,6455
+Cliffdiver,Cliffdiver,exact,cliffdiver,2201209,1001982,1012,Vulture,,cliffdivers,leve-or-quest,,,0,Vulture,0,,53,,,
+Clipper,Clipper,exact,clipper,2107611 2107612 2107623 2107624,,1076,Crab,,clippers,persistent,,,0,Crab,0,,70,79,4333,5173
+Cloud Hippocerf,Cloud Hippocerf,exact,cloud hippocerf,2100403 2100404,,1004,Hippogryph,,cloud hippocerfs,persistent,,,0,Hippogryph,0,,46,49,,
+Cochineal Cactuar,Cochineal Cactuar,exact,cochineal cactuar,2100903 2100904,,1009,Sabotender,,cochineal cactuars,persistent,,,0,Cactuar,0,,30,39,1188,1524
+Cockatrice,Cockatrice (1.x),exact,cockatrice,2102005 2102006 2102012 2202007,,1020,Cockatrice,,cockatrices,persistent | leve-or-quest,All Cracked Up,,0,Cockatrice,0,,45,54,2649,3162
+Coiled Adder,Coiled Adder,exact,coiled adder,2280132,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",Coiled Adder,leve-or-quest,Wanted: Coiled Adder,,1,Enemy Humanoid,0,,,,,
+Common Cactuar,Common Cactuar,exact,common cactuar,2200901,,1009,Sabotender,,common cactuars,leve-or-quest,,,0,Cactuar,0,,20,32,273,841
+Condor,Condor,exact,condor,2101205 2101210 2201206,,1012,Vulture,,condors,persistent | leve-or-quest,,Curious Gorge Goes to the Bazaar,0,Vulture,0,,40,44,1562,1689
+Copper Coblyn,Copper Coblyn,exact,copper coblyn,2102101 2102102 2102113 2102114,,1021,Coblyn,,copper coblyns,persistent,,,0,Coblyn,0,,5,14,169,573
+Corroded Coblyn,Corroded Coblyn,exact,corroded coblyn,2102127 2102128 2202101,,1021,Coblyn,,corroded coblyns,persistent | leve-or-quest,,,0,Coblyn,0,,1,13,51,625
+Corrosive Coblyn,Corrosive Coblyn,exact,corrosive coblyn,2202111,,1021,Coblyn,,corrosive coblyns,leve-or-quest,,,0,Coblyn,0,,20,,682,
+Crabfisher,Crabfisher,exact,crabfisher,2204511,,1045,Angler,,crabfishers,leve-or-quest,,,0,Angler,0,,33,33,,
+Crapulous Canine,Crapulous Canine,exact,crapulous canine,2201425,,1014,Wolf/Hyena/Hellhound,,crapulous canines,leve-or-quest,,,0,Wolf,0,,30,42,,
+Creeping Ivy,Creeping Ivy,exact,creeping ivy,2101003 2101004,,1010,Morbol,,creeping ivies,persistent,,,0,Morbol,0,,75,84,6933,8277
+Croft Kalong,Croft Kalong,exact,croft kalong,2204104 2204105 2204106,,1041,Bat,,croft kalongs,leve-or-quest,,,0,Bat,0,,35,39,804,1850
+Curious Galago,Curious Galago,exact,curious galago,2100516 2100517 2100518 2200501 2200502,,1005,Opo-opo,,curious galagos,persistent | leve-or-quest,,,0,Opo-opo,0,,15,40,328,1290
+Curious Gorge,Curious Gorge (Mob),exact,curious gorge,2289037,1060028,1890,,"named opponents of scripted fights - job-quest champions, coliseum challengers, Grand Company and bandit duel squads; 93 percent of its GE mobs are notorious monsters against a 12 percent baseline, and it sits past a deliberate gap from the 80x faction run",Curious Gorge,leve-or-quest,,Curious Gorge Goes to the Bazaar | Embracing the Beast | How to Quit You,1,Enemy Humanoid,0,Y,55,55,,
+Cursed Eye,Cursed Eye,exact,cursed eye,2101711,,1017,Ahriman,,cursed eyes,persistent,,A Knock in the Night,0,Ahriman,0,,35,35,,
+Daddy Longlegs,Daddy Longlegs,exact,daddy longlegs,2105513,,1055,Yarzon,,Daddy Longlegs,persistent,,A Time to Kill,1,Yarzon,0,x,42,,"27,489",
+Dapper Cadaver,Dapper Cadaver,exact,dapper cadaver,2101815 2101816,,1018,Zombie,,dapper cadavers,persistent,,,0,Fomor,0,,45,45,,
+Darkeye Devilet,Darkeye Devilet,exact,darkeye devilet,2202605 2202606,,1026,Imp,,darkeye devilets,leve-or-quest,,,0,Imp,0,,40,68,721,1875
+Darkwing Devilet,Darkwing Devilet,exact,darkwing devilet,2202604,,1026,Imp,,darkwing devilets,leve-or-quest,Escape from Cell D72,,0,Imp,0,,35,59,1058,2268
+Deadeyes,Deadeyes,exact,deadeyes,2201404,,1014,Wolf/Hyena/Hellhound,,Deadeyes,leve-or-quest,Operation: Shuteye,,1,Wolf,0,,10,60,459,6405
+Deathstroke Assassin,Deathstroke Assassin,exact,deathstroke assassin,2180110 2180111 2180112 2180155 2180156 2280115 2280116 2280117,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",Deathstroke assassins,persistent | leve-or-quest,,,1,Enemy Humanoid,0,,20,52,,
+Deepground Puk,Deepground Puk,exact,deepground puk,2200103 2200104,,1001,Puk,,deepground puks,leve-or-quest,,,0,Puk,0,,35,59,741,1745
+Deepvoid Pikeman,Deepvoid Pikeman,exact,deepvoid pikeman,2101819 2101821,,1018,Zombie,,deepvoid pikemen,persistent,,,0,Fomor,0,,60,,,
+Deepvoid Scamp,Deepvoid Scamp,exact,deepvoid scamp,2102612 2102613,,1026,Imp,,deepvoid scamps,persistent,,,0,Imp,0,,60,,,
+Deepvoid Sludge,Deepvoid Sludge,exact,deepvoid sludge,2103405 2103406,,1034,Flan,,deepvoid sludges,persistent,,,0,Flan,0,,60,,,
+Deepvoid Soul,Deepvoid Soul,exact,deepvoid soul,2104328 2104329,,1043,Ghost,,deepvoid souls,persistent,,,0,Ghost,0,,60,,,
+Deepvoid Warrior,Deepvoid Warrior,exact,deepvoid warrior,2101910 2101911,,1019,Wight,,deepvoid warriors,persistent,,,0,Wight,0,,60,,,
+Deepvoid Watcher,Deepvoid Watcher,exact,deepvoid watcher,2101714 2101715,,1017,Ahriman,,deepvoid watchers,persistent,,,0,Ahriman,0,,60,,,
+Deepvoid Wizard,Deepvoid Wizard,exact,deepvoid wizard,2101820 2101822,,1018,Zombie,,deepvoid wizards,persistent,,,0,Fomor,0,,60,,,
+Delta Crab,Delta Crab,exact,delta crab,2207604,,1076,Crab,,delta crabs,leve-or-quest,Crabs in the Cellar,,0,Crab,0,,30,54,549,1423
+Desert Peiste,Desert Peiste,exact,desert peiste,2100701 2100702,,1007,Basilisk,,desert peistes,persistent,,,0,Basilisk,0,,45,54,3179,3795
+Devilet,Devilet,exact,devilet,2102605 2102606 2102611 2202608,,1026,Imp,,devilets,persistent | leve-or-quest,A Devilet's Best Friend | Ale to the Chief | Corpus Adamance,,0,Imp,0,,40,44,2402,2598
+Dew Hare,Dew Hare,exact,dew hare,2104210,,1042,Slug,,dew hares,persistent,,,0,Slug,0,,45,49,4106,4443
+Diamond-tooth Hedgemole,Diamond-tooth Hedgemole,exact,diamond-tooth hedgemole,2305701,,1057,Hedgemole,,diamond-tooth hedgemoles,instanced-dungeon,,,0,Mole,0,,52,52,,
+Dire Dormouse,Dire Dormouse,exact,dire dormouse,2204012 2204013 2204014 2204015 2204016 2204017,,1040,Rat,,dire dormice,leve-or-quest,,,0,Rodent,0,,35,68,721,1875
+Dire Rat,Dire Rat,exact,dire rat,2104004,,1040,Rat,,dire rat,persistent,,,0,Rodent,0,,15,19,1179,1325
+Diremite,Diremite,exact,diremite,2101102 2101103 2101114 2101115 2101116 2101120 2201101 2201102,6500025 6500026 6500027 6500028,1011,Crab,,diremites,persistent | leve-or-quest,,,0,Diremite,0,,50,59,2339,2792
+Diremite Straggler,Diremite Straggler,exact,diremite straggler,2201115,,1011,Crab,,diremite stragglers,leve-or-quest,,Seeds of Initiative,0,Diremite,0,,35,,,
+Dirty Mongrel,Dirty Mongrel,exact,dirty mongrel,2201413,,1014,Wolf/Hyena/Hellhound,,dirty mongrels,leve-or-quest,,,0,Wolf,0,,32,73,1590,2759
+Dodo,Dodo (1.x),exact,dodo,2102001 2102002 2102011 2102013 2102014 2102015 2102016 2102017,9020001 9220104 9220202,1020,Cockatrice,,dodos,persistent | leve-or-quest,,,0,Cockatrice,0,,15,24,1179,1533
+Dodore,Dodore,exact,dodore,2101710,,1017,Ahriman,,Dodore,persistent,,,1,Ahriman,0,x,60,,32022,
+Dodore's Minion,Dodore's Minion,exact,dodore's minion,2101709,,1017,Ahriman,,Dodore's minions,persistent,,,1,Ahriman,0,x,55,,19350,
+Doomvoid Guivre,Doomvoid Guivre,exact,doomvoid guivre,2102216,,1022,Drake,,doomvoid guivres,persistent,,,0,Drake,0,,75,79,4781,5173
+Dormouse,Dormouse,exact,dormouse,2104014 2104018 2104026 2204021,,1040,Rat,,dormice,persistent | leve-or-quest,What the Devilet Dons,,0,Rodent,0,,40,44,2402,2598
+Downcast Hippocerf,Downcast Hippocerf,exact,downcast hippocerf,2200401 2200402,,1004,Hippogryph,,downcast hippocerfs,leve-or-quest,,,0,Hippogryph,0,,30,54,439,1234
+Downy Dunstan,Downy Dunstan,exact,downy dunstan,2106017,,1060,Sheep,,Downy Dunstan,persistent,,When Sheep Attack,1,Ram,0,x,42,,17493,
+Drake Familiar,Drake Familiar,exact,drake familiar,2202206,6500034,1022,Drake,,drake familiar,leve-or-quest,,,0,Drake,0,,19,,2650,
+Dreadwolf,Dreadwolf,exact,dreadwolf,2101403 2201421,,1014,Wolf/Hyena/Hellhound,,dreadwolves,persistent | leve-or-quest,,,0,Wolf,0,,25,29,1421,1597
+Dreamtoad,Dreamtoad,exact,dreamtoad,2203101 2203102 2203107,,1031,Gigantoad,,dreamtoads,leve-or-quest,A Toad's Taste | Do Toads Dream,,0,Toad,0,,45,73,1537,3356
+Drifting Anemone,Drifting Anemone,exact,drifting anemone,2205404 2205405 2205411,,1054,Jellyfish,,drifting anemones,leve-or-quest,,,0,Aurelia,0,,45,73,1140,2667
+Drifting Aurelia,Drifting Aurelia,exact,drifting aurelia,2205402,,1054,Jellyfish,,drifting aurelias,leve-or-quest,,,0,Aurelia,0,,20,48,314,1068
+Drifting Dud,Drifting Dud,exact,drifting dud,2101614,,1016,Bomb,,drifting duds,persistent,,,0,Bomb,0,,23,26,497,603
+Drunken Dormouse,Drunken Dormouse,exact,drunken dormouse,2204025,,1040,Rat,,drunken dormice,leve-or-quest,,,0,Rodent,0,,30,42,,
+Drybone Shrew,Drybone Shrew,exact,drybone shrew,2105707 2105724 2105725 2105726,,1057,Hedgemole,,Drybone shrews,persistent,,,1,Mole,0,,10,14,1121,1260
+Dune Bogy,Dune Bogy,exact,dune bogy,2204301 2204303 2204306,,1043,Ghost,,dune bogies,leve-or-quest,,,0,Ghost,0,,,,,
+Dusty Devilet,Dusty Devilet,exact,dusty devilet,2202610,,1026,Imp,,dusty devilets,leve-or-quest,,,0,Imp,0,,30,42,,
+Dusty Mongrel,Dusty Mongrel,exact,dusty mongrel,2101409,,1014,Wolf/Hyena/Hellhound,,dusty mongrels,persistent,,,0,Wolf,0,,45,49,2385,2580
+Dwarf Banemite,Dwarf Banemite,exact,dwarf banemite,2101105,,1011,Crab,,dwarf banemites,persistent,,,0,Diremite,0,,60,64,2847,3081
+Dwarf Diremite,Dwarf Diremite,exact,dwarf diremite,2101101,,1011,Crab,,dwarf diremites,persistent,,,0,Diremite,0,,45,49,2120,2293
+Earth Elemental,Earth Elemental,exact,earth elemental,2104901 2104902 2104903 2104904 2104905 2104906 2204901 2204902,,1049,Earth Elemental,,earth elementals,persistent | leve-or-quest,,,0,Elemental,0,,30,75,1157,4781
+Earthbound Wrath,Earthbound Wrath,exact,earthbound wrath,2204907,1001969,1049,Earth Elemental,,earthbound wrath,leve-or-quest,,,0,Elemental,0,Y,55,,,
+Eftstool,Eftstool,exact,eftstool,2305901,1002012,1059,Funguar,,eftstools,instanced-dungeon,,,0,Funguar,0,,55,,,
+Elder Longhorn,Elder Longhorn,exact,elder longhorn,2202310,,1023,Aldgoats,,elder longhorns,leve-or-quest,,,0,Aldgoat,0,Y,55,,,
+Elder Mosshorn,Elder Mosshorn,exact,elder mosshorn,2102311,,1023,Aldgoats,,elder mosshorns,persistent,,"Mess with the Goat, Get the Horns",0,Aldgoat,0,x,60,,32022,
+Elite Bestiarius,Elite Bestiarius,exact,elite bestiarius,2280031 2280047,,1800,,"Garlean imperial legion - 117 actors over one ladder of seven Roman line ranks in three tiers, deployed five times. `imperial` line at level 50-55 and `elite` line at 56 hold Castrum Novum, `VIIth Legion` line at 54-55 holds it and Mor Dhona, the `imperial` skirmish ranks hold East Shroud and the Dzemael Darkhold, and the `elite` skirmish ranks roam four field zones as the hamlet-invasion attackers populaceWaveAttack.csv calls imperial troopers. The tier and the rank family pick the deployment, not the id band",elite bestiarii,leve-or-quest,,,0,Enemy Humanoid,0,,30,50+,,
+Elite Eques,Elite Eques,exact,elite eques,2180016 2280067,,1800,,"Garlean imperial legion - 117 actors over one ladder of seven Roman line ranks in three tiers, deployed five times. `imperial` line at level 50-55 and `elite` line at 56 hold Castrum Novum, `VIIth Legion` line at 54-55 holds it and Mor Dhona, the `imperial` skirmish ranks hold East Shroud and the Dzemael Darkhold, and the `elite` skirmish ranks roam four field zones as the hamlet-invasion attackers populaceWaveAttack.csv calls imperial troopers. The tier and the rank family pick the deployment, not the id band",elite equites,persistent | leve-or-quest,,,0,Enemy Humanoid,0,,56,,,
+Elite Funditor,Elite Funditor,exact,elite funditor,2280032 2280048,,1800,,"Garlean imperial legion - 117 actors over one ladder of seven Roman line ranks in three tiers, deployed five times. `imperial` line at level 50-55 and `elite` line at 56 hold Castrum Novum, `VIIth Legion` line at 54-55 holds it and Mor Dhona, the `imperial` skirmish ranks hold East Shroud and the Dzemael Darkhold, and the `elite` skirmish ranks roam four field zones as the hamlet-invasion attackers populaceWaveAttack.csv calls imperial troopers. The tier and the rank family pick the deployment, not the id band",elite funditores,leve-or-quest,,,0,Enemy Humanoid,0,x,50+,50+,,
+Elite Hoplomachus,Elite Hoplomachus,exact,elite hoplomachus,2180012,,1800,,"Garlean imperial legion - 117 actors over one ladder of seven Roman line ranks in three tiers, deployed five times. `imperial` line at level 50-55 and `elite` line at 56 hold Castrum Novum, `VIIth Legion` line at 54-55 holds it and Mor Dhona, the `imperial` skirmish ranks hold East Shroud and the Dzemael Darkhold, and the `elite` skirmish ranks roam four field zones as the hamlet-invasion attackers populaceWaveAttack.csv calls imperial troopers. The tier and the rank family pick the deployment, not the id band",elite hoplomachi,persistent,,,0,Enemy Humanoid,0,,56,,,
+Elite Laquearius,Elite Laquearius,exact,elite laquearius,2180014 2280066,,1800,,"Garlean imperial legion - 117 actors over one ladder of seven Roman line ranks in three tiers, deployed five times. `imperial` line at level 50-55 and `elite` line at 56 hold Castrum Novum, `VIIth Legion` line at 54-55 holds it and Mor Dhona, the `imperial` skirmish ranks hold East Shroud and the Dzemael Darkhold, and the `elite` skirmish ranks roam four field zones as the hamlet-invasion attackers populaceWaveAttack.csv calls imperial troopers. The tier and the rank family pick the deployment, not the id band",elite laquearii,persistent | leve-or-quest,,,0,Enemy Humanoid,0,,56,,,
+Elite Medicus,Elite Medicus,exact,elite medicus,2180020 2280069,,1800,,"Garlean imperial legion - 117 actors over one ladder of seven Roman line ranks in three tiers, deployed five times. `imperial` line at level 50-55 and `elite` line at 56 hold Castrum Novum, `VIIth Legion` line at 54-55 holds it and Mor Dhona, the `imperial` skirmish ranks hold East Shroud and the Dzemael Darkhold, and the `elite` skirmish ranks roam four field zones as the hamlet-invasion attackers populaceWaveAttack.csv calls imperial troopers. The tier and the rank family pick the deployment, not the id band",elite medici,persistent | leve-or-quest,,,0,Enemy Humanoid,0,,56,,,
+Elite Secutor,Elite Secutor,exact,elite secutor,2180010 2280065,,1800,,"Garlean imperial legion - 117 actors over one ladder of seven Roman line ranks in three tiers, deployed five times. `imperial` line at level 50-55 and `elite` line at 56 hold Castrum Novum, `VIIth Legion` line at 54-55 holds it and Mor Dhona, the `imperial` skirmish ranks hold East Shroud and the Dzemael Darkhold, and the `elite` skirmish ranks roam four field zones as the hamlet-invasion attackers populaceWaveAttack.csv calls imperial troopers. The tier and the rank family pick the deployment, not the id band",elite secutores,persistent | leve-or-quest,,,0,Enemy Humanoid,0,,56,,,
+Elite Signifer,Elite Signifer,exact,elite signifer,2180022 2280070,,1800,,"Garlean imperial legion - 117 actors over one ladder of seven Roman line ranks in three tiers, deployed five times. `imperial` line at level 50-55 and `elite` line at 56 hold Castrum Novum, `VIIth Legion` line at 54-55 holds it and Mor Dhona, the `imperial` skirmish ranks hold East Shroud and the Dzemael Darkhold, and the `elite` skirmish ranks roam four field zones as the hamlet-invasion attackers populaceWaveAttack.csv calls imperial troopers. The tier and the rank family pick the deployment, not the id band",elite signiferi,persistent | leve-or-quest,,,0,Enemy Humanoid,0,,56,,,
+Elite Speculator,Elite Speculator,exact,elite speculator,2280033 2280049,,1800,,"Garlean imperial legion - 117 actors over one ladder of seven Roman line ranks in three tiers, deployed five times. `imperial` line at level 50-55 and `elite` line at 56 hold Castrum Novum, `VIIth Legion` line at 54-55 holds it and Mor Dhona, the `imperial` skirmish ranks hold East Shroud and the Dzemael Darkhold, and the `elite` skirmish ranks roam four field zones as the hamlet-invasion attackers populaceWaveAttack.csv calls imperial troopers. The tier and the rank family pick the deployment, not the id band",elite speculators,leve-or-quest,,,0,Enemy Humanoid,0,x,50+,50+,,
+Elite Triarius,Elite Triarius,exact,elite triarius,2280030 2280046 2280050,,1800,,"Garlean imperial legion - 117 actors over one ladder of seven Roman line ranks in three tiers, deployed five times. `imperial` line at level 50-55 and `elite` line at 56 hold Castrum Novum, `VIIth Legion` line at 54-55 holds it and Mor Dhona, the `imperial` skirmish ranks hold East Shroud and the Dzemael Darkhold, and the `elite` skirmish ranks roam four field zones as the hamlet-invasion attackers populaceWaveAttack.csv calls imperial troopers. The tier and the rank family pick the deployment, not the id band",elite triarii,leve-or-quest,,,0,Enemy Humanoid,0,,30,30,,
+Emerald Bee Swarm,Emerald Bee Swarm,exact,emerald bee swarm,2105302,,1053,Swarm,,emerald bee swarms,persistent,,,0,Swarm,0,,10,14,306,688
+Emerald Salamander,Emerald Salamander,exact,emerald salamander,2101313 2101314,,1013,Salamander,,emerald salamanders,persistent,,,0,Salamander,0,,75,84,8128,9704
+Emperor Apkallu,Emperor Apkallu,exact,emperor apkallu,2102904,,1029,Apkallu,,emperor apkallus,persistent,,,0,Apkallu,0,,65,69,2749,2975
+Errant Soul,Errant Soul,exact,errant soul,2104301,,1043,Ghost,,errant souls,persistent,Sly Spirits | Terror in the Pits,,0,Ghost,0,,1,4,433,485
+Escaped Goobbue,Escaped Goobbue,exact,escaped goobbue,2203301,,1033,Goobbue,,escaped goobbues,leve-or-quest,,,0,Goobbue,0,x,1,,670,
+Estinien Wyrmblood,Estinien Wyrmblood,exact,estinien wyrmblood,2289038,,1890,,"named opponents of scripted fights - job-quest champions, coliseum challengers, Grand Company and bandit duel squads; 93 percent of its GE mobs are notorious monsters against a 12 percent baseline, and it sits past a deliberate gap from the 80x faction run",Estinien Wyrmblood,leve-or-quest,,,1,Enemy Humanoid,0,Yes,,,,
+Eurylochus,Eurylochus,exact,eurylochus,2201507,,1015,Boar,,Eurylochus,leve-or-quest,,,1,Boar,0,Y,55,,,
+Evenfall Firefly,Evenfall Firefly,exact,evenfall firefly,2205801 2205802 2205803,,1058,Firefly,,evenfall fireflies,leve-or-quest,,,0,Firefly,0,,5,40,202,937
+Evil Eye,Evil Eye,exact,evil eye,2101703 2101704,,1017,Ahriman,,evil eyes,persistent,,,0,Ahriman,0,,50,59,3947,4711
+Eyetrap,Eyetrap,exact,eyetrap,2102716,,1027,Flytrap,,eyetraps,persistent,,,0,Landtrap,0,,55,59,2258,2443
+Fachan,Fachan,exact,fachan,2101712 2201701 2201702 2201703,,1017,Ahriman,,fachan,persistent | leve-or-quest,The All-seeing Eyes,,0,Ahriman,0,,40,68,985,2333
+Faerie Funguar,Faerie Funguar,exact,faerie funguar,2105904,,1059,Funguar,,faerie funguars,persistent,,,0,Funguar,0,,15,19,1356,1524
+Fallen Archmage,Fallen Archmage,exact,fallen archmage,2101814,,1018,Zombie,,fallen archmages,persistent,,,0,Fomor,0,,75,79,7650,8277
+Fallen Captain,Fallen Captain,exact,fallen captain,2101807,,1018,Zombie,,fallen captains,persistent,,,0,Fomor,0,,75,79,7650,8277
+Fallen Mage,Fallen Mage,exact,fallen mage,2101810 2101811,,1018,Zombie,,fallen mages,persistent,,,0,Fomor,0,,57,64,5367,6161
+Fallen Pikeman,Fallen Pikeman,exact,fallen pikeman,2101805 2101806,,1018,Zombie,,fallen pikemen,persistent,,,0,Fomor,0,,65,74,6284,7501
+Fallen Soldier,Fallen Soldier,exact,fallen soldier,2101803 2101804,,1018,Zombie,,fallen soldiers,persistent,,,0,Fomor,0,,55,64,5161,6161
+Fallen Wizard,Fallen Wizard,exact,fallen wizard,2101812 2101813,,1018,Zombie,,fallen wizards,persistent,,,0,Fomor,0,,65,74,6284,7501
+Fallgourd Funguar,Fallgourd Funguar,exact,fallgourd funguar,2105903,,1059,Funguar,,fallgourd funguars,persistent,,,0,Funguar,0,,10,14,1172,1317
+Fat Dodo,Fat Dodo,exact,fat dodo,2102003 2102004,,1020,Cockatrice,,fat dodos,persistent,,,0,Cockatrice,0,,25,34,1578,2054
+Fellbite Peiste,Fellbite Peiste,exact,fellbite peiste,2200701,,1007,Basilisk,,fellbite peistes,leve-or-quest,,,0,Basilisk,0,,45,73,1590,3448
+Feral Dodo,Feral Dodo,exact,feral dodo,2202003,,1020,Cockatrice,,feral dodos,leve-or-quest,,Best Flower Ever,0,Cockatrice,0,,30,58,549,1540
+Feral Watchdog,Feral Watchdog,exact,feral watchdog,2101404 2101424 2101425 2101426,,1014,Wolf/Hyena/Hellhound,,feral watchdog,persistent,,,0,Wolf,0,,30,39,,
+Fevered Doe,Fevered Doe,exact,fevered doe,2200302,,1003,Antelope,,fevered does,leve-or-quest,,,0,Antelope,0,,30,54,476,1297
+Figgy Pudding,Figgy Pudding,exact,figgy pudding,2203405,,1034,Flan,,figgy puddings,leve-or-quest,,,0,Flan,0,,30,42,,
+Fire Bomb,Fire Bomb,exact,fire bomb,2201601,,1016,Bomb,,fire bomb,leve-or-quest,,,0,Bomb,0,,30,54,494,1329
+Fire Elemental,Fire Elemental,exact,fire elemental,2104601 2104602 2104603 2104604 2104605 2104606 2204601 2204602,,1046,Fire Elemental,,fire elementals,persistent | leve-or-quest,Secret of the Sewers,Playing with Fire,0,Elemental,0,,30,79,1827,5173
+Firebound Wrath,Firebound Wrath,exact,firebound wrath,2204610,1001966,1046,Fire Elemental,,firebound wrath,leve-or-quest,,,0,Elemental,0,Y,55,,,
+Firedrake,Firedrake,exact,firedrake,2102205 2102206,,1022,Drake,,firedrakes,persistent,,,0,Drake,0,,60,69,3558,4249
+Firefly,Firefly,exact,firefly,2105801 2105805 2205804,,1058,Firefly,,fireflies,persistent | leve-or-quest,,,0,Firefly,0,,5,9,673,785
+Firestarter Imp,Firestarter Imp,exact,firestarter imp,2202601 2202602 2202603,1001762,1026,Imp,,firestarter imps,leve-or-quest,,,0,Imp,0,,10,40,276,1009
+Flamedrake,Flamedrake,exact,flamedrake,2102203 2102207,,1022,Drake,,flamedrakes,persistent,,,0,Drake,0,,70,74,4333,4688
+Flamefist Ahlygg Roh,Flamefist Ahlygg Roh,exact,flamefist ahlygg roh,2162051,,1620,,"a second Amalj'aa roster, named by office and stronghold rather than by job - the Zahar'ak garrison, its clerical titles and the Burned converts; near-disjoint in naming from race 1065, which holds the rest of the Amalj'aa, but overlapping it in both zone and level",Flamefist Ahlygg Roh,persistent,,"Ifrit Bleeds, We Can Kill It",1,Amalj'aa,0,Y,59,59,,
+Floating Eye,Floating Eye,exact,floating eye,2101701 2101702,,1017,Ahriman,,floating eyes,persistent,,,0,Ahriman,0,,40,49,3243,3870
+Flytrap,Flytrap,exact,flytrap,2102709,,1027,Flytrap,,flytraps,persistent,Fearsome Foliage,,0,Landtrap,0,,40,44,1682,1819
+Foraging Doe,Foraging Doe (1.x),exact,foraging doe,2200301 2200303,,1003,Antelope,,foraging does,leve-or-quest,,,0,Antelope,0,,25,68,679,1709
+Forest Funguar,Forest Funguar,exact,forest funguar,2105901 2105902 2105917 2105918 2105919,,1059,Funguar,,forest funguars,persistent,Sylph-inflicted Wounds,,0,Funguar,0,,1,9,828,1127
+Forest Roseling,Forest Roseling,exact,forest roseling,2202702 2202704,,1027,Flytrap,,forest roselings,leve-or-quest,,,0,Landtrap,0,,10,26,122,399
+Forsaken Soul,Forsaken Soul,exact,forsaken soul,2304301,6500036,1043,Ghost,,forsaken souls,instanced-dungeon,,,0,Ghost,0,,52,52,,
+Frenzied Aurelia,Frenzied Aurelia,exact,frenzied aurelia,2205403,,1054,Jellyfish,,frenzied aurelias,leve-or-quest,,Shapeless Melody,0,Aurelia,0,,1,,173,
+Friar's Lantern,Friar's Lantern,exact,friar's lantern,2109904,,1099,妖火 (仮),,friar's lanterns,persistent,,,0,Wisp,0,,35,39,1693,1876
+Frightened Cactuar,Frightened Cactuar,exact,frightened cactuar,2200906,,1009,Sabotender,,frightened cactuars,leve-or-quest,,,0,Cactuar,0,,50,50,,
+Frightened Lemur,Frightened Lemur,exact,frightened lemur,2200511,,1005,Opo-opo,,frightened lemurs,leve-or-quest,,,0,Opo-opo,0,,50,,,
+Fumbling Funguar,Fumbling Funguar,exact,fumbling funguar,2205902,,1059,Funguar,,fumbling funguars,leve-or-quest,,,0,Funguar,0,,10,31,357,941
+Furline Mosstrooper,Furline Mosstrooper,exact,furline mosstrooper,2280158 2280159 2280160 2280161 2280162 2280163,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",Furline mosstroopers,leve-or-quest,,,1,Enemy Humanoid,0,,32,,,
+Furryfoot Kupli Kipp,Furryfoot Kupli Kipp,exact,furryfoot kupli kipp,2210403,,1104,モーグリ,,Furryfoot Kupli Kipp,leve-or-quest,,,1,Moogle,0,Yes,50,,,
+Gall Gnat,Gall Gnat,exact,gall gnat,2100604,,1006,Gnat,,gall gnats,persistent,,,0,Gnat,0,,45,49,2782,3010
+Game Dodo,Game Dodo,exact,game dodo,2202002,,1020,Cockatrice,,game dodos,leve-or-quest,"Fiend in the Flock | Save the Lettuce, Save the World",,0,Cockatrice,0,,20,40,410,1081
+Gaoler's Lantern,Gaoler's Lantern,exact,gaoler's lantern,2309901,6500044,1099,妖火 (仮),,gaoler's lanterns,instanced-dungeon,,,0,Wisp,0,,39,39,,
+Garuda,Garuda,exact,garuda,2209501 2209502 2209504 2209505 2209516 2209517,1002048,1095,Garuda,,Garuda,leve-or-quest,,A Relic Reborn | In for Garuda Wakening (Gridania) | In for Garuda Wakening (Limsa Lominsa),1,Primal,0,Yes,,,,
+Gas Bomb,Gas Bomb,exact,gas bomb,2101604,,1016,Bomb,,gas bombs,persistent,,,0,Bomb,0,,45,49,2385,2580
+Ghost Slug,Ghost Slug,exact,ghost slug,2104204,,1042,Slug,,ghost slugs,persistent,,,0,Slug,0,,40,44,3363,3638
+Giant Bat,Giant Bat,exact,giant bat,2104105,,1041,Bat,,giant bats,persistent,,,0,Bat,0,,25,29,1263,1420
+Giant Crab,Giant Crab,exact,giant crab,2107601 2107620 2107621 2107622,,1076,Crab,,giant crabs,persistent,,Fishing for Answers | Power Struggles,0,Crab,0,,25,29,1578,1774
+Giant Gnat,Giant Gnat,exact,giant gnat,2100601 2200606,,1006,Gnat,,giant gnats,persistent | leve-or-quest,,,0,Gnat,0,,32,32,,
+Giant Remora,Giant Remora,exact,giant remora,2104514,,1045,Angler,,giant remorae,persistent,,,0,Angler,0,Yes,19,,2695,
+Giant Slug,Giant Slug,exact,giant slug,2204201 2204202,,1042,Slug,,giant slugs,leve-or-quest,,,0,Slug,0,,30,54,768,1803
+Gigantoad,Gigantoad,exact,gigantoad,2103103 2103104 2103109 2103115 2203103,,1031,Gigantoad,,gigantoads,persistent | leve-or-quest,Great Hoary Toads,,0,Toad,0,,55,64,3709,4428
+Gloom Lurker,Gloom Lurker,exact,gloom lurker,2109915,,1099,妖火 (仮),,gloom lurkers,persistent,,,0,Wisp,0,,17,18,288,307
+Gloom Seeker,Gloom Seeker,exact,gloom seeker,2109914,,1099,妖火 (仮),,gloom seekers,persistent,,,0,Wisp,0,,15,,245,
+Glowfly,Glowfly,exact,glowfly,2105802,,1058,Firefly,,glowflies,persistent,,,0,Firefly,0,,10,14,816,917
+Gluttonous Gertrude,Gluttonous Gertrude,exact,gluttonous gertrude,2102010,,1020,Cockatrice,,Gluttonous Gertrude,persistent,,Insulted Intelligence,1,Cockatrice,0,x,42,,32487,
+Goblin Bouncer,Goblin Bouncer,exact,goblin bouncer,2110305 2110306,,1103,Goblin,,goblin bouncers,persistent,,,0,Goblin,0,,50,59,2923,3489
+Goblin Braggadocio,Goblin Braggadocio,exact,goblin braggadocio,2110313,,1103,Goblin,,goblin braggadocios,persistent,,,0,Goblin,0,,55,,19350,
+Goblin Freesword,Goblin Freesword,exact,goblin freesword,2110303 2110304,,1103,Goblin,,goblin freeswords,persistent,,,0,Goblin,0,,40,49,2402,2866
+Goblin Headman,Goblin Headman,exact,goblin headman,2110311,,1103,Goblin,,goblin headmen,persistent,,,0,Goblin,0,,90,99,6426,7675
+Goblin Mugger,Goblin Mugger,exact,goblin mugger,2110309,,1103,Goblin,,goblin muggers,persistent,,,0,Goblin,0,,71,76,,
+Goblin Thug,Goblin Thug,exact,goblin thug,2110301 2110302,,1103,Goblin,,goblin thugs,persistent,,,0,Goblin,0,,30,39,1827,2344
+Goddess Girdle,Goddess Girdle,exact,goddess girdle,2105408,,1054,Jellyfish,,goddess girdles,persistent,,,0,Aurelia,0,,60,64,3025,3273
+Godwin Goodgoat,Godwin Goodgoat,exact,godwin goodgoat,2280110,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",Godwin Goodgoat,leve-or-quest,Wanted: Godwin Goodgoat,,1,Enemy Humanoid,0,,,,,
+Goobbue,Goobbue,exact,goobbue,2103301 2103305 2103306 2203302 2203303,,1033,Goobbue,,goobbues,persistent | leve-or-quest,,Flowers for All,0,Goobbue,0,,65,69,6087,6586
+Gorgebug,Gorgebug,exact,gorgebug,2203905,,1039,Weevil,,gorgebugs,leve-or-quest,,,0,Beetle,0,,,,,
+Gorged Djigga,Gorged Djigga,exact,gorged djigga,2205606,,1056,Chigoe,,gorged djiggas,leve-or-quest,,,0,Chigoe,0,,30,54,421,1202
+Grass Raptor,Grass Raptor,exact,grass raptor,2100205 2100206,,1002,Raptor,,grass raptors,persistent,,,0,Raptor,0,,55,64,3387,4043
+Gravid Crab,Gravid Crab,exact,gravid crab,2107625,,1076,Crab,,gravid crabs,persistent,,,0,Crab,0,,72,72,,
+Great Buffalo,Great Buffalo,exact,great buffalo,2100801,,1008,Buffalo,,great buffaloes,persistent,,"Patrol, Interrupted",0,Buffalo,0,x,65,,32767,
+Great Elm,Great Elm,exact,great elm,2202805,,1028,Treant,,Great Elms,leve-or-quest,,,1,Treant,0,Y,55,,,
+Great Oak,Great Oak,exact,great oak,2102806,,1028,Treant,,Great Oaks,persistent,,,1,Treant,0,Y,55,55,,
+Greater Buffalo,Greater Buffalo,exact,greater buffalo,2200804,,1008,Buffalo,,greater buffaloes,leve-or-quest,,,0,Buffalo,0,Y,55,,,
+Greedy Angler,Greedy Angler,exact,greedy angler,2204502,,1045,Angler,,greedy anglers,leve-or-quest,,,0,Angler,0,,30,54,329,1044
+Green Dewflower Sylph,Green Dewflower Sylph,exact,green dewflower sylph,2206703,,1067,Sylph,,green dewflower sylphs,leve-or-quest,,,0,Sylph,0,,30,50,768,1667
+Grenade,Grenade,exact,grenade,2101605 2101606 2101612 2201605,1001859,1016,Bomb,,grenades,persistent | leve-or-quest,,,0,Bomb,0,,60,69,3558,4249
+Greywine,Greywine,exact,greywine,2202208,1001977,1022,Drake,,Greywine,leve-or-quest,,,1,Drake,0,x,,,,
+Gripper,Gripper,exact,gripper,2107617 2107618,,1076,Crab,,grippers,persistent,,,0,Crab,0,,15,17,288,338
+Guano Gnat,Guano Gnat,exact,guano gnat,2200608 2200610,1001972,1006,Gnat,,guano gnats,leve-or-quest,,Hearing Voices,0,Gnat,0,Y,30,30,,
+Guardian of the Grove,Guardian of the Grove,exact,guardian of the grove,2102805 2102807 2102808 2102809,,1028,Treant,,guardians of the grove,persistent,,,0,Treant,0,Yes,,,,
+Guivre,Guivre,exact,guivre,2102213 2102214 2102218 2202205,,1022,Drake,,guivres,persistent | leve-or-quest,,,0,Drake,0,,40,69,1081,4249
+Hairless Hare,Hairless Hare,exact,hairless hare,2204205 2204207 2204208,,1042,Slug,,hairless hares,leve-or-quest,,,0,Slug,0,,40,68,1246,2583
+Haughtpox Bloatbelly,Haughtpox Bloatbelly,exact,haughtpox bloatbelly,2110312,,1103,Goblin,,Haughtpox Bloatbelly,persistent,,Cure for the Common Pox,1,Goblin,0,x,60,,32022,
+Headrip Ogre,Headrip Ogre,exact,headrip ogre,2102504,,1025,Ogre,,headrip ogres,persistent,,,0,Ogre,0,,85,89,11353,12286
+Headsman's Axe,Headsman's Axe,exact,headsman's axe,2106459,,1064,Ixal,,Headsman's Axes,persistent,,,1,Ixal,0,,56,56,,
+Hedgemole,Hedgemole,exact,hedgemole,2105709 2105710 2105719 2105720 2205710,,1057,Hedgemole,,hedgemole,persistent | leve-or-quest,Blacksand in Hand | Hiding Under the Beds | Secrets of the Sultanate,,0,Mole,0,,45,49,3312,3583
+Heliodor Doblyn,Heliodor Doblyn,exact,heliodor doblyn,2102111 2102112 2102123 2102124,,1021,Coblyn,,heliodor doblyns,persistent,,,0,Coblyn,0,,40,44,481,1299
+Hellbender,Hellbender,exact,hellbender,2101318,,1013,Salamander,,hellbenders,persistent,,,0,Salamander,0,,80,84,8970,9704
+Hellsbound Warrior,Hellsbound Warrior,exact,hellsbound warrior,2301901,6500037,1019,Wight,,hellsbound warriors,instanced-dungeon,,,0,Wight,0,,52,52,,
+Hellsfire Hedgemole,Hellsfire Hedgemole,exact,hellsfire hedgemole,2205706 2205707 2205708,,1057,Hedgemole,,hellsfire hedgemoles,leve-or-quest,,,0,Mole,0,,40,52,1606,3447
+Hill Yarzon,Hill Yarzon,exact,hill yarzon,2205520,,1055,Yarzon,,hill yarzons,leve-or-quest,,,0,Yarzon,0,,40,52,,
+Hippocerf,Hippocerf,exact,hippocerf,2100401 2100402 2100409 2100411 2100412 2100413,,1004,Hippogryph,,hippocerfs,persistent,,,0,Hippogryph,0,,30,39,1462,1876
+Hippogryph,Hippogryph,exact,hippogryph,2100407 2100408 2100410 2200403 2200404 2200405,,1004,Hippogryph,,hippogryphs,persistent | leve-or-quest,,,0,Hippogryph,0,,65,74,4320,5157
+Hippogryph Pup,Hippogryph Pup,exact,hippogryph pup,2100405 2100406,,1004,Hippogryph,,hippogryph pups,persistent,,,0,Hippogryph,0,,60,64,3914,4236
+Hispid Dormouse,Hispid Dormouse,exact,hispid dormouse,2104015,,1040,Rat,,hispid dormice,persistent,,,0,Rodent,0,,45,49,2649,2866
+Honeybee Swarm,Honeybee Swarm,exact,honeybee swarm,2105301,1001863,1053,Swarm,,honeybee swarms,persistent,,,0,Swarm,0,,5,9,253,589
+Horde Mite,Horde Mite,exact,horde mite,2301107 2301108,,1011,Crab,,horde mites,instanced-dungeon,,,0,Diremite,0,,39,39,,
+Hoverfly Swarm,Hoverfly Swarm,exact,hoverfly swarm,2105307 2105308,,1053,Swarm,,hoverfly swarms,persistent,,,0,Swarm,0,,25,34,474,1233
+Hungry Dreadwolf,Hungry Dreadwolf,exact,hungry dreadwolf,2201412 2201423,,1014,Wolf/Hyena/Hellhound,,hungry dreadwolves,leve-or-quest,,,0,Wolf,0,,,,,
+Hunter Kalong,Hunter Kalong,exact,hunter kalong,2104109,,1041,Bat,,hunter kalongs,persistent,,,0,Bat,0,,50,54,2193,2372
+Ice Elemental,Ice Elemental,exact,ice elemental,2104701 2104702 2104703 2104704 2104705 2104706 2204701 2204702,,1047,Ice Elemental,,ice elementals,persistent | leve-or-quest,,,0,Elemental,0,,30,59,1827,3489
+Icebound Wrath,Icebound Wrath,exact,icebound wrath,2204707,1001967,1047,Ice Elemental,,icebound wrath,leve-or-quest,,,0,Elemental,0,Y,55,,,
+Ifrit,Ifrit,exact,ifrit,2107301 2107302 2207301 2207302 2207303 2207304 2207305 2207308,6000242,1073,Ifrit,,Ifrit,persistent | leve-or-quest,,"A Relic Reborn | Ifrit Bleeds, We Can Kill It | It Kills with Fire (Gridania)",1,Primal,0,Yes,35,55,,
+Ignis Fatuus,Ignis Fatuus (1.x),exact,ignis fatuus,2201603,,1016,Bomb,,ignis fatuus,leve-or-quest,,,0,Bomb,0,,,,,
+Illtempered Pteroc.jpg,Ill-tempered Pteroc,exact,ill-tempered pteroc,2200107,,1001,Puk,,ill-tempered pterocs,leve-or-quest,,,0,Puk,0,,45,45,,
+Imperial Eques,Imperial Eques,exact,imperial eques,2180015 2180029 2180030 2280037 2280061,,1800,,"Garlean imperial legion - 117 actors over one ladder of seven Roman line ranks in three tiers, deployed five times. `imperial` line at level 50-55 and `elite` line at 56 hold Castrum Novum, `VIIth Legion` line at 54-55 holds it and Mor Dhona, the `imperial` skirmish ranks hold East Shroud and the Dzemael Darkhold, and the `elite` skirmish ranks roam four field zones as the hamlet-invasion attackers populaceWaveAttack.csv calls imperial troopers. The tier and the rank family pick the deployment, not the id band",imperial equites,persistent | leve-or-quest,,,0,Enemy Humanoid,0,,50,55,,
+Imperial Hastatus,Imperial Hastatus,exact,imperial hastatus,2280005,,1800,,"Garlean imperial legion - 117 actors over one ladder of seven Roman line ranks in three tiers, deployed five times. `imperial` line at level 50-55 and `elite` line at 56 hold Castrum Novum, `VIIth Legion` line at 54-55 holds it and Mor Dhona, the `imperial` skirmish ranks hold East Shroud and the Dzemael Darkhold, and the `elite` skirmish ranks roam four field zones as the hamlet-invasion attackers populaceWaveAttack.csv calls imperial troopers. The tier and the rank family pick the deployment, not the id band",imperial hastatus,leve-or-quest,,,0,Enemy Humanoid,0,,,,,
+Imperial Hoplomachus,Imperial Hoplomachus,exact,imperial hoplomachus,2180011 2180025 2180026 2280003 2280034 2280040 2280059 2380004,1001820,1800,,"Garlean imperial legion - 117 actors over one ladder of seven Roman line ranks in three tiers, deployed five times. `imperial` line at level 50-55 and `elite` line at 56 hold Castrum Novum, `VIIth Legion` line at 54-55 holds it and Mor Dhona, the `imperial` skirmish ranks hold East Shroud and the Dzemael Darkhold, and the `elite` skirmish ranks roam four field zones as the hamlet-invasion attackers populaceWaveAttack.csv calls imperial troopers. The tier and the rank family pick the deployment, not the id band",imperial hoplomachi,persistent | leve-or-quest | instanced-dungeon,,,0,Enemy Humanoid,0,,50,55,,
+Imperial Juggernaut,Imperial Juggernaut,exact,imperial juggernaut,2102401 2202401 2202402,,1024,Juggernaut,,imperial juggernauts,persistent | leve-or-quest,,,0,Juggernaut,0,Y,50,50,14874,
+Imperial Laquearius,Imperial Laqueairus,exact,imperial laquearius,2180013 2180027 2180028 2280042 2280060 2380005,1001822,1800,,"Garlean imperial legion - 117 actors over one ladder of seven Roman line ranks in three tiers, deployed five times. `imperial` line at level 50-55 and `elite` line at 56 hold Castrum Novum, `VIIth Legion` line at 54-55 holds it and Mor Dhona, the `imperial` skirmish ranks hold East Shroud and the Dzemael Darkhold, and the `elite` skirmish ranks roam four field zones as the hamlet-invasion attackers populaceWaveAttack.csv calls imperial troopers. The tier and the rank family pick the deployment, not the id band",imperial laquearii,persistent | leve-or-quest | instanced-dungeon,,,0,Enemy Humanoid,0,,50,55,,
+Imperial Medicus,Imperial Medicus,exact,imperial medicus,2180019 2180033 2180034 2280035 2280063 2380008,,1800,,"Garlean imperial legion - 117 actors over one ladder of seven Roman line ranks in three tiers, deployed five times. `imperial` line at level 50-55 and `elite` line at 56 hold Castrum Novum, `VIIth Legion` line at 54-55 holds it and Mor Dhona, the `imperial` skirmish ranks hold East Shroud and the Dzemael Darkhold, and the `elite` skirmish ranks roam four field zones as the hamlet-invasion attackers populaceWaveAttack.csv calls imperial troopers. The tier and the rank family pick the deployment, not the id band",imperial medici,persistent | leve-or-quest | instanced-dungeon,,,0,Enemy Humanoid,0,,50,55,,
+Imperial Myrmillo,Imperial Myrmillo,exact,imperial myrmillo,2280025 2380002,6500042,1800,,"Garlean imperial legion - 117 actors over one ladder of seven Roman line ranks in three tiers, deployed five times. `imperial` line at level 50-55 and `elite` line at 56 hold Castrum Novum, `VIIth Legion` line at 54-55 holds it and Mor Dhona, the `imperial` skirmish ranks hold East Shroud and the Dzemael Darkhold, and the `elite` skirmish ranks roam four field zones as the hamlet-invasion attackers populaceWaveAttack.csv calls imperial troopers. The tier and the rank family pick the deployment, not the id band",imperial myrmillos,leve-or-quest | instanced-dungeon,,,0,Enemy Humanoid,0,,52,52,,
+Imperial Pilus Prior,Imperial Pilus Prior,exact,imperial pilus prior,2207005 2207007,,1070,Imperial,,imperial pilus priori,leve-or-quest,,,0,Enemy Humanoid,0,x,50+,50+,,
+Imperial Primus Ordinarius,Imperial Primus Ordinarius,exact,imperial primus ordinarius,2307001 2307002,,1070,Imperial,,imperial primus ordinarii,instanced-dungeon,,What Glitters Always Isn't Gold,0,Enemy Humanoid,0,,52,52,,
+Imperial Retiarius,Imperial Retiarius,exact,imperial retiarius,2280004,,1800,,"Garlean imperial legion - 117 actors over one ladder of seven Roman line ranks in three tiers, deployed five times. `imperial` line at level 50-55 and `elite` line at 56 hold Castrum Novum, `VIIth Legion` line at 54-55 holds it and Mor Dhona, the `imperial` skirmish ranks hold East Shroud and the Dzemael Darkhold, and the `elite` skirmish ranks roam four field zones as the hamlet-invasion attackers populaceWaveAttack.csv calls imperial troopers. The tier and the rank family pick the deployment, not the id band",imperial retiarius,leve-or-quest,,,0,Enemy Humanoid,0,,,,,
+Imperial Secutor,Imperial Secutor,exact,imperial secutor,2180009 2180023 2180024 2280001 2280036 2280043 2280058,,1800,,"Garlean imperial legion - 117 actors over one ladder of seven Roman line ranks in three tiers, deployed five times. `imperial` line at level 50-55 and `elite` line at 56 hold Castrum Novum, `VIIth Legion` line at 54-55 holds it and Mor Dhona, the `imperial` skirmish ranks hold East Shroud and the Dzemael Darkhold, and the `elite` skirmish ranks roam four field zones as the hamlet-invasion attackers populaceWaveAttack.csv calls imperial troopers. The tier and the rank family pick the deployment, not the id band",imperial secutores,persistent | leve-or-quest,,,0,Enemy Humanoid,0,,50,55,,
+Imperial Signifer,Imperial Signifer,exact,imperial signifer,2180021 2180035 2180036 2280007 2280038 2280041 2280045 2280064,1001821,1800,,"Garlean imperial legion - 117 actors over one ladder of seven Roman line ranks in three tiers, deployed five times. `imperial` line at level 50-55 and `elite` line at 56 hold Castrum Novum, `VIIth Legion` line at 54-55 holds it and Mor Dhona, the `imperial` skirmish ranks hold East Shroud and the Dzemael Darkhold, and the `elite` skirmish ranks roam four field zones as the hamlet-invasion attackers populaceWaveAttack.csv calls imperial troopers. The tier and the rank family pick the deployment, not the id band",imperial signiferi,persistent | leve-or-quest | instanced-dungeon,,,0,Enemy Humanoid,0,,50,55,,
+Imperial Speculator,Imperial Speculator,exact,imperial speculator,2280008 2280021 2280029 2380003,,1800,,"Garlean imperial legion - 117 actors over one ladder of seven Roman line ranks in three tiers, deployed five times. `imperial` line at level 50-55 and `elite` line at 56 hold Castrum Novum, `VIIth Legion` line at 54-55 holds it and Mor Dhona, the `imperial` skirmish ranks hold East Shroud and the Dzemael Darkhold, and the `elite` skirmish ranks roam four field zones as the hamlet-invasion attackers populaceWaveAttack.csv calls imperial troopers. The tier and the rank family pick the deployment, not the id band",imperial speculator,leve-or-quest | instanced-dungeon,,,0,Enemy Humanoid,0,,22,52,,
+Imperial Triarius,Imperial Triarius,exact,imperial triarius,2280002 2280019 2280020 2280024,,1800,,"Garlean imperial legion - 117 actors over one ladder of seven Roman line ranks in three tiers, deployed five times. `imperial` line at level 50-55 and `elite` line at 56 hold Castrum Novum, `VIIth Legion` line at 54-55 holds it and Mor Dhona, the `imperial` skirmish ranks hold East Shroud and the Dzemael Darkhold, and the `elite` skirmish ranks roam four field zones as the hamlet-invasion attackers populaceWaveAttack.csv calls imperial troopers. The tier and the rank family pick the deployment, not the id band",imperial triarius,leve-or-quest,,,0,Enemy Humanoid,0,,,,,
+Imperial Veles,Imperial Veles,exact,imperial veles,2280022 2280023 2380001,6500041,1800,,"Garlean imperial legion - 117 actors over one ladder of seven Roman line ranks in three tiers, deployed five times. `imperial` line at level 50-55 and `elite` line at 56 hold Castrum Novum, `VIIth Legion` line at 54-55 holds it and Mor Dhona, the `imperial` skirmish ranks hold East Shroud and the Dzemael Darkhold, and the `elite` skirmish ranks roam four field zones as the hamlet-invasion attackers populaceWaveAttack.csv calls imperial troopers. The tier and the rank family pick the deployment, not the id band",imperial velites,leve-or-quest | instanced-dungeon,,,0,Enemy Humanoid,0,,52,52,,
+Imperial War Hound,Imperial War Hound,exact,imperial war hound,2101429 2101430 2101431 2201420,,1014,Wolf/Hyena/Hellhound,,imperial war hounds,persistent | leve-or-quest,,,0,Wolf,0,,54,55,,
+Imptrap,Imptrap,exact,imptrap,2102715,,1027,Flytrap,,imptraps,persistent,,,0,Landtrap,0,,56,59,2303,2443
+Infernal Nail,Infernal Nail,exact,infernal nail,2107303 2207306 2207307 2207313 2207315,,1073,Ifrit,,infernal nails,persistent | leve-or-quest,,,0,Unknown,0,Y,35,55,,
+Inferno Drake,Inferno Drake,exact,inferno drake,2102204 2102208,,1022,Drake,,inferno drakes,persistent,,,0,Drake,0,,75,79,4781,5173
+Inland Angler,Inland Angler,exact,inland angler,2204501,,1045,Angler,,inland anglers,leve-or-quest,,,0,Angler,0,,20,44,246,858
+Iron Coblyn,Iron Coblyn,exact,iron coblyn,2102105 2102106 2102117 2102118,,1021,Coblyn,,iron coblyns,persistent,,Ore for an Ore,0,Coblyn,0,,28,34,366,1027
+Ironshell,Ironshell,exact,ironshell,2207612,,1076,Crab,,ironshells,leve-or-quest,,,0,Crab,0,,35,35,,
+Island Crab,Island Crab,exact,island crab,2107602 2107603,,1076,Crab,,island crabs,persistent,,,0,Crab,0,,30,39,1827,2344
+Ixali Boundwing,Ixali Boundwing,exact,ixali boundwing,2106438 2106439 2106440,,1064,Ixal,,Ixali boundwings,persistent,,,1,Ixal,0,,20,22,,
+Ixali Bravewing,Ixali Bravewing,exact,ixali bravewing,2106444 2106445 2106446 2206416 2206433 2206437,1001965,1064,Ixal,,Ixali bravewings,persistent | leve-or-quest,,,1,Ixal,0,,53,,,
+Ixali Bravo,Ixali Bravo,exact,ixali bravo,2206401 2206408,,1064,Ixal,,Ixali bravos,leve-or-quest,,,1,Ixal,0,,45,66,1802,2724
+Ixali Fearcaller,Ixali Fearcaller,exact,ixali fearcaller,2106414 2106415 2106416,,1064,Ixal,,Ixali fearcallers,persistent,,,1,Ixal,0,,20,22,,
+Ixali Fencer,Ixali Fencer,exact,ixali fencer,2106401 2106411 2106412 2106413,,1064,Ixal,,Ixali fencer,persistent,,,1,Ixal,0,,40,54,2523,3321
+Ixali Fogcaller,Ixali Fogcaller,exact,ixali fogcaller,2106417 2106418 2106419 2206417 2206427 2206428 2206431 2206435,,1064,Ixal,,Ixali fogcallers,persistent | leve-or-quest,,,1,Ixal,0,,53,56,,
+Ixali Sabreur,Ixali Sabreur,exact,ixali sabreur,2206414 2206423 2206424 2206429 2206438,1001964,1064,Ixal,,Ixali sabreurs,leve-or-quest,,,1,Ixal,0,,53,56,,
+Ixali Scout,Ixali Scout,exact,ixali scout,2206412,1001961,1064,Ixal,,Ixali scouts,leve-or-quest,,,1,Ixal,0,,52,,,
+Ixali Squire,Ixali Squire,exact,ixali squire,2106423 2106424 2106425,,1064,Ixal,,Ixali squires,persistent,,,1,Ixal,0,,20,22,,
+Ixali Stillbeak,Ixali Stillbeak,exact,ixali stillbeak,2106429 2106430 2106431,,1064,Ixal,,Ixali stillbeaks,persistent,,,1,Ixal,0,,20,22,,
+Ixali Strongbeak,Ixali Strongbeak,exact,ixali strongbeak,2106435 2106436 2106437 2206415 2206425 2206426 2206430 2206434,,1064,Ixal,,Ixali strongbeaks,persistent | leve-or-quest,,,1,Ixal,0,,53,56,,
+J'moldva (Mob),J'moldva (Mob),disambiguator-stripped,j'moldva,2289009,1000599 1000600 1700031,1890,,"named opponents of scripted fights - job-quest champions, coliseum challengers, Grand Company and bandit duel squads; 93 percent of its GE mobs are notorious monsters against a 12 percent baseline, and it sits past a deliberate gap from the 80x faction run",,leve-or-quest,,A Wailing Welcome | Culture Shock | Necessary Evils,1,Enemy Humanoid,0,Y,30,30,,
+Jackal Pup,Jackal Pup,exact,jackal pup,2101416 2101417,,1014,Wolf/Hyena/Hellhound,,jackal pups,persistent,,,0,Wolf,0,,18,21,333,403
+Jackanapes,Jackanapes,exact,jackanapes,2100510,,1005,Opo-opo,,jackanapes,persistent,,,0,Opo-opo,0,x,36,,15246,
+Jellyfish,Jellyfish,exact,jellyfish,2205401,,1054,Jellyfish,,jellyfish,leve-or-quest,Soft Targets,,0,Aurelia,0,,10,26,174,618
+Jenlyns Straightblade,Jenlyns Straightblade,exact,jenlyns straightblade,2289035,,1890,,"named opponents of scripted fights - job-quest champions, coliseum challengers, Grand Company and bandit duel squads; 93 percent of its GE mobs are notorious monsters against a 12 percent baseline, and it sits past a deliberate gap from the 80x faction run",Jenlyns Straightblade,leve-or-quest,,,1,Enemy Humanoid,0,Y,52,52,,
+Jetsam Jelly,Jetsam Jelly,exact,jetsam jelly,2105409,,1054,Jellyfish,,jetsam jellies,persistent,,,0,Aurelia,0,,20,,1023,
+Jumping Djigga,Jumping Djigga,exact,jumping djigga,2105605 2105606 2105610 2105611,6500023,1056,Chigoe,,jumping djiggas,persistent,,,0,Chigoe,0,,30,39,1035,1758
+Kalong,Kalong,exact,kalong,2104106 2104111,,1041,Bat,,kalongs,persistent,,,0,Bat,0,,35,39,1587,1758
+Karakul Ewe,Karakul Ewe,exact,karakul ewe,2206007,,1060,Sheep,,karakul ewes,leve-or-quest,,,0,Ram,0,,30,54,439,1234
+Ked,Ked,exact,ked,2100605 2100606 2100612,,1006,Gnat,,keds,persistent,,,0,Gnat,0,,55,64,4193,5005
+Kedtrap,Kedtrap,exact,kedtrap,2102712,,1027,Flytrap,,kedtraps,persistent,,,0,Landtrap,0,,55,59,2258,2443
+King Apkallu,King Apkallu,exact,king apkallu,2102903,,1029,Apkallu,,king apkallus,persistent,,,0,Apkallu,0,,60,64,2491,2695
+Kobold Acolyte,Kobold Acolyte,exact,kobold acolyte,2106601 2106640 2106641 2106642,,1066,Kobold,,kobold acolytes,persistent,,,0,Kobold,0,,33,39,,
+Kobold Almsman,Kobold Almsman,exact,kobold almsman,2106610 2106611 2106612,,1066,Kobold,,kobold almsmen,persistent,,,0,Kobold,0,,20,29,,
+Kobold Ascetic,Kobold Ascetic,exact,kobold ascetic,2106637 2106638 2106639 2206605,,1066,Kobold,,kobold ascetics,persistent | leve-or-quest,,,0,Kobold,0,,20,29,,
+Kobold Ashman,Kobold Ashman,exact,kobold ashman,2106666 2206614 2206615 2206620 2206627,,1066,Kobold,,kobold ashmen,persistent | leve-or-quest,,,0,Kobold,0,,52,,,
+Kobold Bedesman,Kobold Bedesman,exact,kobold bedesman,2206608 2206626,,1066,Kobold,,kobold bedesmen,leve-or-quest,,,0,Kobold,0,,52,,,
+Kobold Footman,Kobold Footman,exact,kobold footman,2106622 2106623 2106624,,1066,Kobold,,kobold footmen,persistent,,,0,Kobold,0,,33,39,,
+Kobold Junkman,Kobold Junkman,exact,kobold junkman,2206616 2206617 2206621 2206628,,1066,Kobold,,kobold junkmen,leve-or-quest,,,0,Kobold,0,,53,,,
+Kobold Kirkman,Kobold Kirkman,exact,kobold kirkman,2106613 2106614 2106615,,1066,Kobold,,kobold kirkmen,persistent,,,0,Kobold,0,,33,39,,
+Kobold Mendicant,Kobold Mendicant,exact,kobold mendicant,2106602 2106607 2106608 2106609,,1066,Kobold,,kobold mendicants,persistent,,,0,Kobold,0,,40,49,1922,2293
+Kobold Packman,Kobold Packman,exact,kobold packman,2106619 2106620 2106621,,1066,Kobold,,kobold packmen,persistent,,,0,Kobold,0,,20,29,,
+Kobold Patrolman,Kobold Patrolman,exact,kobold patrolman,2106625 2106626 2106627,,1066,Kobold,,kobold patrolmen,persistent,,,0,Kobold,0,,47,49,,
+Kobold Pickman,Kobold Pickman,exact,kobold pickman,2106628 2106629 2106630,,1066,Kobold,,kobold pickmen,persistent,,,0,Kobold,0,,20,29,,
+Kobold Pitman,Kobold Pitman,exact,kobold pitman,2106631 2106632 2106633,,1066,Kobold,,kobold pitmen,persistent,,,0,Kobold,0,,33,39,,
+Kobold Prelate,Kobold Prelate,exact,kobold prelate,2106604 2106661 2106662 2106663 2106664,6500047,1066,Kobold,,kobold prelates,persistent,,,0,Kobold,0,,50,54,2339,2842
+Kobold Quarryman,Kobold Quarryman,exact,kobold quarryman,2106634 2106635 2106636,,1066,Kobold,,kobold quarrymen,persistent,,,0,Kobold,0,,47,49,,
+Kobold Supplicant,Kobold Supplicant,exact,kobold supplicant,2206601 2206602,,1066,Kobold,,kobold supplicants,leve-or-quest,Operation: Supplication Denied,,0,Kobold,0,,20,44,546,1429
+Kobold Vestryman,Kobold Vestryman,exact,kobold vestryman,2106616 2106617 2106618,,1066,Kobold,,kobold vestrymen,persistent,,,0,Kobold,0,,47,49,,
+Kokoroon Quickfingers,Kokoroon Quickfingers,exact,kokoroon quickfingers,2106311,,1063,Qiqirn,,Kokoroon Quickfingers,persistent,,,1,Qiqirn,0,x,49,50,25794,26307
+Kraken Deckhand,Kraken Deckhand,exact,kraken deckhand,2280213 2280214 2280215 2280216 2280217,,1802,,"pirates - buccaneers, Black Crow, Kraken, Mistbeard",Kraken deckhands,leve-or-quest,,,1,Enemy Humanoid,0,Y,25,25,,
+Ladybug,Ladybug,exact,ladybug,2103904 2103905 2103909 2203908,,1039,Weevil,,ladybugs,persistent | leve-or-quest,Corpus Adamance | My Fey Lady | The Lady's Bite,,0,Beetle,0,,20,32,751,1508
+Lake Crab,Lake Crab,exact,lake crab,2207606,,1076,Crab,,lake crabs,leve-or-quest,,,0,Crab,0,,40,68,721,1875
+Lammergeyer,Lammergeyer,exact,lammergeyer,2101204,,1012,Vulture,,lammergeyer,persistent,,,0,Vulture,0,,55,59,2097,2268
+Land Angler,Land Angler,exact,land angler,2104502,,1045,Angler,,land anglers,persistent,,,0,Angler,0,,25,29,813,1065
+Laughing Mongrel,Laughing Mongrel,exact,laughing mongrel,2101411,,1014,Wolf/Hyena/Hellhound,,laughing mongrels,persistent,,,0,Wolf,0,,55,59,2903,3141
+Lava Drake,Lava Drake,exact,lava drake,2302201,,1022,Drake,,lava drakes,instanced-dungeon,,,0,Drake,0,,52,52,,
+Lead Coblyn,Lead Coblyn,exact,lead coblyn,2102103 2102104 2102115 2102116 2202112,,1021,Coblyn,,lead coblyns,persistent | leve-or-quest,,,0,Coblyn,0,,15,19,236,663
+Lemur,Lemur,exact,lemur,2100505 2100506 2100512 2100513 2100514 2100515 2200507,,1005,Opo-opo,,lemurs,persistent | leve-or-quest,Stealing Apples from a Lemur,Last Respects,0,Opo-opo,0,,40,49,2042,2437
+Lightning Beetle,Lightning Beetle,exact,lightning beetle,2105803,,1058,Firefly,,lightning beetles,persistent,,,0,Firefly,0,,15,19,944,1061
+Lightning Elemental,Lightning Elemental,exact,lightning elemental,2105001 2105002 2105003 2105004 2105005 2105006 2205001 2205002,1001970,1050,Lightning Elemental,,lightning elementals,persistent | leve-or-quest,Necrologos: Levinshower,,0,Elemental,0,,30,77,1827,4973
+Lily of the Vale,Lily of the Vale,exact,lily of the vale,2302704,,1027,Flytrap,,lilies of the vale,instanced-dungeon,,,0,Landtrap,0,,53,,,
+Lindwurm,Lindwurm,exact,lindwurm,2100203 2100204 2100209 2200202 2200203,,1002,Raptor,,lindwurms,persistent | leve-or-quest,,,0,Raptor,0,,65,74,4124,4923
+Little Apkallu,Little Apkallu,exact,little apkallu,2102901,,1029,Apkallu,,little apkallus,persistent,,,0,Apkallu,0,,50,54,2047,2214
+Lone Coeurl,Lone Coeurl,exact,lone coeurl,2103203,,1032,Couerl,,lone coeurls,persistent,,,0,Coeurl,0,Yes,22,,3728,
+Lone Wolf,Lone Wolf,exact,lone wolf,2101401 2101402,,1014,Wolf/Hyena/Hellhound,,lone wolves,persistent,,,0,Wolf,0,,15,24,1062,1380
+Longclaw Galago,Longclaw Galago,exact,longclaw galago,2200503,,1005,Opo-opo,,longclaw galagos,leve-or-quest,,,0,Opo-opo,0,,30,54,439,1234
+Longhorn Billygoat,Longhorn Billygoat,exact,longhorn billygoat,2202311,,1023,Aldgoats,,longhorn billygoats,leve-or-quest,,,0,Aldgoat,0,,55,,,
+Longhorn Nannygoat,Longhorn Nannygoat,exact,longhorn nannygoat,2202312,,1023,Aldgoats,,longhorn nannygoats,leve-or-quest,,,0,Aldgoat,0,,55,,,
+Lost Ewe,Lost Ewe,exact,lost ewe,2106002,,1060,Sheep,,lost ewes,persistent,,,0,Ram,0,,5,9,463,735
+Lost Lamb,Lost Lamb (Mob),exact,lost lamb,2106001 2106020 2106021,,1060,Sheep,,lost lamb,persistent,,,0,Ram,0,,1,4,397,606
+Lost Wether,Lost Wether,exact,lost wether,2106005 2106006,,1060,Sheep,,lost wethers,persistent,,,0,Ram,0,,1,4,397,735
+Loverly Ladybird,Loverly Ladybird,exact,loverly ladybird,2203904,,1039,Weevil,,loverly ladybirds,leve-or-quest,,,0,Beetle,0,,25,29,868,1508
+Lowland Billygoat,Lowland Billygoat,exact,lowland billygoat,2202301,,1023,Aldgoats,,lowland billygoats,leve-or-quest,,,0,Aldgoat,0,,30,54,658,1613
+Lowland Nannygoat,Lowland Nannygoat,exact,lowland nannygoat,2202304 2202305,,1023,Aldgoats,,lowland nannygoats,leve-or-quest,,,0,Aldgoat,0,,20,54,614,1898
+Natalan,Lozol Totoloq the Decapitator,exact,lozol totoloq the decapitator,2106466,,1064,Ixal,,Lozol Totoloq the Decapitator,persistent,,,1,Ixal,0,Yes,59,59,,
+Lunar Fragment,Lunar Fragment,exact,lunar fragment,2210903 2210905 2210907 2210908 2210910 2210912 2210913,,1109,アニマオブジェクト,,lunar fragments,leve-or-quest,,,0,Unknown,0,,45,,,
+Lunar Golem,Lunar Golem,exact,lunar golem,2208904 2208906 2208907 2208908,,1089,Golem (1.2),,lunar golems,leve-or-quest,,,0,Golem,0,,50,,,
+Lunging Lemur,Lunging Lemur,exact,lunging lemur,2200510,,1005,Opo-opo,,lunging lemurs,leve-or-quest,,,0,Opo-opo,0,,40,52,,
+Mad Angler,Mad Angler,exact,mad angler,2104504 2104515 2104516 2104517,,1045,Angler,,mad anglers,persistent,,,0,Angler,0,,35,39,1116,1407
+Mad Karakul Ewe,Mad Karakul Ewe,exact,mad karakul ewe,2106011 2106012,,1060,Sheep,,mad karakul ewes,persistent,,,0,Ram,0,,45,49,2120,2293
+Magicked Bones,Magicked Bones,exact,magicked bones,2101901 2101902,,1019,Wight,,magicked bones,persistent,,,0,Wight,0,,25,34,1578,2054
+Magitek Transmitter,Magitek Transmitter,exact,magitek transmitter,2210801,1002063,1108,オブジェクト,,magitek transmitters,leve-or-quest,,,0,Unknown,0,,55,,,
+Magitek Vanguard,Magitek Vanguard,exact,magitek vanguard,2109001 2109003 2209001 2209003,,1090,キラーマシン(仮),,magitek vanguards,persistent | leve-or-quest,,,0,Magitek Armor,0,,55,58,,
+Maidenbug,Maidenbug,exact,maidenbug,2103907,,1039,Weevil,,maidenbugs,persistent,,,0,Beetle,0,,28,39,1164,1993
+Maned Wyrmhound,Maned Wyrmhound,exact,maned wyrmhound,2100713,,1007,Basilisk,,maned wyrmhounds,persistent,,,0,Basilisk,0,,75,79,6455,6984
+Manipulated Eye,Manipulated Eye,exact,manipulated eye,2201706,1001976,1017,Ahriman,,manipulated eyes,leve-or-quest,,,0,Ahriman,0,Y,55,,,
+Manipulated Ogre,Manipulated Ogre,exact,manipulated ogre,2202503,1001975,1025,Ogre,,manipulated ogres,leve-or-quest,,,0,Ogre,0,Y,55,,,
+Marshlight,Marshlight,exact,marshlight,2109902,,1099,妖火 (仮),,marshlights,persistent,,,0,Wisp,0,,25,29,1263,1420
+Megalocrab,Megalocrab,exact,megalocrab,2207603,,1076,Crab,,megalocrabs,leve-or-quest,Crabs in a Barrel,,0,Crab,0,,30,54,549,1423
+Mickle Mouse,Mickle Mouse,exact,mickle mouse,2204027,,1040,Rat,,mickle mice,leve-or-quest,,,0,Rodent,0,,40,52,,
+Midge Cloud,Midge Cloud (1.x),exact,midge cloud,2205307 2205308 2205311,,1053,Swarm,,midge clouds,leve-or-quest,,,0,Swarm,0,,3,26,70,537
+Migrating Doe,Migrating Doe,exact,migrating doe,2100303 2100304 2200314,,1003,Antelope,,migrating does,persistent | leve-or-quest,,,0,Antelope,0,,34,42,1798,1993
+Mildewed Goobbue,Mildewed Goobbue,exact,mildewed goobbue,2103302,,1033,Goobbue,,mildewed goobbues,persistent,,,0,Goobbue,0,,70,74,6717,7267
+Mirror Roselet,Mirror Roselet,exact,mirror roselet,2102708,,1027,Flytrap,,mirror roselets,persistent,,A Forbidden Love,0,Landtrap,0,,25,29,921,1154
+Mistbeard Buccaneer,Mistbeard Buccaneer,exact,mistbeard buccaneer,2180202 2180203 2180205 2180206 2180208 2180209,,1802,,"pirates - buccaneers, Black Crow, Kraken, Mistbeard",Mistbeard buccaneers,persistent,,,1,Enemy Humanoid,0,,,,,
+Miteling,Miteling,exact,miteling,2101109 2101110 2101113 2201109,,1011,Crab,,mitelings,persistent | leve-or-quest,,Seeds of Initiative,0,Diremite,0,,20,29,1160,1508
+Miteling Straggler,Miteling Straggler,exact,miteling straggler,2201114,,1011,Crab,,miteling stragglers,leve-or-quest,,,0,Diremite,0,,33,,,
+Mitetrap,Mitetrap,exact,mitetrap,2302702,,1027,Flytrap,,mitetraps,instanced-dungeon,,,0,Landtrap,0,,39,39,,
+Moiling Mole,Moiling Mole,exact,moiling mole,2105717,,1057,Hedgemole,,moiling moles,persistent,,Besmitten and Besmirched,0,Mole,0,,15,15,,
+Molting Megalocrab,Molting Megalocrab,exact,molting megalocrab,2207601,,1076,Crab,,molting megalocrabs,leve-or-quest,,,0,Crab,0,,25,45,789,1722
+Molting Miteling,Molting Miteling,exact,molting miteling,2101111 2101112 2101117 2101118 2101119,,1011,Crab,,molting mitelings,persistent,,,0,Diremite,0,,30,39,1553,1993
+Moon-eared Mouse,Moon-eared Mouse,exact,moon-eared mouse,2204023,,1040,Rat,,moon-eared mice,leve-or-quest,,,0,Rodent,0,,25,,1578,
+Moon-eyed Mouse,Moon-eyed Mouse,exact,moon-eyed mouse,2204022,,1040,Rat,,moon-eyed mice,leve-or-quest,,,0,Rodent,0,,15,,1179,
+Moon-toothed Mouse,Moon-toothed Mouse,exact,moon-toothed mouse,2204024,,1040,Rat,,moon-toothed mice,leve-or-quest,,,0,Rodent,0,,35,,2115,
+Moonblind Dodo,Moonblind Dodo,exact,moonblind dodo,2202009,,1020,Cockatrice,,moonblind dodos,leve-or-quest,,,0,Cockatrice,0,,20,,614,
+Moraby Mole,Moraby Mole,exact,moraby mole,2105703 2105704,,1057,Hedgemole,,Moraby moles,persistent,,,1,Mole,0,,15,19,1297,1458
+Morbol,Morbol,exact,morbol,2101001 2101002 2101009 2201001,,1010,Morbol,,morbols,persistent | leve-or-quest,,,0,Morbol,0,,65,74,5695,6798
+Mosshorn Billygoat,Mosshorn Billygoat,exact,mosshorn billygoat,2102309,,1023,Aldgoats,,mosshorn billygoats,persistent,,,0,Aldgoat,0,x,55,,18706,19350
+Mosshorn Nannygoat,Mosshorn Nannygoat,exact,mosshorn nannygoat,2102310,,1023,Aldgoats,,mosshorn nannygoats,persistent,,,0,Aldgoat,0,x,55,,18706,19350
+Mossy Goobbue,Mossy Goobbue,exact,mossy goobbue,2103303,,1033,Goobbue,,mossy goobbues,persistent,,,0,Goobbue,0,,75,79,7411,8019
+Mottled Eft,Mottled Eft,exact,mottled eft,2201301,,1013,Salamander,,mottled efts,leve-or-quest,Off With Their Heads | Slippery Skins,,0,Salamander,0,,40,68,1346,2958
+Mountain Peiste,Mountain Peiste,exact,mountain peiste,2100705 2100706 2100720 2100721 2100722,,1007,Basilisk,,mountain peistes,persistent,,,0,Basilisk,0,,50,54,3508,3795
+Mudpuppy,Mudpuppy,exact,mudpuppy,2101315 2101316,,1013,Salamander,,mudpuppies,persistent,,,0,Salamander,0,,70,74,7367,7970
+Mummer's Lantern,Mummer's Lantern,exact,mummer's lantern,2209904,,1099,妖火 (仮),,mummer's lanterns,leve-or-quest,,,0,Wisp,0,,30,42,,
+Mun-Tuy Sapling,Mun-Tuy Sapling,punctuation-folded,muntuy sapling,2302701,,1027,Flytrap,,MunTuy saplings,instanced-dungeon,,,1,Landtrap,0,,39,39,,
+Mun-Tuy Squirrel,Mun-Tuy Squirrel,exact,mun-tuy squirrel,2104007,,1040,Rat,,Mun-Tuy squirrels,persistent,,,1,Rodent,0,,30,34,1827,2054
+Musk Roseling,Musk Roseling,exact,musk roseling,2102717,,1027,Flytrap,,musk roselings,persistent,,,0,Landtrap,0,,20,20,,
+Musk Stag,Musk Stag,exact,musk stag,2200313,,1003,Antelope,,musk stags,leve-or-quest,,,0,Antelope,0,,40,52,,
+Myrmidon Drone,Myrmidon Drone,exact,myrmidon drone,2303004,,1030,Antling,,myrmidon drones,instanced-dungeon,,,0,Antling,0,,50,50,,
+Myrmidon Guard,Myrmidon Guard,exact,myrmidon guard,2303002,,1030,Antling,,myrmidon guards,instanced-dungeon,,,0,Antling,0,,55,55,,
+Myrmidon Princess,Myrmidon Princess,exact,myrmidon princess,2303003,,1030,Antling,,myrmidon princesses,instanced-dungeon,,,0,Antling,0,Y,59,59,,
+Myrmidon Sentry,Myrmidon Sentry,exact,myrmidon sentry,2303005,,1030,Antling,,myrmidon sentries,instanced-dungeon,,,0,Antling,0,,56,56,,
+Myrmidon Soldier,Myrmidon Soldier,exact,myrmidon soldier,2303001,,1030,Antling,,myrmidon soldiers,instanced-dungeon,,,0,Antling,0,,45,45,,
+Naked Mole,Naked Mole,exact,naked mole,2205702 2205704,,1057,Hedgemole,,naked moles,leve-or-quest,Moles for the Mauling | Tunneling Trouble,,0,Mole,0,,3,26,257,780
+Napalm,Napalm,exact,napalm,2101607,,1016,Bomb,,napalms,persistent,,,0,Bomb,0,,70,74,,
+Natalan Boneknitter,Natalan Boneknitter,exact,natalan boneknitter,2106467 2106468 2106469,,1064,Ixal,,Natalan boneknitters,persistent,,,1,Ixal,0,,50,56,,
+Natalan Gatekeeper,Natalan Gatekeeper,exact,natalan gatekeeper,2106449 2106450 2106455 2106456 2106457 2106463 2106464 2106470,,1064,Ixal,,Natalan gatekeepers,persistent,,,1,Ixal,0,,52,56,,
+Natalan Logsplitter,Natalan Logsplitter,exact,natalan logsplitter,2106453 2106454,,1064,Ixal,,Natalan logsplitters,persistent,,,1,Ixal,0,,50,56,,
+Natalan Pikecarver,Natalan Pikecarver,exact,natalan pikecarver,2106447 2106448,,1064,Ixal,,Natalan pikecarvers,persistent,,,1,Ixal,0,,50,56,,
+Natalan Sentry,Natalan Sentry (Gladiator),exact,natalan sentry,2106451 2106458 2106465 2106472,,1064,Ixal,,Natalan sentries,persistent,,,1,Ixal,0,,52,52,,
+Natalan Sentry,Natalan Sentry (Lancer),exact,natalan sentry,2106451 2106458 2106465 2106472,,1064,Ixal,,Natalan sentries,persistent,,,1,Ixal,0,,50,56,,
+Natalan Sentry,Natalan Sentry (Marauder),exact,natalan sentry,2106451 2106458 2106465 2106472,,1064,Ixal,,Natalan sentries,persistent,,,1,Ixal,0,,53,53,,
+Natalan Sentry,Natalan Sentry (Thaumaturge),exact,natalan sentry,2106451 2106458 2106465 2106472,,1064,Ixal,,Natalan sentries,persistent,,,1,Ixal,0,,59,59,,
+Natalan Wolftamer,Natalan Wolftamer,exact,natalan wolftamer,2106460 2106461 2106462,,1064,Ixal,,Natalan wolftamers,persistent,,,1,Ixal,0,,50,56,,
+Needletail,Needletail,exact,needletail,2101104,,1011,Crab,,needletails,persistent,,,0,Diremite,0,,,,,
+Nest Commander,Nest Commander,exact,nest commander,2103005,,1030,Antling,,nest commanders,persistent,,,0,Antling,0,x,36,,15246,
+Nestling Buzzard,Nestling Buzzard,exact,nestling buzzard,2101211 2101212 2101213,,1012,Vulture,,nestling buzzards,persistent,,,0,Vulture,0,,37,39,,
+Nether Nix,Nether Nix,exact,nether nix,2303102,,1031,Gigantoad,,nether nixes,instanced-dungeon,,,0,Toad,0,,55,,,
+Nibbled Toadstool,Nibbled Toadstool,exact,nibbled toadstool,2205907,,1059,Funguar,,nibbled toadstools,leve-or-quest,,,0,Funguar,0,,40,52,,
+Nightblade Assassin,Nightblade Assassin,exact,nightblade assassin,2180107 2180108 2180109 2180151 2180152 2280112 2280113 2280114,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",Nightblade assassins,persistent | leve-or-quest,,,1,Enemy Humanoid,0,,,,,
+Nightwolf,Nightwolf,exact,nightwolf,2201401,,1014,Wolf/Hyena/Hellhound,,nightwolves,leve-or-quest,,,0,Wolf,0,,10,30,276,768
+Nix,Nix,exact,nix,2103105 2103106,,1031,Gigantoad,,nixes,persistent,,,0,Toad,0,,65,73,5498,6436
+Northern Eft,Northern Eft,exact,northern eft,2201302,,1013,Salamander,,northern efts,leve-or-quest,,,0,Salamander,0,,40,68,1346,2958
+Nut Nibbler,Nut Nibbler,exact,nut nibbler,2204026,,1040,Rat,,nut nibblers,leve-or-quest,,,0,Rodent,0,,40,,,
+Nutbiter Marmot,Nutbiter Marmot,exact,nutbiter marmot,2204008 2204009,,1040,Rat,,nutbiter marmots,leve-or-quest,,,0,Rodent,0,,3,30,234,823
+Nutbreaker Squirrel,Nutbreaker Squirrel,exact,nutbreaker squirrel,2204006,,1040,Rat,,nutbreaker squirrels,leve-or-quest,,,0,Rodent,0,,20,40,410,1081
+Nutcracker Squirrel,Nutcracker Squirrel,exact,nutcracker squirrel,2204007,,1040,Rat,,nutcracker squirrels,leve-or-quest,,,0,Rodent,0,,30,54,549,1423
+Nutgrabber Marmot,Nutgrabber Marmot,exact,nutgrabber marmot,2104021,,1040,Rat,,nutgrabber marmots,persistent,,Sleepless in Eorzea,0,Rodent,0,,10,10,,
+Ocean Roseling,Ocean Roseling (Roselet),exact,ocean roseling,2202701 2202703,,1027,Flytrap,,ocean roselings,leve-or-quest,A Roseling by Any Other Name | Escape Artist,,0,Landtrap,0,,10,40,122,841
+Oilbug,Oilbug,exact,oilbug,2103910,,1039,Weevil,,oilbugs,persistent,,A Bitter Oil to Swallow,0,Beetle,0,,17,19,,
+Old Six-arms,Old Six-arms,exact,old six-arms,2107614,,1076,Crab,,Old Six-arms,persistent,,Power Struggles,1,Crab,0,x,47,,11020,
+Opo-Opo,Opo-opo,exact,opo-opo,2100503 2100504,,1005,Opo-opo,,opo-opos,persistent,,,0,Opo-opo,0,,25,34,1263,1644
+Ornery Karakul Ewe,Ornery Karakul Ewe,exact,ornery karakul ewe,2106009 2106010,,1060,Sheep,,ornery karakul ewes,persistent,,,0,Ram,0,,35,39,1693,1876
+Orobon,Orobon,exact,orobon,2104505 2104510 2204506,,1045,Angler,,orobon,persistent | leve-or-quest,Bigger Fish to Fry | From the Sea to the Trees | Tickling Whiskers,,0,Angler,0,,35,39,1481,1641
+Ossuary Almstaker,Ossuary Almstaker,exact,ossuary almstaker,2289014,1000605,1890,,"named opponents of scripted fights - job-quest champions, coliseum challengers, Grand Company and bandit duel squads; 93 percent of its GE mobs are notorious monsters against a 12 percent baseline, and it sits past a deliberate gap from the 80x faction run",Ossuary almstakers,leve-or-quest,,,1,Enemy Humanoid,0,Y,36,36,,
+Pack Rat,Pack Rat (1.x),exact,pack rat,2204002,,1040,Rat,,pack rats,leve-or-quest,Send Them Packing,,0,Rodent,0,,10,26,306,732
+Painted Ladybug,Painted Ladybug,exact,painted ladybug,2103906,,1039,Weevil,,painted ladybugs,persistent,,,0,Beetle,0,,30,34,1553,1746
+Palemoon Parazuzu,Palemoon Parazuzu,exact,palemoon parazuzu,2280108,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",Palemoon Parazuzu,leve-or-quest,Wanted: Palemoon Parazuzu,,1,Enemy Humanoid,0,,,,,
+Peiste Familiar,Peiste Familiar,exact,peiste familiar,2200708,6500033,1007,Basilisk,,peiste familiars,leve-or-quest,,,0,Basilisk,0,,19,,3181,
+Phaia,Phaia,exact,phaia,2101509,,1015,Boar,,Phaia,persistent,,Bard's-Eye View,1,Boar,0,x,47,,28928,
+Phantasma,Phantasma,exact,phantasma,2104307 2104308,,1043,Ghost,,phantasmas,persistent,,,0,Ghost,0,,10,14,510,688
+Pharosfly,Pharosfly,exact,pharosfly,2105804,,1058,Firefly,,pharosflies,persistent,,,0,Firefly,0,,,,,
+Phurble,Phurble,exact,phurble,2104401 2104402 2104405,,1044,Phurble,,phurbles,persistent,Wanted: Soft Evidence,,0,Snurble,0,,50,59,3216,3838
+Plague Djigga,Plague Djigga,exact,plague djigga,2205607,,1056,Chigoe,,plague djiggas,leve-or-quest,,,0,Chigoe,0,,40,52,913,1584
+Plague Rat,Plague Rat,exact,plague rat,2204001,,1040,Rat,,plague rats,leve-or-quest,A Beardful of Rats | Missing Teeth | My Very First Adventure,,0,Rodent,0,,3,23,234,671
+Plain Pudding,Plain Pudding,exact,plain pudding,2103401 2103402,,1034,Flan,,plain puddings,persistent,,,0,Flan,0,,40,44,2402,2598
+Plains Footpad,Plains Footpad,exact,plains footpad,2180101,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",plains footpads,persistent,,,0,Enemy Humanoid,0,,29,29,,
+Plains Rat,Plains Rat,exact,plains rat,2104003,,1040,Rat,,plains rats,persistent,,,0,Rodent,0,,10,14,1019,1145
+Plasma Spark,Plasma Spark,exact,plasma spark,2210001 2210002 2210004,,1100,ウィル・オー・ウィスプ (仮),,plasma sparks,leve-or-quest,,,0,Plasmoid,0,,45,73,1669,2897
+Plasmoid,Plasmoid,exact,plasmoid,2110001 2110002 2110005 2210003,,1100,ウィル・オー・ウィスプ (仮),,plasmoids,persistent | leve-or-quest,,,0,Plasmoid,0,,45,49,2517,2723
+Poison Flytrap,Poison Flytrap,exact,poison flytrap,2202705,,1027,Flytrap,,poison flytraps,leve-or-quest,,,0,Landtrap,0,,40,68,841,2083
+Poisoned Peasant,Poisoned Peasant,exact,poisoned peasant,2304304,,1043,Ghost,,poisoned peasants,instanced-dungeon,,,0,Ghost,0,,56,,,
+Popoto-opoto,Popoto-opoto,exact,popoto-opoto,2100509,,1005,Opo-opo,,popoto-opoto,persistent,,,0,Opo-opo,0,,25,25,,
+Porcupine,Porcupine,exact,porcupine,2105711 2105712,,1057,Hedgemole,,porcupines,persistent,,,0,Mole,0,,55,64,4032,994
+Prince of Pestilence,Prince of Pestilence,exact,prince of pestilence,2100610,,1006,Gnat,,Prince of Pestilence,persistent,,The Pursuit of Power,1,Gnat,0,x,47,,19285,
+Princess of Pestilence,Princess of Pestilence,exact,princess of pestilence,2200611,,1006,Gnat,,Princess of Pestilence,leve-or-quest,,,1,Gnat,0,Y,55,,,
+Prison Pteroc,Prison Pteroc,exact,prison pteroc,2300101,,1001,Puk,,prison pterocs,instanced-dungeon,,,0,Puk,0,,35,,1481,
+Prison Pudding,Prison Pudding,exact,prison pudding,2303401,,1034,Flan,,prison puddings,instanced-dungeon,,,0,Flan,0,,35,,2115,
+Pruned Roselet,Pruned Roselet,exact,pruned roselet,2102722 2102723 2102724,,1027,Flytrap,,pruned roselets,persistent,,,0,Landtrap,0,,34,37,,
+Pteroc Matron,Pteroc Matron,exact,pteroc matron,2100107 2100108,,1001,Puk,,pteroc matrons,persistent,,,0,Puk,0,,35,39,1481,1641
+Pteroctrap,Pteroctrap,exact,pteroctrap,2102714,,1027,Flytrap,,pteroctraps,persistent,,,0,Landtrap,0,,45,49,1855,2007
+Pugot,Pugot,exact,pugot,2101508,,1015,Boar,,pugots,persistent,,,0,Boar,0,,75,79,8128,8795
+Puk,Puk (1.X),exact,puk,2100102 2100103 2200112,,1001,Puk,,puk,persistent | leve-or-quest,,,0,Puk,0,,20,24,955,1074
+Puk Hatchling,Puk Hatchling,exact,puk hatchling,2100101 2100119 2100120 2100121,9220203 9220204 9220205 9220206 9220207 9220208 9220209 9220210,1001,Puk,,puk hatchlings,persistent,,,0,Puk,0,,10,14,714,802
+Pukla Puki the Pomburner,Pukla Puki the Pomburner,exact,pukla puki the pomburner,2210405,,1104,モーグリ,,Pukla Puki the Pomburner,leve-or-quest,,,1,Moogle,0,Yes,,,50,
+Pukna Pako the Tailturner,Pukna Pako the Tailturner,exact,pukna pako the tailturner,2210407,,1104,モーグリ,,Pukna Pako the Tailturner,leve-or-quest,,,1,Moogle,0,Yes,,,50,
+Puksi Piko the Shaggysong,Puksi Piko the Shaggysong,exact,puksi piko the shaggysong,2210406,,1104,モーグリ,,Puksi Piko the Shaggysong,leve-or-quest,,,1,Moogle,0,Yes,50,,,
+Puroboros,Puroboros,exact,puroboros,2101608,,1016,Bomb,,puroboros,persistent,,,0,Bomb,0,,75,79,4781,5173
+Pus Gnat,Pus Gnat,exact,pus gnat,2100602 2100603 2100613 2100614 2100615,,1006,Gnat,,pus gnats,persistent,,,0,Gnat,0,,28,29,2221,2728
+Pygmy Dormouse,Pygmy Dormouse,exact,pygmy dormouse,2104017,,1040,Rat,,pygmy dormice,persistent,,,0,Rodent,0,,35,39,2115,2344
+Pyrausta,Pyrausta,exact,pyrausta,2100114,,1001,Puk,,Pyrausta,persistent,,,1,Puk,0,x,36,,16335,
+Qiqirn Beater,Qiqirn Beater,exact,qiqirn beater,2106305,,1063,Qiqirn,,Qiqirn beaters,persistent,,,1,Qiqirn,0,,55,59,3225,3489
+Qiqirn Egg Hunter,Qiqirn Egg Hunter,exact,qiqirn egg hunter,2106301,,1063,Qiqirn,,Qiqirn egg hunters,persistent,,,1,Qiqirn,0,,35,39,2115,2344
+Qiqirn Goon,Qiqirn Goon,exact,qiqirn goon,2206301 2206303,,1063,Qiqirn,,Qiqirn goons,leve-or-quest,Operation: Bloody Side Up,,1,Qiqirn,0,,30,54,549,1423
+Qiqirn Mercenary,Qiqirn Mercenary,exact,qiqirn mercenary,2106306 2106307 2106308 2106309 2106310 2106312,,1063,Qiqirn,,Qiqirn mercenaries,persistent,,,1,Qiqirn,0,,60,99,3558,7675
+Qiqirn Poacher,Qiqirn Poacher,exact,qiqirn poacher,2106303,,1063,Qiqirn,,Qiqirn poachers,persistent,,,1,Qiqirn,0,,45,49,2649,2866
+Qiqirn Scrambler,Qiqirn Scrambler,exact,qiqirn scrambler,2106304,,1063,Qiqirn,,Qiqirn scramblers,persistent,,,1,Qiqirn,0,,50,54,2923,3162
+Qiqirn Shirrer,Qiqirn Shirrer,exact,qiqirn shirrer,2206306,,1063,Qiqirn,,Qiqirn shirrers,leve-or-quest,,A Song of Bards and Bowmen,1,Qiqirn,0,,,,,
+Quartz Doblyn,Quartz Doblyn,exact,quartz doblyn,2102107 2102108 2102119 2102120,,1021,Coblyn,,quartz doblyns,persistent,,,0,Coblyn,0,,40,49,481,1433
+Queen Bolete,Queen Bolete,exact,queen bolete,2105915,,1059,Funguar,,Queen Bolete,persistent,,,1,Funguar,0,x,36,,15246,
+Queen Gougou,Queen Gougou,exact,queen gougou,2100519,,1005,Opo-opo,,Queen Gougou,persistent,,A Feast of Fools,1,Opo-opo,0,Y,55,55,,
+Quicksand Peiste,Quicksand Peiste,exact,quicksand peiste,2300701,,1007,Basilisk,,quicksand peistes,instanced-dungeon,,,0,Basilisk,0,,56,56,,
+Rabid Coywolf,Rabid Coywolf,exact,rabid coywolf,2201408,,1014,Wolf/Hyena/Hellhound,,rabid coywolves,leve-or-quest,,,0,Wolf,0,,10,,459,
+Rabid Dodo,Rabid Dodo,exact,rabid dodo,2202008,,1020,Cockatrice,,rabid dodos,leve-or-quest,,,0,Cockatrice,0,,10,,,
+Rabid Jackal,Rabid Jackal,exact,rabid jackal,2101407,,1014,Wolf/Hyena/Hellhound,,rabid jackals,persistent,,,0,Wolf,0,,55,59,2903,3141
+Ragged Hippocerf,Ragged Hippocerf,exact,ragged hippocerf,2200406,,1004,Hippogryph,,ragged hippocerfs,leve-or-quest,,,0,Hippogryph,0,No,43,44,,
+Raging Ram,Raging Ram,exact,raging ram,2206002 2206004,,1060,Sheep,,raging rams,leve-or-quest,,,0,Ram,0,,3,38,133,870
+Rainbow Basilisk,Rainbow Basilisk,exact,rainbow basilisk,2100714 2100715 2100716,,1007,Basilisk,,rainbow basilisks,persistent,,,0,Basilisk,0,,80,94,7123,9388
+Ranig'oh,Ranig'oh,exact,ranig'oh,2102221,,1022,Drake,,Ranig'oh,persistent,,,1,Drake,0,,56,56,,
+Raptor Poacher,Raptor Poacher,exact,raptor poacher,2280125 2280126 2280127,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",raptor poachers,leve-or-quest,,,0,Enemy Humanoid,0,,,,,
+Rat Mole,Rat Mole,exact,rat mole,2205701 2205703,,1057,Hedgemole,,rat moles,leve-or-quest,Mole Patrol,,0,Mole,0,,3,15,257,566
+Ravenous Billygoat,Ravenous Billygoat,exact,ravenous billygoat,2102303 2102304,,1023,Aldgoats,,ravenous billygoats,persistent,,,0,Aldgoat,0,,40,49,2883,3440
+Ravenous Nannygoat,Ravenous Nannygoat,exact,ravenous nannygoat,2102307 2102308,,1023,Aldgoats,,ravenous nannygoats,persistent,,,0,Aldgoat,0,,30,39,2741,3516
+Razor Plume,Razor Plume,exact,razor plume,2209510 2209511 2209518 2209519,,1095,Garuda,,razor plumes,leve-or-quest,,,0,Unknown,0,Yes,,,,
+Razorback,Razorback,exact,razorback,2101507,,1015,Boar,,razorbacks,persistent,,,0,Boar,0,,70,74,7367,7970
+Rebel,Rebel,exact,rebel,2180143 2180144 2180145 2180146 2180147 2180148 2180149 2180150,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",rebels,persistent | leve-or-quest,,,0,Enemy Humanoid,0,,,,,
+Recluse Hippogryph,Recluse Hippogryph,exact,recluse hippogryph,2300401,6500039,1004,Hippogryph,,recluse hippogryphs,instanced-dungeon,,,0,Hippogryph,0,,52,52,,
+Red Dewflower Sylph,Red Dewflower Sylph,exact,red dewflower sylph,2206701,,1067,Sylph,,red dewflower sylphs,leve-or-quest,,,0,Sylph,0,,30,50,768,1667
+Redhorn Ogre,Redhorn Ogre,exact,redhorn ogre,2102501 2102502,,1025,Ogre,,redhorn ogres,persistent,,,0,Ogre,0,,70,74,8450,9142
+Redwing Ked,Redwing Ked,exact,redwing ked,2100607 2100608,,1006,Gnat,,redwing keds,persistent,,,0,Gnat,0,,65,74,5106,6095
+Reef Angler,Reef Angler,exact,reef angler,2104503,,1045,Angler,,reef anglers,persistent,,,0,Angler,0,,30,34,914,1233
+Remora,Remora (1.x),exact,remora,2104513,,1045,Angler,,remorae,persistent,,,0,Angler,0,Yes,15,,1475,
+Revenant,Revenant,exact,revenant,2104312 2104313 2104323 2204308 2204309 2204310 2204311 2204312,,1043,Ghost,,revenants,persistent | leve-or-quest,,,0,Ghost,0,,30,39,1188,1524
+Ringtail,Ringtail,exact,ringtail,2100507 2100508,,1005,Opo-opo,,ringtails,persistent,,,0,Opo-opo,0,,55,59,2742,2966
+Ringtail Pteroc,Ringtail Pteroc,exact,ringtail pteroc,2200105,,1001,Puk,,ringtail pterocs,leve-or-quest,,,0,Puk,0,,25,45,553,1325
+Ripe Shrieker,Ripe Shrieker,exact,ripe shrieker,2205909,,1059,Funguar,,ripe shriekers,leve-or-quest,,,0,Funguar,0,,56,,,
+Roadrunner,Roadrunner,exact,roadrunner,2102007 2102008,,1020,Cockatrice,,roadrunners,persistent,,,0,Cockatrice,0,,55,59,3225,3489
+Roadside Bewitcher,Roadside Bewitcher,exact,roadside bewitcher,2280185,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",roadside bewitchers,leve-or-quest,,,0,Enemy Humanoid,0,,27,,,
+Roadside Bludgeoner,Roadside Bludgeoner,exact,roadside bludgeoner,2280184,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",roadside bludgeoners,leve-or-quest,,,0,Enemy Humanoid,0,,27,,,
+Roadside Poacher,Roadside Poacher,exact,roadside poacher,2280181,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",roadside poachers,leve-or-quest,,,0,Enemy Humanoid,0,,27,,,
+Roadside Tracker,Roadside Tracker,exact,roadside tracker,2280182,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",roadside trackers,leve-or-quest,,,0,Enemy Humanoid,0,,27,,,
+Roadside Trapper,Roadside Trapper,exact,roadside trapper,2280180,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",roadside trappers,leve-or-quest,,,0,Enemy Humanoid,0,,27,,,
+Rock Crab,Rock Crab,exact,rock crab,2107604,,1076,Crab,,rock crabs,persistent,,,0,Crab,0,,40,44,2402,2598
+Rorogun the Tailtamer,Rorogun the Tailtamer,exact,rorogun the tailtamer,2280131,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",Rorogun the Tailtamer,leve-or-quest,Wanted: Rorogun the Tailtamer,,1,Enemy Humanoid,0,,,,,
+Roselet,Roselet,exact,roselet,2102705 2102706,,1027,Flytrap,,roselets,persistent,,,0,Landtrap,0,,10,19,561,862
+Roseling,Roseling,exact,roseling,2102701 2102702 2102719 2202709,,1027,Flytrap,,roselings,persistent | leve-or-quest,Wanted: Mammoth and Master | Wanted: Violent Verdure,Till Death Do Us Part,0,Landtrap,0,,10,19,561,862
+Rotting Corpse,Rotting Corpse,exact,rotting corpse,2101801 2101802 2101808 2101809,,1018,Zombie,,rotting corpses,persistent,,,0,Fomor,0,,45,49,4239,4586
+Rubyscale Pteroc,Rubyscale Pteroc,exact,rubyscale pteroc,2200106,,1001,Puk,,rubyscale pterocs,leve-or-quest,,,0,Puk,0,,30,54,384,1139
+Ruffletuft Kupta Kapa,Ruffletuft Kupta Kapa,exact,ruffletuft kupta kapa,2210402,,1104,モーグリ,,Ruffletuft Kupta Kapa,leve-or-quest,,,1,Moogle,0,Yes,50,,,
+Runagate Imp,Runagate Imp,exact,runagate imp,2202611,1001960,1026,Imp,,runagate imps,leve-or-quest,,Brother from Another Mother,0,Imp,0,,35,35,,
+Sabletooth Spriggan,Sabletooth Spriggan,exact,sabletooth spriggan,2106214,,1062,Spriggan,,sabletooth spriggans,persistent,,In the Name of Science,0,Spriggan,0,,15,,885,
+Sabotender,Sabotender,exact,sabotender,2100905 2100906 2100912 2200903 2200904 2200905,,1009,Sabotender,,sabotenders,persistent | leve-or-quest,,,0,Cactuar,0,,65,74,3142,3751
+Sabotender Del Sol,Sabotender Del Sol,exact,sabotender del sol,2100907 2100908,,1009,Sabotender,,sabotenders del sol,persistent,,,0,Cactuar,0,,75,84,3825,4567
+Salamander,Salamander,exact,salamander,2101311 2101312 2101320 2201306 2201307,,1013,Salamander,,salamanders,persistent | leve-or-quest,,,0,Salamander,0,,65,74,6676,7970
+Salt Hare,Salt Hare,exact,salt hare,2204204 2204206 2204213,,1042,Slug,,salt hares,leve-or-quest,,,0,Slug,0,,30,59,1650,3245
+Saltspray Pteroc,Saltspray Pteroc,exact,saltspray pteroc,2100105 2100106,,1001,Puk,,saltspray pterocs,persistent,,,0,Puk,0,,25,34,1105,1438
+Sand Bat,Sand Bat,exact,sand bat,2304101,,1041,Bat,,sand bats,instanced-dungeon,,,0,Bat,0,,52,52,,
+Sand Slug,Sand Slug,exact,sand slug,2104203,,1042,Slug,,sand slugs,persistent,,,0,Slug,0,,35,39,2961,3282
+Sand Yarzon,Sand Yarzon,exact,sand yarzon,2205501 2205502,,1055,Yarzon,,sand yarzons,leve-or-quest,After the Battle | Sand Yarzon Sweep | Yarzons vs the Pilgrims,,0,Yarzon,0,,10,26,184,537
+Sandskin Peiste,Sandskin Peiste,exact,sandskin peiste,2100703,,1007,Basilisk,,sandskin peistes,persistent,,,0,Basilisk,0,,55,59,3871,4187
+Sandstorm,Sandstorm,exact,sandstorm,2305301,,1053,Swarm,,sandstorms,instanced-dungeon,,,0,Swarm,0,,51,51,,
+Sargas,Sargas,exact,sargas,2301103,,1011,Crab,,Sargas,instanced-dungeon,,,1,Diremite,0,x,38,38,,
+Sazel Ciloc the Divine,Sazel Ciloc the Divine,exact,sazel ciloc the divine,2206419 2206422,,1064,Ixal,,Sazel Ciloc the Divine,leve-or-quest,,,1,Ixal,0,Y,59,,,
+Scalepuk,Scalepuk,exact,scalepuk,2200101 2200102,,1001,Puk,,scalepuks,leve-or-quest,Claws and Wings,,0,Puk,0,,10,26,214,586
+Scarred Kalong,Scarred Kalong,exact,scarred kalong,2104108,,1041,Bat,,scarred kalongs,persistent,,,0,Bat,0,,45,49,1987,2150
+Scarred Watchwolf,Scarred Watchwolf,exact,scarred watchwolf,2101422,,1014,Wolf/Hyena/Hellhound,,scarred watchwolves,persistent,,,0,Wolf,0,,59,59,,
+Scout Vulture,Scout Vulture,exact,scout vulture,2101203 2101214,,1012,Vulture,,scout vultures,persistent,,,0,Vulture,0,,50,54,1900,2056
+Scout Wolf,Scout Wolf,exact,scout wolf,2201428 2201429,1001962,1014,Wolf/Hyena/Hellhound,,scout wolves,leve-or-quest,,,0,Wolf,0,,50,,,
+Scrambling Spriggan,Scrambling Spriggan,exact,scrambling spriggan,2106211,,1062,Spriggan,,scrambling spriggans,persistent,,,0,Spriggan,0,,20,,887,
+Screamer,Screamer,exact,screamer,2105911 2105912,,1059,Funguar,,screamers,persistent,,,0,Funguar,0,,65,69,5106,5524
+Screaming Kalong,Screaming Kalong,exact,screaming kalong,2104107,,1041,Bat,,screaming kalongs,persistent,,,0,Bat,0,,40,44,1802,1949
+Screecher,Screecher,exact,screecher,2105910,,1059,Funguar,,screechers,persistent,,,0,Funguar,0,,55,59,4193,4536
+Scurrying Spriggan,Scurrying Spriggan,exact,scurrying spriggan,2106212,,1062,Spriggan,,scurrying spriggans,persistent,,,0,Spriggan,0,,30,,1188,
+Sea Hare,Sea Hare,exact,sea hare,2104205 2104206 2104207 2104214 2204210,,1042,Slug,,sea hares,persistent | leve-or-quest,,,0,Slug,0,,35,44,3279,4027
+Sea Puk,Sea Puk,exact,sea puk,2100104,,1001,Puk,,sea puk,persistent,,,0,Puk,0,,25,29,1105,1242
+Sea Wasp,Sea Wasp,exact,sea wasp,2105407,,1054,Jellyfish,,sea wasps,persistent,,,0,Aurelia,0,,55,59,2742,2966
+Ser Aucheforne of the High Tide,Ser Aucheforne of the High Tide,exact,ser aucheforne of the high tide,2280109,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",Ser Aucheforne of the High Tide,leve-or-quest,Wanted: Ser Aucheforne of the High Tide,,1,Enemy Humanoid,0,,,,,
+Serpent Reaver Claw,Serpent Reaver Claw,exact,serpent reaver claw,2180301,,1803,,"the Serpent Reavers, the pirate organization sworn to the Sahagin - claw, fin and eye are its ranks, all level 45 in Mistbeard Cove - plus the tail of the lunatic cult, whose main body sits in 1801",Serpent Reaver claws,persistent,,,1,Enemy Humanoid,0,,45,45,,
+Serpent Reaver Eye,Serpent Reaver Eye,exact,serpent reaver eye,2180303,,1803,,"the Serpent Reavers, the pirate organization sworn to the Sahagin - claw, fin and eye are its ranks, all level 45 in Mistbeard Cove - plus the tail of the lunatic cult, whose main body sits in 1801",Serpent Reaver eyes,persistent,,,1,Enemy Humanoid,0,,45,45,,
+Serpent Reaver Fin,Serpent Reaver Fin,exact,serpent reaver fin,2180302,,1803,,"the Serpent Reavers, the pirate organization sworn to the Sahagin - claw, fin and eye are its ranks, all level 45 in Mistbeard Cove - plus the tail of the lunatic cult, whose main body sits in 1801",Serpent Reaver fins,persistent,,,1,Enemy Humanoid,0,,45,45,,
+Sewer Mole,Sewer Mole,exact,sewer mole,2105701 2105702,,1057,Hedgemole,,sewer moles,persistent,,,0,Mole,0,,1,9,793,1079
+Shade Lurker,Shade Lurker,exact,shade lurker,2109907,,1099,妖火 (仮),,shade lurkers,persistent,,,0,Wisp,0,,15,16,245,269
+Shade Seeker,Shade Seeker,exact,shade seeker,2109906,,1099,妖火 (仮),,shade seekers,persistent,,,0,Wisp,0,,15,,245,
+Shadow Lurker,Shadow Lurker,exact,shadow lurker,2109913,,1099,妖火 (仮),,shadow lurkers,persistent,,,0,Wisp,0,,16,17,269,288
+Shadow Seeker,Shadow Seeker,exact,shadow seeker,2109912,,1099,妖火 (仮),,shadow seekers,persistent,,,0,Wisp,0,,15,,245,
+Shaggy Wolf,Shaggy Wolf,exact,shaggy wolf,2201402,,1014,Wolf/Hyena/Hellhound,,shaggy wolves,leve-or-quest,,,0,Wolf,0,,20,40,369,1009
+Shaula,Shaula,exact,shaula,2301104,,1011,Crab,,Shaula,instanced-dungeon,,,1,Diremite,0,x,40,40,,
+Shearing Sheridan,Shearing Sheridan,exact,shearing sheridan,2107619,,1076,Crab,,Shearing Sheridan,persistent,,,1,Crab,0,Yes,20,,2870,
+Shore Slug,Shore Slug,exact,shore slug,2104201 2104202,,1042,Slug,,shore slugs,persistent,,,0,Slug,0,,25,34,2210,2876
+Shroud Bee Swarm,Shroud Bee Swarm,exact,shroud bee swarm,2105303,,1053,Swarm,,Shroud bee swarms,persistent,,,1,Swarm,0,,17,17,,
+Shroud Hare,Shroud Hare,exact,shroud hare,2104208 2104209,1001851,1042,Slug,,Shroud hares,persistent,,,1,Slug,0,,40,44,3724,4027
+Shroud Shrew,Shroud Shrew,exact,shroud shrew,2105721 2105722 2105723,,1057,Hedgemole,,Shroud shrews,persistent,,,1,Mole,0,,10,16,,
+Shuffling Spriggan,Shuffling Spriggan,exact,shuffling spriggan,2106210,,1062,Spriggan,,shuffling spriggans,persistent,,,0,Spriggan,0,,10,,663,
+Sirocco,Sirocco,exact,sirocco,2100309,,1003,Antelope,,Sirocco,persistent,,Embracing the Beast,1,Antelope,0,x,42,,28739,
+Skeleton Soldier,Skeleton Soldier,exact,skeleton soldier,2101904,,1019,Wight,,skeleton soldiers,persistent,,,0,Wight,0,,40,44,2402,2598
+Skeleton Swordbearer,Skeleton Swordbearer,exact,skeleton swordbearer,2101903,,1019,Wight,,skeleton swordbearers,persistent,,,0,Wight,0,,35,39,2115,2344
+Skulking Wolf,Skulking Wolf,exact,skulking wolf,2201403,,1014,Wolf/Hyena/Hellhound,,skulking wolves,leve-or-quest,,,0,Wolf,0,,30,54,494,1329
+Slippery Sykes,Slippery Sykes,exact,slippery sykes,2104212,,1042,Slug,,Slippery Sykes,persistent,,,1,Slug,0,x,36,,15246,
+Slithering Slug,Slithering Slug,exact,slithering slug,2204203,,1042,Slug,,slithering slugs,leve-or-quest,,,0,Slug,0,,45,45,,
+Smoke Bomb,Smoke Bomb,exact,smoke bomb,2101603,,1016,Bomb,,smoke bombs,persistent,,,0,Bomb,0,,40,44,2162,2339
+Smolenkos,Smolenkos,exact,smolenkos,2101707 2101708,,1017,Ahriman,,smolenkos,persistent,,,0,Ahriman,0,,75,84,7411,8848
+Snapping Shrew,Snapping Shrew,exact,snapping shrew,2105705 2105706,,1057,Hedgemole,,snapping shrews,persistent,,,0,Mole,0,,1,21,793,1079
+Snipper,Snipper,exact,snipper,2107609 2107610 2107616,,1076,Crab,,snippers,persistent,,,0,Crab,0,,60,69,3558,4249
+Snowbuck Stag,Snowbuck Stag,exact,snowbuck stag,2100307 2100308,,1003,Antelope,,snowbuck stags,persistent,,,0,Antelope,0,,55,59,3064,3315
+Snurble,Snurble,exact,snurble,2104403 2104404 2104406 2204401 2204402,,1044,Phurble,,snurbles,persistent | leve-or-quest,,,0,Snurble,0,,60,69,3914,4674
+Sordes,Sordes (1.X),exact,sordes,2100111 2100112 2100115,,1001,Puk,,sordes,persistent,,,0,Puk,0,,40,44,1682,1819
+Sotted Simian,Sotted Simian,exact,sotted simian,2200509,,1005,Opo-opo,,sotted simians,leve-or-quest,,,0,Opo-Opo,0,,30,42,,
+Soulgazer,Soulgazer,exact,soulgazer,2301702,6500038,1017,Ahriman,,Soulgazer,instanced-dungeon,,,1,Ahriman,0,X,N/A,,N/A,
+Spawning Orobon,Spawning Orobon,exact,spawning orobon,2104511 2104512,,1045,Angler,,spawning orobons,persistent,,,0,Angler,0,,16,19,316,385
+Spelaean Slug,Spelaean Slug,exact,spelaean slug,2104215,,1042,Slug,,spelaean slugs,persistent,,,0,Slug,0,,16,19,316,385
+Sphene Doblyn,Sphene Doblyn (1.0),exact,sphene doblyn,2102109 2102110 2102121 2102122,,1021,Coblyn,,sphene doblyns,persistent,,,0,Coblyn,0,,50,59,585,1745
+Spindiggle,Spindiggle,exact,spindiggle,2106222 2106223 2106224,,1062,Spriggan,,spindiggles,persistent,,,0,Spriggan,0,,55,55,,
+Spinesnap Ogre,Spinesnap Ogre,exact,spinesnap ogre,2102503,,1025,Ogre,,spinesnap ogres,persistent,,,0,Ogre,0,,80,84,10289,11131
+Spiny Dormouse,Spiny Dormouse,exact,spiny dormouse,2104019,,1040,Rat,,spiny dormice,persistent,,,0,Rodent,0,,45,49,2649,2866
+Spirit of the Wood,Spirit of the Wood,exact,spirit of the wood,2105201 2205201,1000608 1000610,1052,Elemental,,spirits of the wood,persistent | leve-or-quest,,,0,Elemental,0,,28,,2930,
+Spiteful,Spiteful (1.x),exact,spiteful,2106221,,1062,Spriggan,,Spiteful,persistent,,,1,Spriggan,0,Y,55,55,,
+Spitfire,Spitfire,exact,spitfire,2106207,,1062,Spriggan,,Spitfire,persistent,,Unfading Scars,1,Spriggan,0,Yes,47,,25346,
+Spriggan,Spriggan,exact,spriggan,2106208 2106209 2206201 2206202 2206203 2206204 2206205 2206206,,1062,Spriggan,,spriggans,persistent | leve-or-quest,A Clean Sale | An Old-fashioned Exorcism | Golden Opportunity,F'lhaminn's Flower | Scrambled Eggs,0,Spriggan,0,,5,30,115,1188
+Spriggan Bezzler,Spriggan Bezzler,exact,spriggan bezzler,2206214 2206215 2206216,,1062,Spriggan,,spriggans bezzlers,leve-or-quest,,,0,Spriggan,0,,30,42,,
+Spriggan Collector,Spriggan Collector,exact,spriggan collector,2106201 2106202 2106203 2106204 2106205 2106206 2106215 2106216,,1062,Spriggan,,spriggan collectors,persistent,,,0,Spriggan,0,,5,14,463,859
+Sprinting Spriggan,Sprinting Spriggan,exact,sprinting spriggan,2106213,,1062,Spriggan,,sprinting spriggans,persistent,,,0,Spriggan,0,,40,,1562,
+Star Marmot,Star Marmot,exact,star marmot,2104009 2104010 2104027 2104028,,1040,Rat,,star marmots,persistent,,,0,Rodent,0,,1,3,720,777
+Steropes,Steropes,exact,steropes,2210703,,1107,サイクロプス,,Steropes,leve-or-quest,,,1,Cyclopes,0,Y,55,,,
+Stollenwurm,Stollenwurm,exact,stollenwurm,2102219,,1022,Drake,,Stollenwurm,persistent,,Fatal Seduction,1,Drake,0,,53,53,,
+Stone Golem,Stone Golem,exact,stone golem,2208905,,1089,Golem (1.2),,stone golems,leve-or-quest,,,0,Golem,0,Y,55,,,
+Stoneshell,Stoneshell,exact,stoneshell,2107607 2107608,,1076,Crab,,stoneshells,persistent,,,0,Crab,0,,35,39,2115,2344
+Storm Biast,Storm Biast,exact,storm biast,2102211,,1022,Drake,,storm biasts,persistent,,,0,Drake,0,,70,74,4333,4688
+Stormcry Boatswain,Stormcry Boatswain,exact,stormcry boatswain,2180211,,1802,,"pirates - buccaneers, Black Crow, Kraken, Mistbeard",Stormcry boatswains,persistent,,,1,Enemy Humanoid,0,,30,30,,
+Stormcry Powder Monkey,Stormcry Powder Monkey,exact,stormcry powder monkey,2180212,,1802,,"pirates - buccaneers, Black Crow, Kraken, Mistbeard",Stormcry powder monkeys,persistent,,,1,Enemy Humanoid,0,,30,30,,
+Stormcry Quartermaster,Stormcry Quartermaster,exact,stormcry quartermaster,2180210,,1802,,"pirates - buccaneers, Black Crow, Kraken, Mistbeard",Stormcry quartermasters,persistent,,,1,Enemy Humanoid,0,,30,30,,
+Stray Dodo,Stray Dodo,exact,stray dodo,2202001,,1020,Cockatrice,,stray dodos,leve-or-quest,Herbicide,,0,Cockatrice,0,,15,31,590,1223
+Stray Karakul Ewe,Stray Karakul Ewe,exact,stray karakul ewe,2206009 2206013,,1060,Sheep,,stray karakul ewes,leve-or-quest,,,0,Ram,0,,30,54,439,1234
+Stray Karakul Ram,Stray Karakul Ram,exact,stray karakul ram,2206010 2206014,,1060,Sheep,,stray karakul rams,leve-or-quest,,,0,Ram,0,,30,54,439,1234
+Stuffed Dodo,Stuffed Dodo,exact,stuffed dodo,2102009,,1020,Cockatrice,,stuffed dodos,persistent,,An Inconvenient Dodo,0,Cockatrice,0,,15,15,,
+Stumbling Funguar,Stumbling Funguar,exact,stumbling funguar,2205901,,1059,Funguar,,stumbling funguars,leve-or-quest,,,0,Funguar,0,,3,15,272,590
+Sulfur Slug,Sulfur Slug,exact,sulfur slug,2304201,,1042,Slug,,sulfur slugs,instanced-dungeon,,,0,Slug,0,,52,,,
+Sultan's Trumpet,Sultan's Trumpet,exact,sultan's trumpet,2105708,,1057,Hedgemole,,sultan's trumpets,persistent,,,0,Mole,0,,15,19,1297,1458
+Sultansworn Elite,Sultansworn Elite (Mob),exact,sultansworn elite,2289036,1001984,1890,,"named opponents of scripted fights - job-quest champions, coliseum challengers, Grand Company and bandit duel squads; 93 percent of its GE mobs are notorious monsters against a 12 percent baseline, and it sits past a deliberate gap from the 80x faction run",Sultansworn elites,leve-or-quest,,Paladin's Pledge,1,Enemy Humanoid,0,,50,50,,
+Sun Midge Swarm,Sun Midge Swarm,exact,sun midge swarm,2105310,,1053,Swarm,,sun midge swarms,persistent,,,0,Swarm,0,,6,6,,
+Sundrake,Sundrake,exact,sundrake,2102201,,1022,Drake,,sundrakes,persistent,Wanted: Coiled Adder,,0,Drake,0,,60,64,3558,3850
+Sure-footed Billygoat,Sure-footed Billygoat,exact,sure-footed billygoat,2202302,,1023,Aldgoats,,sure-footed billygoats,leve-or-quest,,,0,Aldgoat,0,,40,68,865,2125
+Surf Eft,Surf Eft,exact,surf eft,2101304,,1013,Salamander,,surf efts,persistent,,,0,Salamander,0,,55,59,5967,6455
+Sylph Susurrus,Sylph Susurrus,exact,sylph susurrus,2106713 2106714 2106715 2106716 2106717 2106718,,1067,Sylph,,sylph susurrus,persistent,,,0,Sylph,0,,40,44,3363,3638
+Syrphid Cloud,Syrphid Cloud,exact,syrphid cloud,2205304 2205305 2205306 2205310,,1053,Swarm,,syrphid clouds,leve-or-quest,,,0,Swarm,0,,15,54,177,1044
+Syrphid Swarm,Syrphid Swarm,exact,syrphid swarm,2105305 2105306 2105314,,1053,Swarm,,syrphid swarms,persistent,,,0,Swarm,0,,15,24,354,920
+Tainted Louse,Tainted Louse,exact,tainted louse,2305601,,1056,Chigoe,,tainted louses,instanced-dungeon,,,0,Chigoe,0,,39,39,,
+Tarbh Uisge,Tarbh Uisge,exact,tarbh uisge,2200801,,1008,Buffalo,,Tarbh Uisge,leve-or-quest,Wanted: Mammoth and Master | Wanted: Soft Evidence | Wanted: Violent Verdure,,1,Buffalo,0,,60,,32022,
+Tempered Captive,Tempered Captive,exact,tempered captive,2289001 2289002 2289003,,1890,,"named opponents of scripted fights - job-quest champions, coliseum challengers, Grand Company and bandit duel squads; 93 percent of its GE mobs are notorious monsters against a 12 percent baseline, and it sits past a deliberate gap from the 80x faction run",tempered captives,leve-or-quest,,,0,Hyur,0,x,,,,
+Tempest Biast,Tempest Biast,exact,tempest biast,2102212,,1022,Drake,,tempest biasts,persistent,,,0,Drake,0,,75,79,4781,5173
+Territorial Angler,Territorial Angler,exact,territorial angler,2204510,,1045,Angler,,territorial anglers,leve-or-quest,,,0,Angler,0,,50,50,,
+Territorial Antling,Territorial Antling,exact,territorial antling,2203008,,1030,Antling,,territorial antlings,leve-or-quest,,,0,Antling,0,,27,,,
+Territorial Chiglet,Territorial Chiglet,exact,territorial chiglet,2205612,,1056,Chigoe,,territorial chiglets,leve-or-quest,,,0,Chigoe,0,,25,,,
+Territorial Coblyn,Territorial Coblyn,exact,territorial coblyn,2202114,,1021,Coblyn,,territorial coblyns,leve-or-quest,,,0,Coblyn,0,,25,,,
+Territorial Digger,Territorial Digger,exact,territorial digger,2203010,,1030,Antling,,territorial diggers,leve-or-quest,,,0,Antling,0,,50,,,
+Territorial Dreadwolf,Territorial Dreadwolf,exact,territorial dreadwolf,2201427,,1014,Wolf/Hyena/Hellhound,,territorial dreadwolves,leve-or-quest,,,0,Wolf,0,,46,46,,
+Territorial Galago,Territorial Galago,exact,territorial galago,2200508,,1005,Opo-opo,,territorial galagos,leve-or-quest,,,0,Opo-opo,0,,27,,,
+Territorial Gnat,Territorial Gnat,exact,territorial gnat,2200609,,1006,Gnat,,territorial gnats,leve-or-quest,,,0,Gnat,0,,48,,,
+Territorial Hog,Territorial Hog,exact,territorial hog,2201506,,1015,Boar,,territorial hogs,leve-or-quest,,,0,Boar,0,,50,50,,
+Territorial Megalocrab,Territorial Megalocrab,exact,territorial megalocrab,2207611,,1076,Crab,,territorial megalocrab,leve-or-quest,,,0,Crab,0,,48,,,
+Territorial Raptor,Territorial Raptor,exact,territorial raptor,2200208,,1002,Raptor,,territorial raptors,leve-or-quest,,,0,Raptor,0,,50,,,
+Territorial Roselet,Territorial Roselet,exact,territorial roselet,2202715,,1027,Flytrap,,territorial roselets,leve-or-quest,,,0,Landtrap,0,,48,48,,
+Territorial Scavenger,Territorial Scavenger,exact,territorial scavenger,2205521,,1055,Yarzon,,territorial scavengers,leve-or-quest,,,0,Yarzon,0,,46,,,
+Territorial Wolf,Territorial Wolf,exact,territorial wolf,2201424,,1014,Wolf/Hyena/Hellhound,,territorial wolves,leve-or-quest,,,0,Wolf,0,,29,,,
+Territorial Yarzon,Territorial Yarzon,exact,territorial yarzon,2205518,,1055,Yarzon,,territorial yarzons,leve-or-quest,,,0,Yarzon,0,,29,,,
+Thickshell,Thickshell,exact,thickshell,2107605 2107606,,1076,Crab,,thickshells,persistent,,,0,Crab,0,,25,34,1578,2054
+Third Order Patriarch Zu Ga,Third Order Patriarch Zu Ga,exact,third order patriarch zu ga,2106665,,1066,Kobold,,Third Order Patriarch Zu Ga,persistent,,,1,Kobold,0,Yes,59,59,,
+Thistletail Marmot,Thistletail Marmot,exact,thistletail marmot,2104011 2104012,,1040,Rat,,thisletail marmots,persistent,,,0,Rodent,0,,10,19,1019,1325
+Thorned Roseling,Thorned Roseling,exact,thorned roseling,2102703 2102704,,1027,Flytrap,,thorned roselings,persistent,,,0,Landtrap,0,,20,29,887,1154
+Tiny Dormouse,Tiny Dormouse,exact,tiny dormouse,2104013,,1040,Rat,,tiny dormice,persistent,,,0,Rodent,0,,35,39,2115,2344
+Toad Poacher,Toad Poacher,exact,toad poacher,2180116 2180117 2180118 2180161 2180162,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",toad poachers,persistent,,,0,Enemy Humanoid,0,,35,44,,
+Toadsquatter Femomo,Toadsquatter Femomo,exact,toadsquatter femomo,2280147,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",Toadsquatter Femomo,leve-or-quest,Wanted: Toadsquatter Femomo,,1,Enemy Humanoid,0,,,,,
+Toadstool,Toadstool,exact,toadstool,2105905 2105906,,1059,Funguar,,toadstools,persistent,,,0,Funguar,0,,50,54,3800,4111
+Toadtrap,Toadtrap,exact,toadtrap,2102721,,1027,Flytrap,,toadtraps,persistent,,,0,Landtrap,0,,31,32,,
+Toothless Gladiator,Toothless Gladiator,exact,toothless gladiator,2289013,,1890,,"named opponents of scripted fights - job-quest champions, coliseum challengers, Grand Company and bandit duel squads; 93 percent of its GE mobs are notorious monsters against a 12 percent baseline, and it sits past a deliberate gap from the 80x faction run",toothless gladiators,leve-or-quest,,,0,Enemy Humanoid,0,Y,20,20,300,300
+Tourney Gladiator,Tourney Gladiator,exact,tourney gladiator,2280157,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",tourney gladiators,leve-or-quest,,,0,Enemy Humanoid,0,,,,,
+Toxic Flytrap,Toxic Flytrap,exact,toxic flytrap,2202706 2202708,1001852,1027,Flytrap,,toxic flytraps,leve-or-quest,,,0,Landtrap,0,,40,68,841,2083
+Toxic Toad,Toxic Toad,exact,toxic toad,2103101 2103102 2103111 2103112 2103113,,1031,Gigantoad,,toxic toads,persistent,,,0,Toad,0,,45,54,3047,3637
+Trancetoad,Trancetoad,exact,trancetoad,2203105,,1031,Gigantoad,,trancetoads,leve-or-quest,,,0,Toad,0,,40,52,,
+Tree Slug,Tree Slug,exact,tree slug,2104216 2104217 2104218,,1042,Slug,,tree slugs,persistent,,,0,Slug,0,,27,29,,
+Truffle Hog,Truffle Hog,exact,truffle hog,2101503 2101504,,1015,Boar,,truffle hogs,persistent,,,0,Boar,0,,50,59,4239,5060
+Tuco-tuco,Tuco-tuco,exact,tuco-tuco,2105713 2105714,,1057,Hedgemole,,tuco-tucos,persistent,,,0,Mole,0,,45,54,3312,3953
+Turquoise Dewflower Sylph,Turquoise Dewflower Sylph,exact,turquoise dewflower sylph,2206702,,1067,Sylph,,turquoise dewflower sylphs,leve-or-quest,,,0,Sylph,0,,30,50,768,1667
+Tusked Hog,Tusked Hog,exact,tusked hog,2201501 2201502,,1015,Boar,,tusked hogs,leve-or-quest,,,0,Boar,0,,40,68,1057,2458
+U'Ghamaro Ashman,U'Ghamaro Ashman,exact,u'ghamaro ashman,2106650 2106652 2106653,,1066,Kobold,,U'Ghamaro ashmen,persistent,,,1,Kobold,0,,55,,11205,
+U'Ghamaro Gateman,U'Ghamaro Gateman,exact,u'ghamaro gateman,2106655 2106659,,1066,Kobold,,U'Ghamaro gatemen,persistent,,,1,Kobold,0,,56,57,3354,12495
+U'Ghamaro Gurneyman,U'Ghamaro Gurneyman,exact,u'ghamaro gurneyman,2106643 2106644 2106646 2106647,6500045,1066,Kobold,,U'Ghamaro gurneymen,persistent,,,1,Kobold,0,,52,57,2686,12495
+U'Ghamaro Junkman,U'Ghamaro Junkman,exact,u'ghamaro junkman,2106656 2106657 2106658,6500046,1066,Kobold,,U'Ghamaro junkmen,persistent,,,1,Kobold,0,,53,56,2842,3354
+U'Ghamaro Overman,U'Ghamaro Overman,exact,u'ghamaro overman,2106651,6500048,1066,Kobold,,U'Ghamaro overmen,persistent,,,1,Kobold,0,,55,,11205,
+U'Ghamaro Underman,U'Ghamaro Underman,exact,u'ghamaro underman,2106645,,1066,Kobold,,U'Ghamaro undermen,persistent,,,1,Kobold,0,,50,,2393,
+Uncommon Cactuar,Uncommon Cactuar,exact,uncommon cactuar,2200902,,1009,Sabotender,,uncommon cactuars,leve-or-quest,,,0,Cactuar,0,,30,54,366,1107
+Unknown Soldier,Unknown Soldier,exact,unknown soldier,2104321,,1043,Ghost,,unknown soldiers,persistent,,,0,Ghost,0,x,47,,"19,285",
+Uraeus,Uraeus,exact,uraeus,2100717,,1007,Basilisk,,Uraeus,persistent,,,1,Basilisk,0,x,62,65,32767,
+VIIth Legion Centurion,VIIth Legion Centurion,exact,viith legion centurion,2107003,,1070,Imperial,,VIIth Legion centurions,persistent,,,1,Enemy Humanoid,0,,57,,,
+VIIth Legion Eques,VIIth Legion Eques,exact,viith legion eques,2180038 2280054,,1800,,"Garlean imperial legion - 117 actors over one ladder of seven Roman line ranks in three tiers, deployed five times. `imperial` line at level 50-55 and `elite` line at 56 hold Castrum Novum, `VIIth Legion` line at 54-55 holds it and Mor Dhona, the `imperial` skirmish ranks hold East Shroud and the Dzemael Darkhold, and the `elite` skirmish ranks roam four field zones as the hamlet-invasion attackers populaceWaveAttack.csv calls imperial troopers. The tier and the rank family pick the deployment, not the id band",VIIth Legion eques,persistent | leve-or-quest,,,1,Enemy Humanoid,0,,54,55,,
+VIIth Legion Hoplomachus,VIIth Legion Hoplomachus,exact,viith legion hoplomachus,2280052,,1800,,"Garlean imperial legion - 117 actors over one ladder of seven Roman line ranks in three tiers, deployed five times. `imperial` line at level 50-55 and `elite` line at 56 hold Castrum Novum, `VIIth Legion` line at 54-55 holds it and Mor Dhona, the `imperial` skirmish ranks hold East Shroud and the Dzemael Darkhold, and the `elite` skirmish ranks roam four field zones as the hamlet-invasion attackers populaceWaveAttack.csv calls imperial troopers. The tier and the rank family pick the deployment, not the id band",VIIth Legion hoplomachi,leve-or-quest,,,1,Enemy Humanoid,0,,54,55,,
+VIIth Legion Laquearius,VIIth Legion Laquearius,exact,viith legion laquearius,2280053,,1800,,"Garlean imperial legion - 117 actors over one ladder of seven Roman line ranks in three tiers, deployed five times. `imperial` line at level 50-55 and `elite` line at 56 hold Castrum Novum, `VIIth Legion` line at 54-55 holds it and Mor Dhona, the `imperial` skirmish ranks hold East Shroud and the Dzemael Darkhold, and the `elite` skirmish ranks roam four field zones as the hamlet-invasion attackers populaceWaveAttack.csv calls imperial troopers. The tier and the rank family pick the deployment, not the id band",VIIth Legion laquearii,leve-or-quest,,,1,Enemy Humanoid,0,,54,55,,
+VIIth Legion Medicus,VIIth Legion Medicus,exact,viith legion medicus,2280056,,1800,,"Garlean imperial legion - 117 actors over one ladder of seven Roman line ranks in three tiers, deployed five times. `imperial` line at level 50-55 and `elite` line at 56 hold Castrum Novum, `VIIth Legion` line at 54-55 holds it and Mor Dhona, the `imperial` skirmish ranks hold East Shroud and the Dzemael Darkhold, and the `elite` skirmish ranks roam four field zones as the hamlet-invasion attackers populaceWaveAttack.csv calls imperial troopers. The tier and the rank family pick the deployment, not the id band",VIIth Legion medici,leve-or-quest,,,1,Enemy Humanoid,0,,54,55,,
+VIIth Legion Secutor,VIIth Legion Secutor,exact,viith legion secutor,2180037 2280051,,1800,,"Garlean imperial legion - 117 actors over one ladder of seven Roman line ranks in three tiers, deployed five times. `imperial` line at level 50-55 and `elite` line at 56 hold Castrum Novum, `VIIth Legion` line at 54-55 holds it and Mor Dhona, the `imperial` skirmish ranks hold East Shroud and the Dzemael Darkhold, and the `elite` skirmish ranks roam four field zones as the hamlet-invasion attackers populaceWaveAttack.csv calls imperial troopers. The tier and the rank family pick the deployment, not the id band",VIIth Legion secutor,persistent | leve-or-quest,,,1,Enemy Humanoid,0,,54,55,,
+VIIth Legion Signifer,VIIth Legion Signifer,exact,viith legion signifer,2280057,,1800,,"Garlean imperial legion - 117 actors over one ladder of seven Roman line ranks in three tiers, deployed five times. `imperial` line at level 50-55 and `elite` line at 56 hold Castrum Novum, `VIIth Legion` line at 54-55 holds it and Mor Dhona, the `imperial` skirmish ranks hold East Shroud and the Dzemael Darkhold, and the `elite` skirmish ranks roam four field zones as the hamlet-invasion attackers populaceWaveAttack.csv calls imperial troopers. The tier and the rank family pick the deployment, not the id band",VIIth Legion signiferi,leve-or-quest,,,1,Enemy Humanoid,0,,54,55,,
+Vale Diremite,Vale Diremite,exact,vale diremite,2301110,,1011,Crab,,vale diremites,instanced-dungeon,,,0,Diremite,0,,54,,,
+Vale Wasp,Vale Wasp,exact,vale wasp,2305401,1002013 1002026,1054,Jellyfish,,vale wasps,instanced-dungeon,,,0,Aurelia,0,,53,,,
+Velociraptor,Velociraptor,exact,velociraptor,2100207 2100208 2100210 2200201 2200204,,1002,Raptor,,velociraptors,persistent | leve-or-quest,,,0,Raptor,0,,65,74,4124,4923
+Venomtongue Assassin,Venomtongue Assassin,exact,venomtongue assassin,2180113 2180114 2180115 2180153 2180154 2280118 2280119 2280120,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",Venomtongue assassins,persistent | leve-or-quest,,,1,Enemy Humanoid,0,,20,52,,
+Vile Gnat,Vile Gnat,exact,vile gnat,2200601,,1006,Gnat,,vile gnats,leve-or-quest,Protecting the Pilgrims,,0,Gnat,0,,30,54,585,1487
+Void Flame,Void Flame,exact,void flame,2301601,,1016,Bomb,,void flames,instanced-dungeon,,,0,Wisp,0,,39,39,,
+Void Lantern,Void Lantern,exact,void lantern,2209906 2209907 2209908,1001974,1099,妖火 (仮),,void lanterns,leve-or-quest,,,0,Wisp,0,,,,,
+Voidtongue Ahzabb Chah,Voidtongue Ahzabb Chah,exact,voidtongue ahzabb chah,2162061,,1620,,"a second Amalj'aa roster, named by office and stronghold rather than by job - the Zahar'ak garrison, its clerical titles and the Burned converts; near-disjoint in naming from race 1065, which holds the rest of the Amalj'aa, but overlapping it in both zone and level",Voidtongue Ahzabb Chah,persistent,,,1,Amalj'aa,0,x,,,,
+Vulture,Vulture,exact,vulture,2101202,,1012,Vulture,,vultures,persistent,,,0,Vulture,0,,45,49,,
+Vulture Poacher,Vulture Poacher,exact,vulture poacher,2180122 2180123 2180124 2180157 2180158,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",vulture poachers,persistent,,,0,Enemy Humanoid,0,,,,,
+Vulturetrap,Vulturetrap,exact,vulturetrap,2102713,,1027,Flytrap,,vulturetraps,persistent,,,0,Landtrap,0,,40,44,1682,1819
+Wadjet,Wadjet,exact,wadjet,2200711,,1007,Basilisk,,Wadjet,leve-or-quest,,,1,Basilisk,0,Y,55,,,
+Wandering Bogy,Wandering Bogy,exact,wandering bogy,2204318,,1043,Ghost,,wandering bogies,leve-or-quest,,,0,Ghost,0,,32,32,,
+Wandering Mage,Wandering Mage,exact,wandering mage,2201808,,1018,Zombie,,wandering mages,leve-or-quest,,,0,Fomor,0,,34,34,,
+Wandering Soldier,Wandering Soldier,exact,wandering soldier,2201807,,1018,Zombie,,wandering soldiers,leve-or-quest,,,0,Fomor,0,,34,34,,
+Wandering Wight,Wandering Wight,exact,wandering wight,2101908,,1019,Wight,,wandering wights,persistent,,,0,Wight,0,,35,,,
+Wandering Wisp,Wandering Wisp,exact,wandering wisp,2209902 2209905,,1099,妖火 (仮),,wandering wisps,leve-or-quest,,,0,Wisp,0,,30,54,439,1234
+Watchwolf,Watchwolf,exact,watchwolf,2101418 2101419 2101420 2101421,,1014,Wolf/Hyena/Hellhound,,watchwolves,persistent,,,0,Wolf,0,,50,55,,
+Water Elemental,Water Elemental,exact,water elemental,2105101 2105102 2105103 2105104 2105105 2105106 2205101 2205102,1001971,1051,Water Elemental,,water elementals,persistent | leve-or-quest,,,0,Elemental,0,,30,79,1827,5173
+Waterdog,Waterdog,exact,waterdog,2101317,,1013,Salamander,,waterdogs,persistent,,,0,Salamander,0,,75,79,8128,8795
+Wayside Archer,Wayside Archer,exact,wayside archer,2280188,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",wayside archers,leve-or-quest,,,0,Enemy Humanoid,0,,48,48,,
+Wayside Backstabber,Wayside Backstabber,exact,wayside backstabber,2280189,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",wayside backstabbers,leve-or-quest,,,0,Enemy Humanoid,0,,48,,,
+Wayside Bewitcher,Wayside Bewitcher,exact,wayside bewitcher,2280191,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",wayside bewitchers,leve-or-quest,,,0,Enemy Humanoid,0,,48,,,
+Wayside Bludgeoner,Wayside Bludgeoner,exact,wayside bludgeoner,2280190,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",wayside bludgeoners,leve-or-quest,,,0,Enemy Humanoid,0,,48,,,
+Wayside Boarder,Wayside Boarder,exact,wayside boarder,2280223,,1802,,"pirates - buccaneers, Black Crow, Kraken, Mistbeard",wayside boarders,leve-or-quest,,,0,Enemy Humanoid,0,,48,,,
+Wayside Lancer,Wayside Lancer,exact,wayside lancer,2280187,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",wayside lancers,leve-or-quest,,,0,Enemy Humanoid,0,,48,48,,
+Wayside Pugilist,Wayside Pugilist,exact,wayside pugilist,2280186,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",wayside pugilists,leve-or-quest,,,0,Enemy Humanoid,0,,48,48,,
+Wayside Raider,Wayside Raider,exact,wayside raider,2280225,,1802,,"pirates - buccaneers, Black Crow, Kraken, Mistbeard",wayside raiders,leve-or-quest,,,0,Enemy Humanoid,0,,48,,,
+Wayside Sniper,Wayside Sniper,exact,wayside sniper,2280224,,1802,,"pirates - buccaneers, Black Crow, Kraken, Mistbeard",wayside snipers,leve-or-quest,,,0,Enemy Humanoid,0,,48,,,
+Wendigo,Wendigo,exact,wendigo,2101907,,1019,Wight,,wendigos,persistent,,,0,Wight,0,,56,56,,
+Westroad Footpad,Westroad Footpad,exact,westroad footpad,2180102,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",Westroad footpads,persistent,,,1,Enemy Humanoid,0,,,,,
+Westroad Raider,Westroad Raider,exact,westroad raider,2180106,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",Westroad raiders,persistent,,,1,Enemy Humanoid,0,,31,31,,
+Wharf Rat,Wharf Rat,exact,wharf rat,2104001 2104002,,1040,Rat,,wharf rats,persistent,,,0,Rodent,0,,1,9,720,980
+Whiskerwall Kupdi Koop,Whiskerwall Kupdi Koop,exact,whiskerwall kupdi koop,2210401,,1104,モーグリ,,Whiskerwall Kupdi Koop,leve-or-quest,,,1,Moogle,0,Yes,50,,,
+Whitetalon,Whitetalon,exact,whitetalon,2200407,,1004,Hippogryph,,Whitetalon,leve-or-quest,,International Relations,1,Hippogryph,0,Yes,46,46,,
+Wicked Soul,Wicked Soul,exact,wicked soul,2204317,,1043,Ghost,,wicked souls,leve-or-quest,Sly Spirits | Terror in the Pits,,0,Ghost,0,,30,42,,
+Widargelt the Watcher,Widargelt the Watcher,exact,widargelt the watcher,2289039,,1890,,"named opponents of scripted fights - job-quest champions, coliseum challengers, Grand Company and bandit duel squads; 93 percent of its GE mobs are notorious monsters against a 12 percent baseline, and it sits past a deliberate gap from the 80x faction run",Widargelt the Watcher,leve-or-quest,,,1,Enemy Humanoid,0,Y,55,55,,
+Widow's Suitor,Widow's Suitor,exact,widow's suitor,2301106 2301109,,1011,Crab,,widow's suitors,instanced-dungeon,,,0,Diremite,0,,39,39,,
+Widowmaker,Widowmaker (Diremite),exact,widowmaker,2101108,,1011,Crab,,widowmakers,persistent,,,0,Diremite,0,,75,79,3825,4139
+Wight Warrior,Wight Warrior,exact,wight warrior,2101905 2101906,,1019,Wight,,wight warrior,persistent,,,0,Wight,0,,45,49,2649,2866
+Wild Boar,Wild Boar,exact,wild boar,2101505 2101506,,1015,Boar,,wild boars,persistent,,,0,Boar,0,,60,69,6049,7224
+Wild Ewe,Wild Ewe,exact,wild ewe,2106003 2106004,,1060,Sheep,,wild ewes,persistent,,,0,Ram,0,,15,19,649,994
+Wild Hog,Wild Hog,exact,wild hog,2101501 2101502 2101512 2101513 2101514,,1015,Boar,,wild hogs,persistent,,,0,Boar,0,,40,49,3483,4156
+Wild Jackal,Wild Jackal,exact,wild jackal,2101405 2101406,,1014,Wolf/Hyena/Hellhound,,wild jackals,persistent,,,0,Wolf,0,,45,54,2385,2846
+Will-o'-the Wykes,Will-o'-the Wykes,punctuation-folded,will-o'-the-wykes,2109903,,1099,妖火 (仮),,will-o'-the-wykes,persistent,,,0,Wisp,0,,30,34,1462,1644
+Will-o'-the-wisp,Will-o'-the-wisp,exact,will-o'-the-wisp,2109901,,1099,妖火 (仮),,will-o'-the-wisps,persistent,Spirited Below,,0,Wisp,0,,20,24,1092,1227
+Wind Elemental,Wind Elemental,exact,wind elemental,2104801 2104802 2104803 2104804 2104805 2104806 2204801 2204802,1001968,1048,Air Elemental,,wind elementals,persistent | leve-or-quest,Secrets of the Sultanate,,0,Elemental,0,,30,69,1827,4249
+Windborn Buccaneer,Windborn Buccaneer,exact,windborn buccaneer,2280207 2280208,,1802,,"pirates - buccaneers, Black Crow, Kraken, Mistbeard",windborn buccaneers,leve-or-quest,,,0,Enemy Humanoid,0,,,,,
+Wingrat,Wingrat,exact,wingrat,2204101 2204102,1001862,1041,Bat,,wingrats,leve-or-quest,,,0,Bat,0,,3,26,94,634
+Wisp Familiar,Wisp Familiar,exact,wisp familiar,2209901,,1099,妖火 (仮),,wisp familiars,leve-or-quest,,,0,Wisp,0,,20,40,328,937
+Wolf Poacher,Wolf Poacher,exact,wolf poacher,2280122 2280123 2280124,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",wolf poachers,leve-or-quest,,,0,Enemy Humanoid,0,,,,,
+Wood Weevil,Wood Weevil,exact,wood weevil,2203902,,1039,Weevil,,wood weevils,leve-or-quest,,,0,Beetle,0,,10,34,130,740
+Woodsin Thrall,Woodsin Thrall,exact,woodsin thrall,2104309 2104310,,1043,Ghost,,woodsin thralls,persistent,,,0,Ghost,0,,15,15,,
+Woolywart Kupqu Kogi,Woolywart Kupqu Kogi,exact,woolywart kupqu kogi,2210404,,1104,モーグリ,,Woolywart Kupqu Kogi,leve-or-quest,,,1,Moogle,0,Yes,50,,,
+Xha Viqqoh the Nibbler,Xha Viqqoh the Nibbler,exact,xha viqqoh the nibbler,2280107,,1801,,"brigands - footpads, highwaymen, raiders - and most of the lunatic cult, the rest of which is in 1803",Xha Viqqoh the Nibbler,leve-or-quest,Wanted: Xha Viqqoh the Nibbler,,1,Enemy Humanoid,0,,,,,
+Yarzon Biter,Yarzon Biter,exact,yarzon biter,2105509 2105510,,1055,Yarzon,,yarzon biters,persistent,,,0,Yarzon,0,,35,39,1693,1876
+Yarzon Bleeder,Yarzon Bleeder,exact,yarzon bleeder,2105503 2105504,,1055,Yarzon,,yarzon bleeders,persistent,,,0,Yarzon,0,,20,29,887,1154
+Yarzon Burrower,Yarzon Burrower,exact,yarzon burrower,2105507,,1055,Yarzon,,yarzon burrowers,persistent,,,0,Yarzon,0,,45,49,2120,2293
+Yarzon Feeder,Yarzon Feeder,exact,yarzon feeder,2105501 2105502,,1055,Yarzon,,yarzon feeders,persistent,,,0,Yarzon,0,,10,19,663,862
+Yarzon Invader,Yarzon Invader,exact,yarzon invader,2205503 2205504 2205505,,1055,Yarzon,,yarzon invaders,leve-or-quest,,,0,Yarzon,0,,15,,,
+Yarzon Scavenger,Yarzon Scavenger,exact,yarzon scavenger,2105505 2105506 2105516 2105517 2105518 2105519 2105520 2105521,,1055,Yarzon,,yarzon scavengers,persistent,,,0,Yarzon,0,,35,44,1693,2079
+Yarzon Stalker,Yarzon Stalker,exact,yarzon stalker,2205506,,1055,Yarzon,,yarzon stalkers,leve-or-quest,,,0,Yarzon,0,,,,,
+Yellow Dewflower Sylph,Yellow Dewflower Sylph,exact,yellow dewflower sylph,2206704,,1067,Sylph,,yellow dewflower sylphs,leve-or-quest,,,0,Sylph,0,,30,50,768,1667
+Yotoli Hueloc the Austere,Yotoli Hueloc the Austere,exact,yotoli hueloc the austere,2206413,1001963,1064,Ixal,,Yotoli Hueloc the Austere,leve-or-quest,,,1,Ixal,0,Y,55,,,
+Young Antelope Stag,Young Antelope Stag,exact,young antelope stag,2100315 2100316 2100317,,1003,Antelope,,young antelope stags,persistent,,,0,Antelope,0,,23,29,,
+Young Galago,Young Galago,exact,young galago,2100501,,1005,Opo-opo,,young galagos,persistent,,,0,Opo-opo,0,,15,19,944,1061
+Young Raptor,Young Raptor,exact,young raptor,2100211 2100212 2100213,,1002,Raptor,,young raptors,persistent,,,0,Raptor,0,,40,49,2523,3010
+Zahar'ak Chandler,Zahar'ak Chandler,exact,zahar'ak chandler,2162053 2162055 2162057,,1620,,"a second Amalj'aa roster, named by office and stronghold rather than by job - the Zahar'ak garrison, its clerical titles and the Burned converts; near-disjoint in naming from race 1065, which holds the rest of the Amalj'aa, but overlapping it in both zone and level",Zahar'ak chandlers,persistent,,,1,Amalj'aa,0,,50,54,,
+Zahar'ak Drubber,Zahar'ak Drubber,exact,zahar'ak drubber,2162046 2162047 2162048 2162049 2162050,,1620,,"a second Amalj'aa roster, named by office and stronghold rather than by job - the Zahar'ak garrison, its clerical titles and the Burned converts; near-disjoint in naming from race 1065, which holds the rest of the Amalj'aa, but overlapping it in both zone and level",Zahar'ak drubbers,persistent,,,1,Amalj'aa,0,,50,53,3379,4012
+Zahar'ak Feretrar,Zahar'ak Feretrar,exact,zahar'ak feretrar,2162052,,1620,,"a second Amalj'aa roster, named by office and stronghold rather than by job - the Zahar'ak garrison, its clerical titles and the Burned converts; near-disjoint in naming from race 1065, which holds the rest of the Amalj'aa, but overlapping it in both zone and level",Zahar'ak feretrars,persistent,,,1,Amalj'aa,0,,55,55,,
+Zahar'ak Halberdier,Zahar'ak Halberdier,exact,zahar'ak halberdier,2162039 2162040 2162041 2162042 2162043 2162044,,1620,,"a second Amalj'aa roster, named by office and stronghold rather than by job - the Zahar'ak garrison, its clerical titles and the Burned converts; near-disjoint in naming from race 1065, which holds the rest of the Amalj'aa, but overlapping it in both zone and level",Zahar'ak halberdiers,persistent,,,1,Amalj'aa,0,,54,57,,
+Zahar'ak Illuminator,Zahar'ak Illuminator,exact,zahar'ak illuminator,2162056,,1620,,"a second Amalj'aa roster, named by office and stronghold rather than by job - the Zahar'ak garrison, its clerical titles and the Burned converts; near-disjoint in naming from race 1065, which holds the rest of the Amalj'aa, but overlapping it in both zone and level",Zahar'ak illuminators,persistent,,,1,Amalj'aa,0,,55,55,,
+Zahar'ak Ostiary,Zahar'ak Ostiary,exact,zahar'ak ostiary,2162058 2162059,,1620,,"a second Amalj'aa roster, named by office and stronghold rather than by job - the Zahar'ak garrison, its clerical titles and the Burned converts; near-disjoint in naming from race 1065, which holds the rest of the Amalj'aa, but overlapping it in both zone and level",Zahar'ak ostiaries,persistent,,,1,Amalj'aa,0,,55,57,,
+Zahar'ak Scriniary,Zahar'ak Scriniary,exact,zahar'ak scriniary,2162054,,1620,,"a second Amalj'aa roster, named by office and stronghold rather than by job - the Zahar'ak garrison, its clerical titles and the Burned converts; near-disjoint in naming from race 1065, which holds the rest of the Amalj'aa, but overlapping it in both zone and level",Zahar'ak scriniaries,persistent,,,1,Amalj'aa,0,,55,55,,
+Zahar'ak Sniper,Zahar'ak Sniper,exact,zahar'ak sniper,2162034 2162035 2162036 2162037,,1620,,"a second Amalj'aa roster, named by office and stronghold rather than by job - the Zahar'ak garrison, its clerical titles and the Burned converts; near-disjoint in naming from race 1065, which holds the rest of the Amalj'aa, but overlapping it in both zone and level",Zahar'ak snipers,persistent,,,1,Amalj'aa,0,,52,55,,
+Zanig'oh,Zanig'oh (1.X),exact,zanig'oh,2202201,,1022,Drake,,Zanig'oh,leve-or-quest,Operation: Pulling Fangs,,1,Drake,0,,60,,3558,
+Zombie Mage,Zombie Mage,exact,zombie mage,2201803 2201804 2201806 2201809,,1018,Zombie,,zombie mages,leve-or-quest,,,0,Fomor,0,,40,52,2517,3805
+Zombie Pikeman,Zombie Pikeman,exact,zombie pikeman,2201801 2201802,,1018,Zombie,,zombie pikemen,leve-or-quest,,,0,Fomor,0,,40,52,2120,4368
