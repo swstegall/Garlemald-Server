@@ -88,11 +88,9 @@ RECORD_MODE = false;
 LEAD_DISTANCE = 5.0;         -- Powle closes to within this of the player (the follow gap)
 MOVE_EPSILON = 0.3;          -- (reserved) minimum player displacement to count as "walking"
 
--- Same ambusher family as the Limsa escort: chigoe class 2205603,
--- displayNameId 3205603 ("ankle biter"). The engaged/defeated rows
--- 30120/30121 take their subject from the DispId-sender wire family
--- (see #199/#202 — an actor-id LuaParam renders a blank subject).
-ANKLE_BITER_DISPLAY_ID = 3205603;
+-- The engaged/defeated rows 30120/30121 ("<displayName> is engaged.")
+-- take their subject from a type-6 actor-reference param: pass the mob's
+-- handle (see SimpleContentMan0l101.lua). (#202)
 
 -- ============ RECORDED ROUTE (Garlemald-Server #41) ============
 -- The player's real walked ground, White Wolf Gate → Lifemend Stump
@@ -374,7 +372,7 @@ function onUpdate(tick, area)
 			-- order (man0l1 wire shape): protect banner → bound-by-duty
 			-- → timer. 51005 resolves "<displayName>" from the actor-id
 			-- param — Powle fronts the pair on the walk.
-			owner:SendGameMessage(GetWorldMaster(), TEXT_PROTECT_ESCORTEE, 0x20, powle.actorId);
+			owner:SendGameMessage(GetWorldMaster(), TEXT_PROTECT_ESCORTEE, 0x20, powle);
 			owner:SendGameMessage(GetWorldMaster(), TEXT_BOUND_BY_DUTY, 0x20);
 			owner:SendGameMessage(GetWorldMaster(), TEXT_TIME_REMAINING, 0x20, ESCORT_LIMIT_MINUTES);
 			emitBark(owner, BARKS.dutyStart);
@@ -424,7 +422,7 @@ function onUpdate(tick, area)
 		if mob and state.ringActorId ~= nil and mob.actorId == state.ringActorId then
 			ring = mob;
 		elseif mob and positionLive(mob) then
-			liveIds[mob.actorId] = true;
+			liveIds[mob.actorId] = mob;
 			local dMob = math.min(
 				dist2d(mob.positionX, mob.positionZ, powle.positionX, powle.positionZ),
 				dist2d(mob.positionX, mob.positionZ, owner.positionX, owner.positionZ))
@@ -435,7 +433,7 @@ function onUpdate(tick, area)
 				anyEngaged = true
 				if not state.mobsEngaged[mob.actorId] then
 					state.mobsEngaged[mob.actorId] = true;
-					owner:SendGameMessageLocalizedDisplayName(GetWorldMaster(), TEXT_MOB_ENGAGED, 0x20, ANKLE_BITER_DISPLAY_ID);
+					owner:SendGameMessage(GetWorldMaster(), TEXT_MOB_ENGAGED, 0x20, mob);
 					emitBark(owner, BARKS.waveCall);
 				end
 			end
@@ -445,10 +443,10 @@ function onUpdate(tick, area)
 		end
 	end
 	-- Defeat announcements: a previously-seen biter vanishing from the
-	-- live-only roster died this tick.
-	for id in pairs(state.mobsLive) do
+	-- live-only roster died this tick; its last handle is the subject.
+	for id, lastSeen in pairs(state.mobsLive) do
 		if not liveIds[id] then
-			owner:SendGameMessageLocalizedDisplayName(GetWorldMaster(), TEXT_MOB_DEFEATED, 0x20, ANKLE_BITER_DISPLAY_ID);
+			owner:SendGameMessage(GetWorldMaster(), TEXT_MOB_DEFEATED, 0x20, lastSeen);
 		end
 	end
 	state.mobsLive = liveIds;

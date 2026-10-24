@@ -71,14 +71,10 @@ CLOSE_HP_RATIO = 0.85;       -- at/below → "Phew... much closer than I'd have 
 ESCORT_RING_CLASS = 1290003;
 RING_MOVE_TICKS = 1;         -- re-home the halo EVERY 500 ms frame (one 0x00CF on one invisible marker — cheap; 4 lagged ~13.6u at run pace). #199
 
--- Every escort ambusher is the same chigoe class 2205603, whose
--- gamedata_actor_class displayNameId is 3205603 ("ankle biter"). The
--- engaged/defeated rows 30120/30121 take their subject from the
--- DispId-sender wire family (0x0161-0x0165 — pmeteor
--- Player.SendGameMessageDisplayIDSender), i.e. a STATIC name-sheet id in
--- the packet header; a runtime mob actor id in the LuaParam slot leaves
--- the name BLANK (" is engaged." — live 2026-07-05). (#199 round 2.)
-ANKLE_BITER_DISPLAY_ID = 3205603;
+-- The engaged/defeated rows 30120/30121 ("<displayName> is engaged.")
+-- take their subject from a type-6 actor-reference param: pass the mob's
+-- handle, not its integer actor id (blank) or a DispId sender (renders a
+-- "Ankle Biter:" chat prefix and still a blank subject). (#202)
 
 -- Sisipu's path: the PLAYER'S OWN recorded footsteps (round 7f, extended
 -- to the lighthouse in round 8). Decoded from the player's full
@@ -398,7 +394,7 @@ function onUpdate(tick, area)
 			-- resolves "<displayName>" from the actor-id param — this
 			-- is why the banner set lives HERE and not in the
 			-- director, which has no handle on her.
-			owner:SendGameMessage(GetWorldMaster(), TEXT_PROTECT_SISIPU, 0x20, escort.actorId);
+			owner:SendGameMessage(GetWorldMaster(), TEXT_PROTECT_SISIPU, 0x20, escort);
 			owner:SendGameMessage(GetWorldMaster(), TEXT_BOUND_BY_DUTY, 0x20);
 			owner:SendGameMessage(GetWorldMaster(), TEXT_TIME_REMAINING, 0x20, ESCORT_LIMIT_MINUTES);
 			emitBark(owner, BARKS.dutyStart);
@@ -445,7 +441,7 @@ function onUpdate(tick, area)
 		if mob and state.ringActorId ~= nil and mob.actorId == state.ringActorId then
 			ring = mob;
 		elseif mob and positionLive(mob) then
-			liveIds[mob.actorId] = true;
+			liveIds[mob.actorId] = mob;
 			local dMob = math.min(
 				dist2d(mob.positionX, mob.positionZ, escort.positionX, escort.positionZ),
 				dist2d(mob.positionX, mob.positionZ, owner.positionX, owner.positionZ))
@@ -454,13 +450,14 @@ function onUpdate(tick, area)
 			end
 			if mob:IsEngaged() then
 				anyEngaged = true
-				-- "Ankle biter is engaged." — announced once per mob on
-				-- its first engaged tick. Subject rides the DispId-sender
-				-- family (see ANKLE_BITER_DISPLAY_ID) — an actor-id
-				-- LuaParam rendered a blank subject.
+				-- "The ankle biter is engaged." — announced once per mob on
+				-- its first engaged tick. The mob itself is the param: an
+				-- actor handle goes out as a type-6 actor reference, which
+				-- the client resolves for the row's subject (a plain integer
+				-- actor id, or a DispId sender, left it blank). (#202)
 				if not state.mobsEngaged[mob.actorId] then
 					state.mobsEngaged[mob.actorId] = true;
-					owner:SendGameMessageLocalizedDisplayName(GetWorldMaster(), TEXT_MOB_ENGAGED, 0x20, ANKLE_BITER_DISPLAY_ID);
+					owner:SendGameMessage(GetWorldMaster(), TEXT_MOB_ENGAGED, 0x20, mob);
 				end
 			end
 			if dMob < nearestD then
@@ -471,13 +468,13 @@ function onUpdate(tick, area)
 			end
 		end
 	end
-	-- "Ankle biter is defeated." — the roster is live-only, so a
-	-- previously-seen biter vanishing from it died this tick. Subject
-	-- rides the DispId-sender family (see ANKLE_BITER_DISPLAY_ID); this
-	-- also sidesteps the dead mob no longer being client-resolvable.
-	for id in pairs(state.mobsLive) do
+	-- "The ankle biter is defeated." — the roster is live-only, so a
+	-- previously-seen biter vanishing from it died this tick. Its last
+	-- handle is the subject; the corpse is still on the client this tick.
+	-- (#202)
+	for id, lastSeen in pairs(state.mobsLive) do
 		if not liveIds[id] then
-			owner:SendGameMessageLocalizedDisplayName(GetWorldMaster(), TEXT_MOB_DEFEATED, 0x20, ANKLE_BITER_DISPLAY_ID);
+			owner:SendGameMessage(GetWorldMaster(), TEXT_MOB_DEFEATED, 0x20, lastSeen);
 		end
 	end
 	state.mobsLive = liveIds;

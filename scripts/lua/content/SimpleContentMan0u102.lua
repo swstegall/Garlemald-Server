@@ -225,7 +225,7 @@ function onUpdate(tick, area)
 			-- First live sighting = the duty is underway. Retail entry
 			-- order: protect banner → bound-by-duty → timer → her
 			-- "dangers along the way" opener.
-			owner:SendGameMessage(GetWorldMaster(), TEXT_PROTECT_ESCORTEE, 0x20, flhaminn.actorId);
+			owner:SendGameMessage(GetWorldMaster(), TEXT_PROTECT_ESCORTEE, 0x20, flhaminn);
 			owner:SendGameMessage(GetWorldMaster(), TEXT_BOUND_BY_DUTY, 0x20);
 			owner:SendGameMessage(GetWorldMaster(), TEXT_TIME_REMAINING, 0x20, ESCORT_LIMIT_MINUTES);
 			sayFlhaminn(owner, SAY_DANGERS_AHEAD);

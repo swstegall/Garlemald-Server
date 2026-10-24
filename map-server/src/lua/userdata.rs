@@ -2403,7 +2403,7 @@ impl UserData for LuaPlayer {
             // the item id for the "You obtain <item>" toast, text 25117).
             // Without forwarding them the client renders "You obtain a ."
             // (blank). (Garlemald-Server #46.)
-            let mut params: Vec<i64> = Vec::new();
+            let mut params: Vec<super::command::GameMessageParam> = Vec::new();
             for v in args.iter() {
                 match v {
                     Value::UserData(ud) if text_id.is_none() => {
@@ -2430,7 +2430,7 @@ impl UserData for LuaPlayer {
                         } else if log_type.is_none() {
                             log_type = Some(i);
                         } else {
-                            params.push(i);
+                            params.push(super::command::GameMessageParam::Int(i));
                         }
                     }
                     Value::Number(n) => {
@@ -2442,7 +2442,18 @@ impl UserData for LuaPlayer {
                         } else if log_type.is_none() {
                             log_type = Some(i);
                         } else {
-                            params.push(i);
+                            params.push(super::command::GameMessageParam::Int(i));
+                        }
+                    }
+                    // An actor or NPC handle after the textId is a `<displayName>`
+                    // subject: a type-6 actor reference. (Garlemald-Server #202.)
+                    Value::UserData(ud) if log_type.is_some() => {
+                        let id = ud
+                            .borrow_scoped::<LuaActor, _>(|a| a.actor_id)
+                            .or_else(|_| ud.borrow_scoped::<LuaNpc, _>(|n| n.base.actor_id))
+                            .or_else(|_| ud.borrow_scoped::<LuaPlayer, _>(|p| p.snapshot.actor_id));
+                        if let Ok(id) = id {
+                            params.push(super::command::GameMessageParam::Actor(id));
                         }
                     }
                     _ => {}

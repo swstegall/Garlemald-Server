@@ -5609,7 +5609,7 @@ pub(crate) async fn apply_send_game_message(
     text_owner_id: u32,
     text_id: u32,
     log_type: u8,
-    params: &[i64],
+    params: &[crate::lua::command::GameMessageParam],
     registry: &ActorRegistry,
     world: &WorldManager,
 ) {
@@ -5641,10 +5641,16 @@ pub(crate) async fn apply_send_game_message(
         // (Garlemald-Server #46.)
         let lua_params: Vec<common::luaparam::LuaParam> = params
             .iter()
-            .map(|&v| {
-                if (0..=u32::MAX as i64).contains(&v) && v > i32::MAX as i64 {
+            .map(|&p| match p {
+                crate::lua::command::GameMessageParam::Actor(id) => {
+                    common::luaparam::LuaParam::Actor(id)
+                }
+                crate::lua::command::GameMessageParam::Int(v)
+                    if (0..=u32::MAX as i64).contains(&v) && v > i32::MAX as i64 =>
+                {
                     common::luaparam::LuaParam::UInt32(v as u32)
-                } else {
+                }
+                crate::lua::command::GameMessageParam::Int(v) => {
                     common::luaparam::LuaParam::Int32(v as i32)
                 }
             })

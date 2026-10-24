@@ -2808,7 +2808,7 @@ mod tests {
                     text_id: 51005,
                     params,
                     ..
-                } if params.as_slice() == [0x4008_0001_i64]
+                } if params.as_slice() == [crate::lua::command::GameMessageParam::Actor(0x4008_0001)]
             )),
             "duty start must announce 51005 Protect <Sisipu> with her actor id as param; got {:?}",
             result.commands,
@@ -2833,7 +2833,7 @@ mod tests {
                     text_id: 25018,
                     params,
                     ..
-                } if params.as_slice() == [30_i64]
+                } if params.as_slice() == [crate::lua::command::GameMessageParam::Int(30)]
             )),
             "duty start must announce 25018 with the 30-minute param; got {:?}",
             result.commands,

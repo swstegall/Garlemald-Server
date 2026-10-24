@@ -40,6 +40,17 @@ pub enum SetPoolKind {
 }
 
 /// Every Lua-initiated side effect maps to one of these.
+/// One trailing param of `player:SendGameMessage(…)`. Actors (an actor or
+/// NPC handle) go out as type-6 actor references: that is what the
+/// client resolves for a text row's `<displayName>` subject ("The star
+/// marmot is engaged."); a plain integer actor id renders it blank.
+/// (Garlemald-Server #202.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GameMessageParam {
+    Int(i64),
+    Actor(u32),
+}
+
 #[derive(Debug, Clone)]
 pub enum LuaCommand {
     SendMessage {
@@ -67,7 +78,7 @@ pub enum LuaCommand {
         /// <item>" toast, text 25117). Empty for plain messages. Forwarded
         /// to the WITH-params game-message builder so the client resolves
         /// `<item>` instead of rendering it blank. (Garlemald-Server #46.)
-        params: Vec<i64>,
+        params: Vec<GameMessageParam>,
     },
     /// `player:SendGameMessageLocalizedDisplayName(textOwner, textId,
     /// log, displayId, ...)` — a text-sheet line whose SENDER is shown
