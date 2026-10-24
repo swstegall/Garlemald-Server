@@ -20,6 +20,38 @@ fi
 ensure_env
 
 cd "$REPO_ROOT"
+
+# Pre-flight: every service's port must be free. A stack that is still
+# running (the usual case) would otherwise make the new services die on
+# "Address already in use" while the old ones keep serving. (#211)
+config_port() { # <service> <default>: the first `port = N` in configs/<service>.toml
+    local p
+    p=$(sed -n 's/^port[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "configs/$1.toml" 2>/dev/null | head -n 1)
+    echo "${p:-$2}"
+}
+port_holder() { # <port>: "pid command" of the listener, empty if free
+    if command -v lsof >/dev/null 2>&1; then
+        # lsof exits 1 when nothing listens; don't let pipefail/set -e end the script
+        { lsof -nP -iTCP:"$1" -sTCP:LISTEN 2>/dev/null || true; } | awk 'NR == 2 { print $2, $1 }'
+    elif (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; then
+        echo "unknown process"
+    fi
+}
+busy=0
+for svc in web:54993 lobby:54994 world:54992 map:1989; do
+    port=$(config_port "${svc%%:*}" "${svc##*:}")
+    holder=$(port_holder "$port")
+    if [ -n "$holder" ]; then
+        err "${svc%%:*} port $port is already in use by $holder"
+        busy=1
+    fi
+done
+if [ "$busy" -ne 0 ]; then
+    err "a previous stack is probably still running; stop it (Ctrl-C in its terminal, or kill the pids above) and run again"
+    trap - EXIT
+    exit 1
+fi
+
 say "Building workspace ($profile)"
 # shellcheck disable=SC2086
 cargo build --workspace $flag
@@ -32,6 +64,7 @@ export GARLEMALD_PACKET_LOG_PLAINTEXT="${GARLEMALD_PACKET_LOG_PLAINTEXT:-1}"
 mkdir -p "$GARLEMALD_PACKET_LOG_DIR"
 
 pids=()
+names=()
 cleanup() {
     say "Stopping servers"
     for pid in "${pids[@]}"; do
@@ -51,6 +84,7 @@ start() {
     "$bin_dir/$name" "$@" >"$log" 2>&1 &
     local pid=$!
     pids+=("$pid")
+    names+=("$name")
     ok "$name pid=$pid"
 }
 
@@ -84,6 +118,7 @@ start_map_server() {
     "$bin_dir/map-server" <"$GM_FIFO" >"$log" 2>&1 &
     local pid=$!
     pids+=("$pid")
+    names+=("map-server")
     ok "map-server pid=$pid"
 }
 
@@ -95,7 +130,34 @@ start lobby-server
 start world-server
 start_map_server
 
+# Report the first service that has exited (name + log tail) and return
+# non-zero; returns zero while all are alive. (#211)
+check_alive() {
+    local i
+    for i in "${!pids[@]}"; do
+        if ! kill -0 "${pids[$i]}" 2>/dev/null; then
+            err "${names[$i]} (pid ${pids[$i]}) exited; last lines of logs/${names[$i]}.log:"
+            tail -n 15 "$REPO_ROOT/logs/${names[$i]}.log" >&2 || true
+            return 1
+        fi
+    done
+    return 0
+}
+
+# Startup gate: a service that dies on a bad config, DB error or bind
+# failure does so within a few seconds. cleanup() (EXIT trap) stops the
+# survivors.
+for _ in 1 2 3 4 5; do
+    sleep 1
+    check_alive || exit 1
+done
+
 say "All four servers running. Tail logs with: tail -f logs/*.log"
 say "Press Ctrl-C to stop."
-# Wait on the group; cleanup() runs on any signal.
-wait
+# Supervise instead of a bare `wait`, so a service that dies later is
+# reported at once rather than silently shrinking the group (bash 3.2 on
+# macOS has no `wait -n`). cleanup() runs on any signal.
+while check_alive; do
+    sleep 2
+done
+exit 1

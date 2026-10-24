@@ -24,6 +24,20 @@ call "%SCRIPT_DIR%check-env.cmd"
 if errorlevel 1 exit /b 1
 
 cd /d "%REPO_ROOT%"
+
+rem Pre-flight: every service's port must be free. A stack that is still
+rem running would otherwise make the new services die on "address already
+rem in use" while the old ones keep serving. (#211)
+set "_BUSY=0"
+call :check_port web   54993
+call :check_port lobby 54994
+call :check_port world 54992
+call :check_port map   1989
+if "%_BUSY%"=="1" (
+    1>&2 echo    X a previous stack is probably still running; run scripts\stop-all.cmd and try again
+    exit /b 1
+)
+
 echo ==^> Building workspace ^(%PROFILE%^)
 cargo build --workspace %FLAG%
 if errorlevel 1 exit /b 1
@@ -44,6 +58,19 @@ call :start_one lobby-server lobby
 call :start_one world-server world
 call :start_one map-server   map
 
+rem Startup gate: a service that dies on a bad config, DB error or bind
+rem failure does so within a few seconds; report it and stop the rest. (#211)
+timeout /t 5 /nobreak >nul
+set "_DEAD="
+for %%N in (web-server lobby-server world-server map-server) do (
+    tasklist /FI "IMAGENAME eq %%N.exe" 2>nul | find /i "%%N.exe" >nul || set "_DEAD=!_DEAD! %%N"
+)
+if defined _DEAD (
+    1>&2 echo    X exited during startup:!_DEAD! -- see the matching logs\*.log and logs\*.err.log
+    call :stop_all
+    exit /b 1
+)
+
 echo.
 echo ==^> All four servers running.
 echo    * tail logs with: powershell -Command "Get-Content -Wait logs\*.log"
@@ -53,6 +80,16 @@ pause >nul
 
 call :stop_all
 exit /b 0
+
+:check_port
+rem %1 = service, %2 = default port; the first "port = N" in configs\%1.toml wins
+set "_PORT=%~2"
+for /f "tokens=2 delims== " %%P in ('findstr /b /r /c:"port *=" "%REPO_ROOT%\configs\%~1.toml" 2^>nul') do if "!_PORT!"=="%~2" set "_PORT=%%P"
+for /f "tokens=5" %%I in ('netstat -ano ^| findstr /r /c:":!_PORT! .*LISTENING"') do (
+    1>&2 echo    X %~1 port !_PORT! is already in use by pid %%I
+    set "_BUSY=1"
+)
+goto :eof
 
 :start_one
 rem %1 = exe basename (without .exe), %2 = log basename
