@@ -81,6 +81,7 @@ pub async fn fire_on_kill_bnpc(
             mp: c.chara.mp,
             max_mp: c.chara.max_mp,
             tp: c.chara.tp,
+            current_gil: c.chara.gil.max(0) as u32,
             active_quests: ids.clone(),
             active_quest_states: c
                 .quest_journal

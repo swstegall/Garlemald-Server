@@ -363,6 +363,7 @@ impl PacketProcessor {
         // onLogin` re-ran its first-login branch (message + duplicate
         // starter kit) every login. (Garlemald-Server #46.)
         character.chara.play_time = loaded.play_time;
+        character.chara.gil = self.db.get_gil(actor_id).await.unwrap_or(0);
         // Mount/chocobo hydration. The DB load lands them on the
         // LoadedPlayer's `ChocoboData`; mirror into CharaState so
         // the runtime chocobo helpers (`apply_issue_chocobo`,
@@ -7780,6 +7781,13 @@ impl PacketProcessor {
         };
         let actor_id = handle.actor_id;
 
+        // Refresh the gil mirror before any script runs: gil moves through
+        // several DB paths (shops, `givegil`, rewards) that don't touch the
+        // live Character, and NPC menus gate on `GetCurrentGil()`.
+        if let Ok(gil) = self.db.get_gil(actor_id).await {
+            handle.character.write().await.chara.gil = gil;
+        }
+
         let owner_actor_id = pkt.owner_actor_id;
 
         // pmeteor `LuaEngine.cs::EventStarted` parity — a STRICT resume-or-
@@ -10333,7 +10341,7 @@ pub(crate) fn build_player_snapshot_for_login(
         current_class: c.chara.class.max(0) as u8,
         current_level: c.chara.level,
         current_job: c.chara.current_job as u8,
-        current_gil: 0,
+        current_gil: c.chara.gil.max(0) as u32,
         initial_town: c.chara.initial_town,
         tribe: c.chara.tribe,
         guardian: c.chara.guardian,

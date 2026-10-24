@@ -210,6 +210,12 @@ pub struct CharaState {
     /// initClassItems/initRaceItems starter kit each time.
     /// (Garlemald-Server #46.)
     pub play_time: u32,
+    /// Gil on hand (the `1_000_001` stack in the currency package),
+    /// mirrored from the DB at session-begin, refreshed on every inbound
+    /// EventStart and after `AddGil`, so `player:GetCurrentGil()` in NPC
+    /// scripts (chocobo rental's 800-gil check, shops) sees the real total
+    /// instead of the snapshot's former hardcoded 0.
+    pub gil: i32,
     /// UNIX timestamp (seconds) of the last `rest_bonus_exp_rate`
     /// increment from the inn auto-accrual tick. `0` means "no
     /// accrual window open" — the next inn-zone tick will set this
@@ -387,6 +393,7 @@ impl Default for CharaState {
             initial_town: 0,
             rest_bonus_exp_rate: 0,
             play_time: 0,
+            gil: 0,
             last_rest_accrual_utc: 0,
             time_of_death_utc: 0,
             respawn_disabled: false,

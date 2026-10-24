@@ -3434,6 +3434,20 @@ impl Database {
         Ok(ok)
     }
 
+    /// Gil on hand for `chara_id`: the `itemId = 1_000_001` stack at
+    /// `itemPackage = 99`, or 0 when the character has never held gil.
+    /// Read-only (unlike `add_gil(id, 0)`, which creates the row).
+    pub async fn get_gil(&self, chara_id: u32) -> Result<i32> {
+        let rows = self
+            .get_item_package(chara_id, crate::inventory::PKG_CURRENCY_CRYSTALS as u32)
+            .await?;
+        Ok(rows
+            .iter()
+            .find(|i| i.item_id == 1_000_001)
+            .map(|i| i.quantity)
+            .unwrap_or(0))
+    }
+
     /// Grant `delta` gil to `chara_id`. The 1.x gil stack lives as an
     /// `itemId = 1_000_001` row in `server_items`, linked from
     /// `characters_inventory` at `itemPackage = PKG_CURRENCY_CRYSTALS (99)`.

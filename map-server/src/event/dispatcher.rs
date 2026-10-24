@@ -509,6 +509,7 @@ async fn dispatch_npc_event_started(
             mp: c.chara.mp,
             max_mp: c.chara.max_mp,
             tp: c.chara.tp,
+            current_gil: c.chara.gil.max(0) as u32,
             active_quests: c
                 .quest_journal
                 .slots
@@ -908,6 +909,7 @@ async fn dispatch_director_event_started(
             mp: c.chara.mp,
             max_mp: c.chara.max_mp,
             tp: c.chara.tp,
+            current_gil: c.chara.gil.max(0) as u32,
             active_quests: c
                 .quest_journal
                 .slots
