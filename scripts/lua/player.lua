@@ -2,6 +2,19 @@ require("global");
 
 local initClassItems, equipClassItems, initRaceItems;
 
+--A reconnect in the opening zone replays the opening: clear the quest's
+--data and flags, and send a relog during the combat tutorial (SEQ_005,
+--whose content instance is gone after a relog) back to SEQ_000 so the
+--walk-up and talk steps lead into the fight again. Without this the
+--player was stranded with nothing armed. (Garlemald-Server #197.)
+local function resetOpeningQuest(quest)
+	quest:ClearQuestData();
+	quest:ClearQuestFlags();
+	if (quest:getSequence() == 5) then
+		quest:StartSequence(0);
+	end
+end
+
 function onBeginLogin(player)
 	--New character, set the initial quest. LuaPlayer's snapshot of
 	--active quests is captured once at the top of this hook, so a
@@ -51,8 +64,7 @@ function onBeginLogin(player)
 		player.positionZ = -36.91;
 		player.rotation = 0.025;
 		if (player:HasQuest(110001) == true) then
-			player:GetQuest(110001):ClearQuestData();
-			player:GetQuest(110001):ClearQuestFlags();
+			resetOpeningQuest(player:GetQuest(110001));
 		end
 	elseif ((player:HasQuest(110005) == true or pendingOpenerQuest == 110005) and player:GetZoneID() == 166) then
 		director = player:GetZone():CreateDirector("OpeningDirector", false);
@@ -66,8 +78,7 @@ function onBeginLogin(player)
 		player.positionZ = -706.1074;
 		player.rotation = -1.26721;
 		if (player:HasQuest(110005) == true) then
-			player:GetQuest(110005):ClearQuestData();
-			player:GetQuest(110005):ClearQuestFlags();
+			resetOpeningQuest(player:GetQuest(110005));
 		end
 	elseif ((player:HasQuest(110009) == true or pendingOpenerQuest == 110009) and player:GetZoneID() == 184) then
 		director = player:GetZone():CreateDirector("OpeningDirector", false);
@@ -81,8 +92,7 @@ function onBeginLogin(player)
 		player.positionZ = 133.6561;
 		player.rotation = -2.849384;
 		if (player:HasQuest(110009) == true) then
-			player:GetQuest(110009):ClearQuestData();
-			player:GetQuest(110009):ClearQuestFlags();
+			resetOpeningQuest(player:GetQuest(110009));
 		end
 	end
 end

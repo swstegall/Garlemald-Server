@@ -10376,9 +10376,37 @@ pub(crate) fn build_player_snapshot_for_login(
         current_event_owner: 0,
         current_event_name: String::new(),
         current_event_type: 0,
-        completed_quests: Vec::new(),
-        active_quests: Vec::new(),
-        active_quest_states: Vec::new(),
+        // The journal is hydrated from the DB before onBeginLogin runs, so
+        // carry it: with an empty list `HasQuest()` was always false at
+        // login and player.lua's opening-zone reconnect branches never ran
+        // (a relog mid-opening stranded the player). (Garlemald-Server #197.)
+        completed_quests: c.quest_journal.iter_completed().collect(),
+        active_quests: c
+            .quest_journal
+            .slots
+            .iter()
+            .flatten()
+            .map(|q| q.quest_id())
+            .collect(),
+        active_quest_states: c
+            .quest_journal
+            .slots
+            .iter()
+            .flatten()
+            .map(|q| crate::lua::QuestStateSnapshot {
+                quest_id: q.quest_id(),
+                sequence: q.get_sequence(),
+                flags: q.get_flags(),
+                counters: [
+                    q.get_counter(0),
+                    q.get_counter(1),
+                    q.get_counter(2),
+                    q.get_counter(3),
+                ],
+                npc_ls_from: q.get_npc_ls_from(),
+                npc_ls_msg_step: q.get_npc_ls_msg_step(),
+            })
+            .collect(),
         // Hydrated from `characters_aetherytes` at session-begin (see
         // the `load_character_aetherytes` block in the LoadedPlayer
         // hydration) — a hardcoded empty Vec here made every
@@ -10400,12 +10428,8 @@ pub(crate) fn build_player_snapshot_for_login(
 }
 
 /// Variant of [`build_player_snapshot_for_login`] for the quest-hook
-/// dispatch path. Populates `active_quests` / `completed_quests` /
-/// `active_quest_states` from the live `Character::quest_journal` so
-/// the `LuaPlayer` passed into `onStart`/`onFinish`/`onStateChange`
-/// returns accurate values for `HasQuest` / `IsQuestCompleted` /
-/// `GetFreeQuestSlot` and so `LuaQuestHandle` getters resolve against
-/// real sequence/flags/counters.
+/// dispatch path: the login snapshot (which already carries the quest
+/// journal) plus the live event session and combat state.
 pub(crate) fn build_player_snapshot_from_character(
     c: &Character,
 ) -> crate::lua::userdata::PlayerSnapshot {
@@ -10424,33 +10448,6 @@ pub(crate) fn build_player_snapshot_from_character(
     snapshot.current_event_owner = c.event_session.current_event_owner;
     snapshot.current_event_name = c.event_session.current_event_name.clone();
     snapshot.current_event_type = c.event_session.current_event_type;
-    snapshot.active_quests = c
-        .quest_journal
-        .slots
-        .iter()
-        .flatten()
-        .map(|q| q.quest_id())
-        .collect();
-    snapshot.active_quest_states = c
-        .quest_journal
-        .slots
-        .iter()
-        .flatten()
-        .map(|q| crate::lua::QuestStateSnapshot {
-            quest_id: q.quest_id(),
-            sequence: q.get_sequence(),
-            flags: q.get_flags(),
-            counters: [
-                q.get_counter(0),
-                q.get_counter(1),
-                q.get_counter(2),
-                q.get_counter(3),
-            ],
-            npc_ls_from: q.get_npc_ls_from(),
-            npc_ls_msg_step: q.get_npc_ls_msg_step(),
-        })
-        .collect();
-    snapshot.completed_quests = c.quest_journal.iter_completed().collect();
 
     // Overlay live combat state so Lua content scripts see real engagement.
     // pmeteor's `Character.IsEngaged()` delegates to `aiContainer.IsEngaged()`
@@ -10465,6 +10462,31 @@ pub(crate) fn build_player_snapshot_from_character(
         id => id,
     };
     snapshot
+}
+
+#[cfg(test)]
+mod login_snapshot_tests {
+    use super::*;
+    use crate::actor::quest::{Quest, quest_actor_id};
+
+    /// The login snapshot must carry the hydrated quest journal, so
+    /// `player:HasQuest()` and the quest handle's sequence are right in
+    /// `onBeginLogin` (player.lua's opening-zone reconnect branches).
+    /// (Garlemald-Server #197.)
+    #[test]
+    fn login_snapshot_carries_quest_journal() {
+        let mut c = Character::new(1);
+        let mut quest = Quest::new(quest_actor_id(110_005), "Man0g0".to_string());
+        quest.start_sequence(5);
+        quest.clear_dirty();
+        c.quest_journal.add(quest);
+
+        let snap = build_player_snapshot_for_login(&c);
+        assert_eq!(snap.active_quests, vec![110_005]);
+        assert_eq!(snap.active_quest_states.len(), 1);
+        assert_eq!(snap.active_quest_states[0].quest_id, 110_005);
+        assert_eq!(snap.active_quest_states[0].sequence, 5);
+    }
 }
 
 #[cfg(test)]
