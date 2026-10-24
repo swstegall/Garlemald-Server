@@ -627,7 +627,7 @@ impl PacketProcessor {
         }
         self.registry.remove_session(session_id).await;
         self.world.remove_session(session_id).await;
-        let reply = tx::build_session_end(session_id, 1, 0);
+        let reply = session_end_confirm(session_id, &sub.data);
         client.send_bytes(reply.to_bytes()).await;
         Ok(())
     }
@@ -10301,6 +10301,17 @@ fn hash_name_to_id(name: &str) -> u64 {
     h
 }
 
+/// The map server's reply to world's SessionEnd: error 0 (teardown done)
+/// and the destination zone world asked for, if any. Error 1 used to be
+/// hard-coded, so world logged "error ending session" on every disconnect
+/// and skipped its confirm-side session cleanup. (Garlemald-Server #196.)
+pub(crate) fn session_end_confirm(session_id: u32, request: &[u8]) -> SubPacket {
+    let destination = crate::packets::receive::SessionEndRequest::parse(session_id, request)
+        .map(|r| r.destination_zone_id)
+        .unwrap_or(0);
+    tx::build_session_end(session_id, 0, destination)
+}
+
 /// Assemble a `PlayerSnapshot` from just the `Character` state available to
 /// the packet processor (no full `Player` wrapper). The normal
 /// `PlayerSnapshot::from(&Player)` path requires the richer `actor::Player`
@@ -10465,6 +10476,35 @@ pub(crate) fn build_player_snapshot_from_character(
         id => id,
     };
     snapshot
+}
+
+#[cfg(test)]
+mod session_end_confirm_tests {
+    use super::*;
+
+    fn error_and_destination(sub: &SubPacket) -> (u16, u32) {
+        let d = &sub.data;
+        (
+            u16::from_le_bytes([d[4], d[5]]),
+            u32::from_le_bytes([d[6], d[7], d[8], d[9]]),
+        )
+    }
+
+    /// A plain logout confirms with error 0 and no destination. (#196)
+    #[test]
+    fn logout_confirms_without_error() {
+        let reply = session_end_confirm(7, &[]);
+        assert_eq!(error_and_destination(&reply), (0, 0));
+    }
+
+    /// A hand-off request's destination zone is echoed back. (#196)
+    #[test]
+    fn handoff_destination_is_echoed() {
+        let mut req = 133u32.to_le_bytes().to_vec();
+        req.extend_from_slice(&[0u8; 18]);
+        let reply = session_end_confirm(7, &req);
+        assert_eq!(error_and_destination(&reply), (0, 133));
+    }
 }
 
 #[cfg(test)]
