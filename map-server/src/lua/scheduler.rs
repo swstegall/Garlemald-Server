@@ -179,6 +179,13 @@ impl CoroutineScheduler {
     }
 
     /// Wake every coroutine parked on `signal`.
+    /// Whether any coroutine is parked on `signal`.
+    pub fn has_signal_waiter(&self, signal: &str) -> bool {
+        self.sleeping_on_signal
+            .get(signal)
+            .is_some_and(|parked| !parked.is_empty())
+    }
+
     pub fn drain_signal(&mut self, signal: &str) -> Vec<ParkedCoroutine> {
         self.sleeping_on_signal.remove(signal).unwrap_or_default()
     }

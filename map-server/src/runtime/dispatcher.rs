@@ -2158,6 +2158,37 @@ pub(crate) async fn check_content_battle_complete(
             director = format!("0x{:08X}", active.director_actor_id),
             "content battle complete — firing battleComplete through the event bridge",
         );
+        // The DoW combat tutorials wait on in-fight milestones (a swing,
+        // TP 1000, a weaponskill) before battleComplete. Yda and Papalymo
+        // can finish the wolves first; battleComplete then found nothing
+        // waiting and the tutorial hung on "use a weaponskill" with no
+        // enemies left. Release any milestone still being waited on, in
+        // order, so the director runs through to its battleComplete wait.
+        for milestone in ["playerAttack", "tpOver1000", "weaponskillUsed"] {
+            let waiting = lua
+                .scheduler()
+                .lock()
+                .is_ok_and(|s| s.has_signal_waiter(milestone));
+            if !waiting {
+                continue;
+            }
+            tracing::info!(
+                session = session.id,
+                milestone,
+                "content battle complete — releasing a pending fight milestone",
+            );
+            crate::runtime::quest_apply::apply_event_script_commands(
+                &player,
+                vec![crate::lua::command::LuaCommand::SendSignal {
+                    name: milestone.into(),
+                }],
+                registry,
+                db,
+                world,
+                Some(lua),
+            )
+            .await;
+        }
         crate::runtime::quest_apply::apply_event_script_commands(
             &player,
             vec![crate::lua::command::LuaCommand::SendSignal {
