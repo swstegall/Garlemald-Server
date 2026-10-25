@@ -76,18 +76,30 @@ pub fn translate_lua_commands_into_outbox(
                 event_owner,
                 event_name,
             } => {
+                let owner = if *event_owner != 0 {
+                    *event_owner
+                } else {
+                    session.current_event_owner
+                };
+                // pmeteor `Player.EndEvent` ends the CURRENT event. The
+                // name the Lua snapshot captured can be stale: a coroutine
+                // parked in `pushDefault` (man0l0's processTtrNomal002
+                // popup) is resumed by the player's `talkDefault`
+                // EventStart, which re-stamps the session first. Ending
+                // "pushDefault" with talkDefault's type left the client
+                // inside the talk, unable to talk again.
+                let name = if event_name.is_empty()
+                    || (owner == session.current_event_owner
+                        && !session.current_event_name.is_empty())
+                {
+                    session.current_event_name.clone()
+                } else {
+                    event_name.clone()
+                };
                 outbox.push(EventEvent::EndEvent {
                     player_actor_id: *player_id,
-                    owner_actor_id: if *event_owner != 0 {
-                        *event_owner
-                    } else {
-                        session.current_event_owner
-                    },
-                    event_name: if event_name.is_empty() {
-                        session.current_event_name.clone()
-                    } else {
-                        event_name.clone()
-                    },
+                    owner_actor_id: owner,
+                    event_name: name,
                     event_type: session.current_event_type,
                 });
             }

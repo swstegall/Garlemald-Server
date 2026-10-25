@@ -66,6 +66,12 @@ fn extract_null_terminated_ascii(bytes: &[u8]) -> String {
     String::from_utf8_lossy(&bytes[..end]).into_owned()
 }
 
+/// EventStarts that arrived while the same owner's push event was parked, by
+/// player actor id (see `handle_event_start`).
+static QUEUED_EVENT_STARTS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<u32, Vec<u8>>>,
+> = std::sync::LazyLock::new(Default::default);
+
 pub struct PacketProcessor {
     pub db: Arc<Database>,
     pub world: Arc<WorldManager>,
@@ -7431,7 +7437,10 @@ impl PacketProcessor {
             OP_RX_LANGUAGE_CODE => self.handle_language_code(source, &sub.data).await?,
             OP_RX_UPDATE_PLAYER_POSITION => self.handle_update_position(source, &sub.data).await?,
             OP_RX_EVENT_START => self.handle_event_start(source, &sub.data).await?,
-            OP_RX_EVENT_UPDATE => self.handle_event_update(source, &sub.data).await?,
+            OP_RX_EVENT_UPDATE => {
+                self.handle_event_update(source, &sub.data).await?;
+                self.replay_queued_event_start(source).await?;
+            }
             OP_RX_CHAT_MESSAGE => self.handle_chat_message(source, &sub.data).await?,
             OP_RX_BLACKLIST_ADD => self.handle_blacklist_add(source, &sub.data).await?,
             OP_RX_BLACKLIST_REMOVE => self.handle_blacklist_remove(source, &sub.data).await?,
@@ -7733,6 +7742,37 @@ impl PacketProcessor {
     // `pub(crate)` so the #28 S3.2 integration test can drive a synthetic
     // retail-shaped 0x012D through the same parse + dispatch path the
     // socket reader uses.
+    /// After an EventUpdate: an EventStart queued during a parked push event
+    /// (`handle_event_start`) runs once nothing is parked for the player.
+    async fn replay_queued_event_start(&self, session_id: u32) -> Result<()> {
+        let Some(handle) = self.registry.by_session(session_id).await else {
+            return Ok(());
+        };
+        let actor_id = handle.actor_id;
+        let still_parked = self.lua.as_ref().is_some_and(|lua| {
+            lua.scheduler()
+                .lock()
+                .ok()
+                .and_then(|s| s.parked_event_owner(actor_id))
+                .is_some()
+        });
+        if still_parked {
+            return Ok(());
+        }
+        let queued = QUEUED_EVENT_STARTS
+            .lock()
+            .ok()
+            .and_then(|mut q| q.remove(&actor_id));
+        if let Some(data) = queued {
+            tracing::debug!(
+                player = actor_id,
+                "replaying the EventStart queued during the push event"
+            );
+            Box::pin(self.handle_event_start(session_id, &data)).await?;
+        }
+        Ok(())
+    }
+
     pub(crate) async fn handle_event_start(&self, session_id: u32, data: &[u8]) -> Result<()> {
         let pkt = match EventStartPacket::parse(data) {
             Ok(p) => p,
@@ -7817,6 +7857,40 @@ impl PacketProcessor {
                 .lock()
                 .ok()
                 .and_then(|s| s.parked_event_owner(actor_id));
+            // A talk started while the owner's push script is still running
+            // on the client (man0l0's processTtrNomal002: the targeting and
+            // speaking tutorial waits for its own EventUpdate). Clicking an
+            // NPC that is already targeted counts as a talk, so it happens
+            // mid-tutorial. Resuming the push coroutine here ended the
+            // tutorial on the server while the client still ran it, and its
+            // later EventUpdate found nothing parked: the client stayed in
+            // the event, unable to talk. Ending the talk mid-tutorial does
+            // not free the client either (it tags it event_type 51 and keeps
+            // waiting): queue it, leave the push parked for its update, and
+            // dispatch the talk once the push is over
+            // (`replay_queued_event_start`).
+            if parked_owner == Some(owner_actor_id) {
+                let (cur_name, cur_type) = {
+                    let c = handle.character.read().await;
+                    (
+                        c.event_session.current_event_name.clone(),
+                        c.event_session.current_event_type,
+                    )
+                };
+                if cur_type == 2 && !cur_name.is_empty() && cur_name != pkt.event_name {
+                    tracing::debug!(
+                        player = actor_id,
+                        owner = format!("0x{owner_actor_id:08X}"),
+                        parked_event = %cur_name,
+                        event_name = %pkt.event_name,
+                        "EventStart during a parked push event — queued until the push ends",
+                    );
+                    if let Ok(mut q) = QUEUED_EVENT_STARTS.lock() {
+                        q.insert(actor_id, data.to_vec());
+                    }
+                    return Ok(());
+                }
+            }
             match parked_owner {
                 Some(parked) if parked == owner_actor_id => {
                     // pmeteor `Player.StartEvent` (Player.cs:2174) stamps
@@ -7992,11 +8066,15 @@ impl PacketProcessor {
         // into a `SetPushEventConditionWithCircle` radius — this is the
         // hook that lets quests like `man0g0::onPush` fire the
         // `processTtrNomal002` cinematic when the player closes on Yda.
+        //   * a `talkDefault` of another type → `OnTalk` too: the client
+        //     sends event_type 51 for a talk made while a push event's
+        //     script is running (queued and replayed after it).
         if let Some(hook_name) = match pkt.event_type {
             1 => Some("onTalk"),
             2 => Some("onPush"),
             3 => Some("onEmote"),
             0 => Some("onCommand"),
+            _ if event_name_for_cmd == "talkDefault" => Some("onTalk"),
             _ => None,
         } {
             self.fire_quest_hook_for_active_quests(
